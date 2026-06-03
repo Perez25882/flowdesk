@@ -24,6 +24,12 @@ npm-debug.log*
 pnpm-debug.log*
 typecheck-errors.txt
 
+# Project docs & guides (private)
+docs/
+.devin/
+LAUNCH-GUIDE.md
+STARTUP-GUIDE.md
+
 # Prisma
 apps/api/prisma/*.db
 
