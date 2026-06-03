@@ -1,0 +1,663 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Flowdesk — Prisma Schema
+// PostgreSQL 15 | Prisma 5
+//
+// Conventions:
+//   - All IDs: CUID (cuid()) — URL-safe, sortable, collision-resistant
+//   - All timestamps: UTC, stored as DateTime
+//   - Monetary values: Decimal with precision (12, 2) — never Float
+//   - Soft deletes: deletedAt DateTime? — all business data
+//   - Multi-tenancy: every table with business data has businessId
+//   - Table names: snake_case (mapped via @@map)
+//   - Column names: snake_case (Prisma handles JS camelCase ↔ DB snake_case)
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum BusinessPlan {
+  STARTER    // GHS 150/mo — 500 conversations, 300 orders, 1 staff seat
+  BUSINESS   // GHS 350/mo — 2000 conversations, unlimited orders, 5 seats
+  GROWTH     // GHS 700/mo — 10000 conversations, unlimited, 20 seats
+  ENTERPRISE // Custom — unlimited everything
+  SUSPENDED  // Payment failed or trial expired
+}
+
+enum OrderStatus {
+  PENDING    // Created from message, awaiting owner confirmation
+  CONFIRMED  // Owner confirmed — stock deducted here
+  PROCESSING // Being prepared / packed
+  FULFILLED  // Delivered or collected by customer
+  CANCELLED  // Cancelled at any stage (reason required)
+}
+
+enum PaymentMethod {
+  MOMO_MTN
+  MOMO_VODAFONE
+  MOMO_AIRTELTIGO
+  CASH
+  BANK_TRANSFER
+  OTHER
+}
+
+enum StaffRole {
+  MANAGER    // Everything except billing. Can manage other staff.
+  OPERATIONS // Orders, inventory, customers, messages. No financials.
+  DELIVERY   // Only orders assigned to them.
+}
+
+enum MessageDirection {
+  INBOUND   // Customer → Business
+  OUTBOUND  // Business → Customer (auto-replies, receipts)
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+  STICKER
+  REACTION
+  BUTTON_REPLY
+  LIST_REPLY
+  UNKNOWN
+}
+
+enum IntentType {
+  ORDER        // Customer wants to purchase something
+  PAYMENT      // Customer notifying of a payment sent
+  INQUIRY      // Question about price, availability, hours
+  STATUS_CHECK // Asking about an existing order
+  COMPLAINT    // Problem with an order or product
+  GREETING     // Hello, good morning, etc.
+  OTHER        // Doesn't fit any category
+  UNCLASSIFIED // System could not determine — requires manual review
+}
+
+enum ClassificationSource {
+  RULE_ENGINE // Matched by keyword/pattern rule engine
+  HAIKU       // Classified by Claude Haiku fallback
+  MANUAL      // Corrected by owner via dashboard
+}
+
+enum StockMovementType {
+  SALE        // Deducted when order CONFIRMED
+  RESTOCK     // Manual addition by owner
+  ADJUSTMENT  // Manual correction (positive or negative)
+  RETURN      // Stock returned from cancelled order
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE MODELS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The top-level tenant. Every other record belongs to a Business.
+model Business {
+  id   String @id @default(cuid())
+  name String // "Ama's Grocery Store"
+
+  // Owner info
+  ownerName String
+  phone     String @unique // Normalized: 233XXXXXXXXX — also the login identifier
+
+  // WhatsApp Business API connection
+  waPhoneNumberId   String?  @unique // Meta's phone number ID for this WABA
+  waAccessToken     String?  // System user token — encrypted at rest
+  waWebhookVerified Boolean  @default(false)
+
+  // Subscription
+  plan              BusinessPlan @default(STARTER)
+  trialEndsAt       DateTime?
+  suspendedAt       DateTime?
+  suspendReason     String?
+
+  // Paystack billing
+  paystackCustomerId String? @unique
+  paystackSubCode    String? // Subscription code for recurring billing
+
+  // Usage counters (reset monthly by billing cycle)
+  monthlyConvoCount   Int       @default(0)
+  convoCountResetAt   DateTime?
+  monthlyOrderCount   Int       @default(0)
+  orderCountResetAt   DateTime?
+
+  // Auto-reply template overrides (JSON map of templateKey → customText)
+  // null = use system defaults
+  replyTemplates Json?
+
+  // Notification preferences
+  notifyOnNewOrder  Boolean @default(true)  // WhatsApp alert to owner on new order
+  notifyOnLowStock  Boolean @default(true)
+  notifyOnPayment   Boolean @default(true)
+
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  // Relations
+  customers      Customer[]
+  orders         Order[]
+  products       Product[]
+  payments       Payment[]
+  messages       Message[]
+  staff          Staff[]
+  sessions       Session[]
+  stockMovements StockMovement[]
+  broadcasts     Broadcast[]
+  intentCorrections IntentCorrection[]
+
+  @@index([phone])
+  @@index([plan])
+  @@index([waPhoneNumberId])
+  @@map("businesses")
+}
+
+/// Auth sessions. One per device per user.
+/// Refresh tokens stored as SHA-256 hash — never the raw token.
+model Session {
+  id           String   @id @default(cuid())
+  businessId   String
+  staffId      String?  // null = owner session
+
+  // Token storage — hash only, never raw
+  refreshTokenHash String   @unique
+  expiresAt        DateTime
+
+  // Metadata for security auditing
+  userAgent  String?
+  ipAddress  String?  // Masked in logs: first 3 octets only
+  deviceName String?  // "Kofi's Samsung Galaxy A32"
+
+  createdAt DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([refreshTokenHash])
+  @@index([expiresAt]) // For cleanup job
+  @@map("sessions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CUSTOMER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Auto-created on first inbound message. No manual entry required.
+model Customer {
+  id         String @id @default(cuid())
+  businessId String
+
+  // Identity
+  waNumber String  // Normalized: 233XXXXXXXXX — primary identifier
+  name     String? // From WA profile or manually added by owner
+
+  // Financial summary (denormalized for performance — updated on every payment/order)
+  outstandingBalance Decimal @default(0) @db.Decimal(12, 2)
+  totalSpend         Decimal @default(0) @db.Decimal(12, 2)
+  totalOrders        Int     @default(0)
+
+  // Status flags
+  blacklisted       Boolean @default(false) // Flags messages, suppresses auto-replies
+  waNumberInvalid   Boolean @default(false) // Set when Meta returns 131026 (not on WA)
+  vip               Boolean @default(false) // Shown prominently on order cards
+
+  // Classification
+  tags String[] @default([]) // ["wholesale", "vip", "accra", etc.]
+
+  // Activity
+  lastInteractionAt DateTime? // Updated on every inbound message
+  firstOrderAt      DateTime?
+
+  // Owner notes (private, not shown to customer)
+  notes String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  business  Business  @relation(fields: [businessId], references: [id])
+  orders    Order[]
+  payments  Payment[]
+  messages  Message[]
+
+  @@unique([businessId, waNumber])
+  @@index([businessId])
+  @@index([businessId, waNumber])          // Hot path: every inbound message does this lookup
+  @@index([businessId, lastInteractionAt(sort: Desc)])
+  @@index([businessId, outstandingBalance]) // Outstanding balances list
+  @@index([businessId, blacklisted])        // Blacklist check on inbound
+  @@map("customers")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORDER
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Created automatically from ORDER-intent messages or manually by owner.
+model Order {
+  id         String @id @default(cuid())
+  businessId String
+  customerId String
+
+  // Reference
+  referenceNumber String @unique // FD-00001 format — per-business atomic counter
+
+  // Source
+  rawMessage  String  // The original customer message, verbatim — never modified
+  isManual    Boolean @default(false) // true = created by owner for walk-in customer
+
+  // Status
+  status OrderStatus @default(PENDING)
+
+  // Financials
+  totalAmount Decimal @default(0) @db.Decimal(12, 2) // Sum of matched item subtotals
+  amountPaid  Decimal @default(0) @db.Decimal(12, 2) // Sum of verified payments
+
+  // Assignment
+  assignedStaffId String?
+
+  // Inventory flag — prevents double-deduction
+  stockDeducted Boolean @default(false)
+
+  // Timestamps for terminal states
+  confirmedAt  DateTime?
+  fulfilledAt  DateTime?
+  cancelledAt  DateTime?
+  cancelReason String?   // Required when status = CANCELLED
+
+  // Owner notes
+  notes String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  business      Business             @relation(fields: [businessId], references: [id])
+  customer      Customer             @relation(fields: [customerId], references: [id])
+  assignedTo    Staff?               @relation(fields: [assignedStaffId], references: [id])
+  items         OrderItem[]
+  payments      Payment[]
+  statusHistory OrderStatusHistory[]
+
+  @@index([businessId])
+  @@index([businessId, status])                   // Kanban column queries
+  @@index([businessId, createdAt(sort: Desc)])    // Recent orders
+  @@index([businessId, customerId])               // Customer order history
+  @@index([businessId, assignedStaffId])          // Staff's assigned orders
+  @@index([referenceNumber])                      // Status check lookups by ref
+  @@index([businessId, status, createdAt(sort: Desc)]) // Dashboard combined query
+  @@map("orders")
+}
+
+/// Individual line items within an order.
+/// Matched items have productId and pricing. Unmatched are description-only.
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+
+  // Product link (null if item couldn't be matched to catalog)
+  productId String?
+
+  // Description is always stored — for matched items it mirrors product name
+  description String
+
+  // Quantity
+  quantity Decimal @db.Decimal(10, 3) // Supports fractional (e.g., 0.5 kg)
+
+  // Pricing — zero if unmatched
+  unitPrice Decimal @default(0) @db.Decimal(12, 2)
+  subtotal  Decimal @default(0) @db.Decimal(12, 2)
+
+  // Match tracking
+  matched          Boolean @default(false) // Was this item matched to a catalog product?
+  matchConfidence  Float?  // 0–1 similarity score from fuzzy matching
+
+  createdAt DateTime @default(now())
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@index([productId]) // Revenue by product queries
+  @@map("order_items")
+}
+
+/// Immutable record of every order status change.
+/// Never updated or deleted. Append-only audit trail.
+model OrderStatusHistory {
+  id      String @id @default(cuid())
+  orderId String
+
+  fromStatus OrderStatus? // null for initial PENDING creation
+  toStatus   OrderStatus
+
+  changedBy String? // staffId | 'owner' | 'system' | 'auto-reply-worker'
+  note      String? // Optional context (cancel reason, etc.)
+
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCT CATALOG
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Products owned by the business. Used for order matching, pricing, and inventory.
+model Product {
+  id         String @id @default(cuid())
+  businessId String
+
+  // Identity
+  name String  // "Rice 50kg"
+  sku  String? // Optional internal code
+
+  // Aliases used in fuzzy matching (case-insensitive)
+  // e.g., ["rice", "50kg rice", "big rice", "Jollof rice bag"]
+  aliases String[] @default([])
+
+  // Pricing
+  unit  String  // "bag", "carton", "piece", "kg", "litre", "sachet"
+  price Decimal @db.Decimal(12, 2)
+
+  // Inventory
+  stockQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  reorderThreshold Decimal @default(0) @db.Decimal(10, 3)
+
+  // Negative stock is allowed — owner may have stock the system doesn't know about
+  // A reorder alert fires when stockQuantity <= reorderThreshold after any deduction
+
+  // Status
+  active Boolean @default(true) // Soft-deactivate discontinued products
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  business       Business        @relation(fields: [businessId], references: [id])
+  orderItems     OrderItem[]
+  stockMovements StockMovement[]
+
+  @@unique([businessId, sku]) // SKU unique per business (if set)
+  @@index([businessId])
+  @@index([businessId, active])
+  @@index([businessId, stockQuantity]) // Low stock queries
+  @@map("products")
+}
+
+/// Immutable record of every stock change.
+/// Enables full inventory audit trail.
+model StockMovement {
+  id         String @id @default(cuid())
+  businessId String
+  productId  String
+
+  type     StockMovementType
+  quantity Decimal           @db.Decimal(10, 3) // Negative for deductions
+  balanceAfter Decimal       @db.Decimal(10, 3) // Snapshot of stock after movement
+
+  // Context
+  orderId   String? // Set for SALE and RETURN movements
+  staffId   String? // Who made the adjustment
+  note      String? // Required for ADJUSTMENT type
+
+  createdAt DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@index([businessId])
+  @@index([productId, createdAt(sort: Desc)])
+  @@index([orderId])
+  @@map("stock_movements")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYMENT
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every payment logged against a customer or order.
+model Payment {
+  id         String @id @default(cuid())
+  businessId String
+  customerId String
+  orderId    String? // Optional — can log general balance payments not tied to an order
+
+  // Payment details
+  amount Decimal       @db.Decimal(12, 2)
+  method PaymentMethod
+
+  // Reference from the payment network (MoMo transaction ID, bank ref, etc.)
+  reference String?
+
+  // Screenshot
+  screenshotUrl  String?  // S3 URL if customer sent a MoMo screenshot
+  screenshotKey  String?  // S3 object key for deletion
+
+  // Verification
+  verified   Boolean   @default(false)
+  verifiedBy String?   // staffId | 'owner'
+  verifiedAt DateTime?
+
+  // Logging
+  loggedById String? // Who logged this payment (staffId | 'owner' | 'system')
+  notes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  business Business  @relation(fields: [businessId], references: [id])
+  customer Customer  @relation(fields: [customerId], references: [id])
+  order    Order?    @relation(fields: [orderId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, customerId])
+  @@index([businessId, orderId])
+  @@index([businessId, verified])           // Screenshot review queue
+  @@index([businessId, createdAt(sort: Desc)])
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MESSAGING
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every WhatsApp message — inbound and outbound.
+/// The primary record for everything that passes through the system.
+model Message {
+  id         String @id @default(cuid())
+  businessId String
+  customerId String? // null for very first message (customer created async)
+
+  // WhatsApp identifiers
+  waMessageId String @unique // Meta's message ID — used for deduplication
+  direction   MessageDirection
+  type        MessageType @default(TEXT)
+
+  // Content
+  body      String? // Text content (null for non-text types)
+  mediaUrl  String? // S3 URL (we store media before Meta's temp URL expires)
+  mediaKey  String? // S3 object key
+  mediaType String? // MIME type
+
+  // For REACTION type
+  reactionEmoji     String?
+  reactedToWaId     String? // waMessageId of the message being reacted to
+
+  // Intent classification
+  intent           IntentType           @default(UNCLASSIFIED)
+  intentConfidence Float?               // 0.0 – 1.0
+  classifiedBy     ClassificationSource?
+
+  // Processing state
+  processed     Boolean   @default(false)
+  processedAt   DateTime?
+  processingError String?  // Error message if processing failed after all retries
+
+  // Review queue
+  requiresReview Boolean @default(false) // Low confidence, complaint, unclassified
+
+  // Links
+  relatedOrderId String? // Set after order creation from this message
+
+  // Raw payload for debugging and replay
+  rawPayload Json?
+
+  createdAt DateTime @default(now())
+
+  business Business  @relation(fields: [businessId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([businessId])
+  @@index([waMessageId])                              // Deduplication — hot path
+  @@index([businessId, processed])                    // Worker pickup
+  @@index([businessId, requiresReview])               // Review queue
+  @@index([businessId, intent])                       // Intent analytics
+  @@index([businessId, createdAt(sort: Desc)])        // Message history
+  @@index([businessId, processed, createdAt(sort: Desc)]) // Unprocessed backlog
+  @@map("messages")
+}
+
+/// Tracks when owners manually correct the system's intent classification.
+/// Used to detect patterns and improve the rule engine over time.
+model IntentCorrection {
+  id         String @id @default(cuid())
+  businessId String
+  messageId  String
+
+  originalIntent   IntentType
+  correctedIntent  IntentType
+  originalSource   ClassificationSource?
+  originalConfidence Float?
+
+  correctedBy String   // staffId | 'owner'
+  createdAt   DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([originalIntent, correctedIntent]) // Pattern analysis
+  @@index([createdAt])
+  @@map("intent_corrections")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STAFF
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Staff members with scoped access to the business dashboard.
+model Staff {
+  id         String @id @default(cuid())
+  businessId String
+
+  name  String
+  phone String // Normalized: 233XXXXXXXXX
+
+  role   StaffRole
+  active Boolean   @default(true)
+
+  // Auth
+  passwordHash String? // bcrypt, cost 12 — null until invite accepted
+
+  // Invitation
+  inviteToken  String?   @unique
+  inviteExpiry DateTime?
+  invitedAt    DateTime  @default(now())
+  inviteAcceptedAt DateTime?
+
+  // Activity
+  lastLoginAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  business       Business       @relation(fields: [businessId], references: [id])
+  assignedOrders Order[]
+  sessions       Session[]
+  activityLog    StaffActivity[]
+
+  @@unique([businessId, phone]) // One staff record per phone per business
+  @@index([businessId])
+  @@index([businessId, active])
+  @@index([inviteToken])
+  @@map("staff")
+}
+
+/// Immutable log of staff actions for owner audit trail.
+model StaffActivity {
+  id      String @id @default(cuid())
+  staffId String
+
+  action     String  // 'order.confirmed', 'payment.logged', 'order.assigned', etc.
+  resourceId String? // The ID of the record that was acted on
+  resourceType String? // 'order', 'payment', 'product', etc.
+  note       String? // Human-readable description
+
+  createdAt DateTime @default(now())
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId])
+  @@index([staffId, createdAt(sort: Desc)])
+  @@index([resourceType, resourceId]) // "show all actions on order X"
+  @@map("staff_activity")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BROADCAST (V2 — Schema defined now for architectural awareness)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// WhatsApp broadcast messages sent to customer segments. Business plan+.
+model Broadcast {
+  id         String @id @default(cuid())
+  businessId String
+
+  // Content
+  templateName String  // Meta-approved template name
+  message      String  // Rendered message content (for display)
+  variables    Json?   // Template variable values used
+
+  // Targeting
+  targetTags    String[] @default([]) // Send to customers with any of these tags
+  targetAll     Boolean  @default(false) // Ignore tags, send to all customers
+
+  // Stats (updated as messages send)
+  recipientCount Int @default(0)
+  sentCount      Int @default(0)
+  failedCount    Int @default(0)
+
+  // Status
+  status    String    @default("draft") // draft | scheduled | sending | completed | failed
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  createdBy String   // staffId | 'owner'
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, status])
+  @@index([scheduledAt]) // Scheduler job
+  @@map("broadcasts")
+}
