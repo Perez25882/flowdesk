@@ -1,39 +1,20 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { success, created } from '../../utils/response.js';
+import { success } from '../../utils/response.js';
 import { requireAuth } from '../../middleware/auth.middleware.js';
 import { attachBusinessContext } from '../../middleware/business-context.middleware.js';
-import {
-  registerBusiness,
-  requestOTP,
-  verifyOTPAndLogin,
-  refreshTokens,
-  logout,
-  logoutAllSessions,
-} from './auth.service.js';
-import {
-  RegisterBusinessSchema,
-  RequestOTPSchema,
-  VerifyOTPSchema,
-  RefreshTokenSchema,
-  LogoutSchema,
-} from './auth.schema.js';
+import { signupWithMeta, loginWithMeta, refreshTokens, logout, logoutAllSessions } from './auth.service.js';
+import { MetaSignupSchema, MetaLoginSchema, RefreshTokenSchema, LogoutSchema } from './auth.schema.js';
 
 export default async function authRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/auth/register', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = RegisterBusinessSchema.parse(request.body);
-    const business = await registerBusiness(body);
-    return created(reply, business);
+  app.post('/auth/meta/signup', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = MetaSignupSchema.parse(request.body);
+    const tokens = await signupWithMeta(body);
+    return success(reply, tokens);
   });
 
-  app.post('/auth/otp/request', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = RequestOTPSchema.parse(request.body);
-    await requestOTP(body.phone);
-    return success(reply, { message: 'OTP sent successfully' });
-  });
-
-  app.post('/auth/otp/verify', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = VerifyOTPSchema.parse(request.body);
-    const tokens = await verifyOTPAndLogin(body.phone, body.otp);
+  app.post('/auth/meta/login', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = MetaLoginSchema.parse(request.body);
+    const tokens = await loginWithMeta(body);
     return success(reply, tokens);
   });
 

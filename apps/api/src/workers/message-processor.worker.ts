@@ -14,6 +14,7 @@ import {
   INCOMING_MESSAGES_QUEUE_NAME,
   type MessageJobData,
 } from '../queues/message.queue.js';
+import { moveToDeadLetter } from './dead-letter.worker.js';
 
 export const INTENT_CLASSIFICATION_QUEUE_NAME = 'intent-classification';
 const WORKER_CONCURRENCY = 2;
@@ -287,5 +288,7 @@ messageProcessorWorker.on('failed', async (job, error) => {
         processingError: error.message,
       },
     });
+
+    await moveToDeadLetter(INCOMING_MESSAGES_QUEUE_NAME, job.id, job.data, error);
   }
 });

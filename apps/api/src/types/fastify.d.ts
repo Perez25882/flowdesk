@@ -12,13 +12,15 @@ declare module 'fastify' {
       id: string;
       name: string;
       ownerName: string;
-      phone: string;
+      phone: string | null;
+      email: string | null;
       plan: BusinessPlan;
       trialEndsAt: Date | null;
       suspendedAt: Date | null;
       suspendReason: string | null;
       active: boolean;
       paystackSubCode: string | null;
+      paystackCustomerId: string | null;
     };
   }
 }

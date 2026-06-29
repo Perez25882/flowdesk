@@ -1,6 +1,7 @@
 import { logger } from '../../config/logger.js';
 import { env } from '../../config/env.js';
 import { prisma } from '../../config/database.js';
+import { decryptSecretCompat } from '../../utils/crypto.js';
 
 interface MetaApiResponse {
   messaging_product: string;
@@ -92,7 +93,7 @@ export async function sendWhatsAppMessage(
   });
 
   const phoneNumberId = business?.waPhoneNumberId ?? env.META_PHONE_NUMBER_ID;
-  const accessToken = business?.waAccessToken ?? env.META_ACCESS_TOKEN;
+  const accessToken = decryptSecretCompat(business?.waAccessToken) ?? env.META_ACCESS_TOKEN;
 
   if (!phoneNumberId || !accessToken) {
     throw new Error('No WhatsApp credentials available (business or global)');
@@ -152,7 +153,7 @@ export async function sendWhatsAppTemplateMessage(
   });
 
   const phoneNumberId = business?.waPhoneNumberId ?? env.META_PHONE_NUMBER_ID;
-  const accessToken = business?.waAccessToken ?? env.META_ACCESS_TOKEN;
+  const accessToken = decryptSecretCompat(business?.waAccessToken) ?? env.META_ACCESS_TOKEN;
 
   if (!phoneNumberId || !accessToken) {
     throw new Error('No WhatsApp credentials available (business or global)');

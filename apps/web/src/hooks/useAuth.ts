@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 
 const API_BASE = '/api/v1';
 
@@ -19,23 +19,24 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   return data.data as T;
 }
 
-export function useRequestOTP() {
-  return useMutation({
-    mutationFn: (phone: string) =>
-      fetchJson<{ message: string }>('/auth/otp/request', {
-        method: 'POST',
-        body: JSON.stringify({ phone }),
-      }),
-  });
+export interface MetaAuthTokens {
+  accessToken: string;
+  refreshToken: string;
 }
 
-export function useVerifyOTP() {
+export interface MetaSignupPayload {
+  code: string;
+  phoneNumberId: string;
+  wabaId?: string;
+}
+
+export function useMetaSignup(): UseMutationResult<MetaAuthTokens, Error, MetaSignupPayload, unknown> {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ phone, otp }: { phone: string; otp: string }) =>
-      fetchJson<{ accessToken: string; refreshToken: string }>('/auth/otp/verify', {
+  return useMutation<MetaAuthTokens, Error, MetaSignupPayload, unknown>({
+    mutationFn: (payload: MetaSignupPayload) =>
+      fetchJson<MetaAuthTokens>('/auth/meta/signup', {
         method: 'POST',
-        body: JSON.stringify({ phone, otp }),
+        body: JSON.stringify(payload),
       }),
     onSuccess: (data) => {
       localStorage.setItem('accessToken', data.accessToken);
@@ -45,8 +46,24 @@ export function useVerifyOTP() {
   });
 }
 
-export function useRefreshToken() {
-  return useMutation({
+export function useMetaLogin(): UseMutationResult<MetaAuthTokens, Error, string, unknown> {
+  const qc = useQueryClient();
+  return useMutation<MetaAuthTokens, Error, string, unknown>({
+    mutationFn: (code: string) =>
+      fetchJson<MetaAuthTokens>('/auth/meta/login', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      }),
+    onSuccess: (data) => {
+      localStorage.setItem('accessToken', data.accessToken);
+      localStorage.setItem('refreshToken', data.refreshToken);
+      qc.invalidateQueries({ queryKey: ['auth'] });
+    },
+  });
+}
+
+export function useRefreshToken(): UseMutationResult<{ accessToken: string; refreshToken: string }, Error, void, unknown> {
+  return useMutation<{ accessToken: string; refreshToken: string }, Error, void, unknown>({
     mutationFn: () => {
       const refreshToken = localStorage.getItem('refreshToken');
       return fetchJson<{ accessToken: string; refreshToken: string }>('/auth/refresh', {
@@ -61,11 +78,10 @@ export function useRefreshToken() {
   });
 }
 
-export function useLogout() {
+export function useLogout(): UseMutationResult<{ message: string }, Error, void, unknown> {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      fetchJson<{ message: string }>('/auth/logout', { method: 'POST' }),
+  return useMutation<{ message: string }, Error, void, unknown>({
+    mutationFn: () => fetchJson<{ message: string }>('/auth/logout', { method: 'POST' }),
     onSuccess: () => {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');

@@ -1,18 +1,13 @@
 import { z } from 'zod';
 
-export const RegisterBusinessSchema = z.object({
-  ownerName: z.string().min(2).max(100),
-  phone: z.string().min(10).max(15),
-  businessName: z.string().min(2).max(150),
+export const MetaSignupSchema = z.object({
+  code: z.string().min(1, 'Meta authorization code is required'),
+  phoneNumberId: z.string().min(1, 'WhatsApp phone number id is required'),
+  wabaId: z.string().optional(),
 });
 
-export const RequestOTPSchema = z.object({
-  phone: z.string().min(10).max(15),
-});
-
-export const VerifyOTPSchema = z.object({
-  phone: z.string().min(10).max(15),
-  otp: z.string().regex(/^\d{6}$/, 'OTP must be exactly 6 digits'),
+export const MetaLoginSchema = z.object({
+  code: z.string().min(1, 'Meta authorization code is required'),
 });
 
 export const RefreshTokenSchema = z.object({
@@ -23,8 +18,7 @@ export const LogoutSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-export type RegisterBusinessInput = z.infer<typeof RegisterBusinessSchema>;
-export type RequestOTPInput = z.infer<typeof RequestOTPSchema>;
-export type VerifyOTPInput = z.infer<typeof VerifyOTPSchema>;
+export type MetaSignupInput = z.infer<typeof MetaSignupSchema>;
+export type MetaLoginInput = z.infer<typeof MetaLoginSchema>;
 export type RefreshTokenInput = z.infer<typeof RefreshTokenSchema>;
 export type LogoutInput = z.infer<typeof LogoutSchema>;

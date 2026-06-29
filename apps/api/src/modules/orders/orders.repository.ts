@@ -407,12 +407,14 @@ export async function generateOrderReference(
 export async function findOrdersByStatus(
   businessId: string,
   status: OrderStatus,
+  staffId?: string,
 ): Promise<OrderWithRelations[]> {
   const orders = await prisma.order.findMany({
     where: {
       businessId,
       status,
       deletedAt: null,
+      ...(staffId ? { assignedStaffId: staffId } : {}),
     },
     orderBy: { createdAt: 'desc' },
     include: {

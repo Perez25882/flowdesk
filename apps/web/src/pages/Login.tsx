@@ -1,15 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Phone, Lock, ArrowRight, Loader2 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useRequestOTP, useVerifyOTP, isAuthenticated } from '@/hooks/useAuth';
-
-function normalizePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('0')) return `233${digits.slice(1)}`;
-  if (digits.startsWith('233')) return digits;
-  return `233${digits}`;
-}
+import { useEffect, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { useMetaLogin, isAuthenticated } from '@/hooks/useAuth';
+import { useFacebookLogin } from '@/hooks/useFacebookSignup';
+import { useWhatsAppConfig } from '@/hooks/useWhatsApp';
 
 function FloatingOrb({ size, x, y, delay, color }: { size: number; x: string; y: string; delay: number; color: string }): React.JSX.Element {
   return (
@@ -24,13 +19,10 @@ function FloatingOrb({ size, x, y, delay, color }: { size: number; x: string; y:
 
 export default function LoginPage(): React.JSX.Element {
   const navigate = useNavigate();
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [step, setStep] = useState<'phone' | 'otp'>('phone');
-  const [countdown, setCountdown] = useState(300);
-
-  const requestOTP = useRequestOTP();
-  const verifyOTP = useVerifyOTP();
+  const login = useMetaLogin();
+  const { data: config } = useWhatsAppConfig();
+  const enabled = Boolean(config?.embeddedSignupEnabled);
+  const [sdkError, setSdkError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isAuthenticated()) {
@@ -38,32 +30,22 @@ export default function LoginPage(): React.JSX.Element {
     }
   }, [navigate]);
 
-  useEffect(() => {
-    if (step !== 'otp' || countdown <= 0) return undefined;
-    const t = setInterval(() => setCountdown((c) => c - 1), 1000);
-    return () => clearInterval(t);
-  }, [step, countdown]);
-
-  const handleRequestOTP = useCallback(() => {
-    const formatted = normalizePhone(phone);
-    if (formatted.length < 12) return;
-    requestOTP.mutate(formatted, {
-      onSuccess: () => {
-        setStep('otp');
-        setCountdown(300);
-      },
-    });
-  }, [phone, requestOTP]);
-
-  const handleVerify = useCallback(() => {
-    const formatted = normalizePhone(phone);
-    verifyOTP.mutate(
-      { phone: formatted, otp },
-      {
+  const { launch: launchLogin, isLoading: launching } = useFacebookLogin({
+    appId: config?.appId,
+    apiVersion: config?.apiVersion,
+    onSuccess: (code) => {
+      setSdkError(null);
+      login.mutate(code, {
         onSuccess: () => navigate('/dashboard', { replace: true }),
-      },
-    );
-  }, [phone, otp, verifyOTP, navigate]);
+      });
+    },
+    onError: (message) => {
+      setSdkError(message);
+    },
+  });
+
+  const busy = login.isPending || launching;
+  const error = sdkError ?? (login.error instanceof Error ? login.error.message : null);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0f0f0f] p-4">
@@ -93,141 +75,48 @@ export default function LoginPage(): React.JSX.Element {
               </svg>
             </motion.div>
             <h1 className="text-2xl font-semibold text-[#f0f0f0]">Log in to Flowdesk</h1>
-            <p className="text-sm text-[#888]">We will send a code to your WhatsApp</p>
+            <p className="text-sm text-[#888]">One tap with the Facebook account you used to sign up</p>
           </div>
 
-          <AnimatePresence mode="wait">
-            {step === 'phone' && (
-              <motion.div
-                key="phone"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                transition={{ duration: 0.3 }}
-                className="space-y-4"
-              >
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-[#f0f0f0]">
-                    Phone Number
-                  </label>
-                  <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#555]" />
-                    <input
-                      type="tel"
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="0244 123 456"
-                      className="w-full rounded-xl border border-[#2a2a2a] bg-[#0f0f0f]/60 py-2.5 pl-10 pr-4 text-sm text-[#f0f0f0] placeholder:text-[#555] focus:border-[#3d6b52] focus:outline-none transition-colors"
-                    />
-                  </div>
-                  <p className="mt-1.5 text-xs text-[#555]">
-                    Use the number linked to your WhatsApp Business
-                  </p>
-                </div>
-
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleRequestOTP}
-                  disabled={requestOTP.isPending || phone.replace(/\D/g, '').length < 9}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3d6b52] to-[#4d8a68] py-2.5 text-sm font-semibold text-white transition-all hover:shadow-[0_0_20px_rgba(61,107,82,0.3)] disabled:opacity-50 disabled:hover:shadow-none"
-                >
-                  {requestOTP.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      Send code <ArrowRight className="h-4 w-4" />
-                    </>
-                  )}
-                </motion.button>
-
-                {requestOTP.isError && (
-                  <motion.p
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-center text-sm text-[#ef4444]"
-                  >
-                    {requestOTP.error instanceof Error ? requestOTP.error.message : 'Could not send code. Try again.'}
-                  </motion.p>
-                )}
-              </motion.div>
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => void launchLogin()}
+            disabled={busy || !enabled}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1877F2] py-3 text-sm font-semibold text-white transition-all hover:bg-[#166fe5] disabled:opacity-50 disabled:hover:shadow-none"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+              </svg>
             )}
+            Sign in with Facebook
+          </motion.button>
 
-            {step === 'otp' && (
-              <motion.div
-                key="otp"
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                transition={{ duration: 0.3 }}
-                className="space-y-4"
-              >
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-[#f0f0f0]">
-                    Enter the code
-                  </label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#555]" />
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      value={otp}
-                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-                      placeholder="123456"
-                      className="w-full rounded-xl border border-[#2a2a2a] bg-[#0f0f0f]/60 py-2.5 pl-10 pr-4 text-sm tracking-[0.5em] text-[#f0f0f0] placeholder:tracking-normal placeholder:text-[#555] focus:border-[#3d6b52] focus:outline-none transition-colors"
-                    />
-                  </div>
-                  <p className="mt-1.5 text-xs text-[#555]">
-                    Code expires in {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}
-                  </p>
-                </div>
+          {error && (
+            <motion.p
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 text-center text-sm text-[#ef4444]"
+            >
+              {error}
+            </motion.p>
+          )}
 
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleVerify}
-                  disabled={verifyOTP.isPending || otp.length !== 6}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3d6b52] to-[#4d8a68] py-2.5 text-sm font-semibold text-white transition-all hover:shadow-[0_0_20px_rgba(61,107,82,0.3)] disabled:opacity-50 disabled:hover:shadow-none"
-                >
-                  {verifyOTP.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>Log in</>
-                  )}
-                </motion.button>
-
-                <button
-                  onClick={() => setStep('phone')}
-                  className="w-full text-center text-sm text-[#555] transition-colors hover:text-[#888]"
-                >
-                  Back to phone number
-                </button>
-
-                {verifyOTP.isError && (
-                  <motion.p
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-center text-sm text-[#ef4444]"
-                  >
-                    {verifyOTP.error instanceof Error ? verifyOTP.error.message : 'Code did not match. Try again.'}
-                  </motion.p>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="mt-6 border-t border-[#2a2a2a] pt-6">
-            <p className="text-center text-sm text-[#555]">
-              New here?{' '}
-              <button
-                onClick={() => navigate('/register')}
-                className="font-medium text-[#4d8a68] transition-colors hover:text-[#3d6b52]"
-              >
-                Create an account
-              </button>
+          {!enabled && !error && (
+            <p className="mt-4 text-center text-xs text-[#555]">
+              Facebook Login is not configured. Set META_CONFIG_ID on the server to enable it.
             </p>
-          </div>
+          )}
+
+          <p className="mt-6 text-center text-sm text-[#666]">
+            Don&apos;t have an account?{' '}
+            <Link to="/register" className="font-medium text-[#4d8a68] hover:text-[#3d6b52]">
+              Connect your WhatsApp Business
+            </Link>
+          </p>
         </div>
       </motion.div>
     </div>

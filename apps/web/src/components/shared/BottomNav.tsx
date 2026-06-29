@@ -1,8 +1,20 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, ShoppingCart, Users, Wallet, MoreHorizontal, type LucideIcon } from 'lucide-react';
+import {
+  LayoutDashboard,
+  ShoppingCart,
+  Users,
+  Wallet,
+  MoreHorizontal,
+  Package,
+  MessageSquare,
+  UserCog,
+  Settings2,
+  type LucideIcon,
+} from 'lucide-react';
 import { getNavItemsForRole } from '@/config/navigation';
 import { getUserRole } from '@/hooks/useAuth';
+import { useBadges } from '@/hooks/useBadges';
 import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetBody, SheetClose } from '@/components/ui/Sheet';
 
 const bottomIconMap: Record<string, LucideIcon> = {
@@ -19,15 +31,6 @@ const moreIconMap: Record<string, LucideIcon> = {
   Settings2,
 };
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-import { Package, MessageSquare, UserCog, Settings2 } from 'lucide-react';
-/* eslint-enable @typescript-eslint/no-unsafe-assignment */
-
-const mockBadgeCounts = {
-  pendingOrders: 3,
-  reviewMessages: 1,
-};
-
 export default function BottomNav(): React.JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
@@ -36,14 +39,20 @@ export default function BottomNav(): React.JSX.Element {
   const visibleNavItems = getNavItemsForRole(role);
   const visibleMobileItems = visibleNavItems.filter((item) => item.mobile);
   const visibleMoreItems = visibleNavItems.filter((item) => !item.mobile);
+  const { data: badges } = useBadges();
 
   return (
     <>
       <nav className="fixed bottom-0 left-0 right-0 z-40 flex h-16 items-center justify-around border-t border-[var(--color-border)] bg-[var(--color-surface)] pb-[env(safe-area-inset-bottom)] md:hidden">
         {visibleMobileItems.map((item) => {
           const Icon = bottomIconMap[item.icon]!;
-          const isActive = location.pathname === item.path;
-          const badgeCount = item.badge ? mockBadgeCounts[item.badge] : 0;
+          const isActive = location.pathname.startsWith(item.path) || location.pathname === item.path;
+          const badgeCount =
+            item.badge === 'pendingOrders'
+              ? (badges?.pendingOrders ?? 0)
+              : item.badge === 'reviewMessages'
+              ? (badges?.reviewMessages ?? 0)
+              : 0;
 
           return (
             <button
@@ -60,9 +69,9 @@ export default function BottomNav(): React.JSX.Element {
               {badgeCount > 0 && (
                 <span className="absolute right-1 top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--color-danger)] px-1 text-[10px] font-bold text-white">
                   {badgeCount}
-                </span>
+               </span>
               )}
-            </button>
+           </button>
           );
         })}
 
@@ -72,17 +81,17 @@ export default function BottomNav(): React.JSX.Element {
         >
           <MoreHorizontal className="h-5 w-5" />
           <span>More</span>
-        </button>
-      </nav>
+       </button>
+     </nav>
 
       <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
         <SheetTrigger asChild>
           <span className="hidden" />
-        </SheetTrigger>
+       </SheetTrigger>
         <SheetContent side="bottom">
           <SheetHeader>
             <SheetTitle>More</SheetTitle>
-          </SheetHeader>
+         </SheetHeader>
           <SheetBody>
             <div className="space-y-1">
               {visibleMoreItems.map((item) => {
@@ -101,14 +110,14 @@ export default function BottomNav(): React.JSX.Element {
                     >
                       <Icon className="h-[18px] w-[18px] shrink-0" />
                       <span>{item.label}</span>
-                    </button>
-                  </SheetClose>
+                   </button>
+                 </SheetClose>
                 );
               })}
-            </div>
-          </SheetBody>
-        </SheetContent>
-      </Sheet>
+           </div>
+         </SheetBody>
+       </SheetContent>
+     </Sheet>
     </>
   );
 }

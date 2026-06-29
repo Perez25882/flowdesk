@@ -113,3 +113,55 @@ export async function updateCustomer(
   });
   return customer as CustomerWithStats;
 }
+
+export async function findCustomerByPhone(
+  businessId: string,
+  waNumber: string,
+): Promise<CustomerWithStats | null> {
+  const customer = await prisma.customer.findFirst({
+    where: { businessId, waNumber, deletedAt: null },
+  });
+  return customer as CustomerWithStats | null;
+}
+
+export async function upsertCustomerByPhone(
+  businessId: string,
+  waNumber: string,
+  displayName: string | null,
+): Promise<CustomerWithStats> {
+  // Idempotent: lookup first (unique on [businessId, waNumber]), then create.
+  // The unique constraint combined with the deletedAt filter rules out races because
+  // we'd hit P2002 if a parallel transaction beat us to insert — we then re-read.
+  const existing = await prisma.customer.findFirst({
+    where: { businessId, waNumber, deletedAt: null },
+  });
+  if (existing) {
+    if (displayName && !existing.name) {
+      const updated = await prisma.customer.update({
+        where: { id: existing.id },
+        data: { name: displayName },
+      });
+      return updated as CustomerWithStats;
+    }
+    return existing as CustomerWithStats;
+  }
+
+  try {
+    const created = await prisma.customer.create({
+      data: {
+        businessId,
+        waNumber,
+        ...(displayName ? { name: displayName } : {}),
+      },
+    });
+    return created as CustomerWithStats;
+  } catch (e: unknown) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      const racer = await prisma.customer.findFirst({
+        where: { businessId, waNumber, deletedAt: null },
+      });
+      if (racer) return racer as CustomerWithStats;
+    }
+    throw e;
+  }
+}

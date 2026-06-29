@@ -43,19 +43,15 @@ function normalizeText(input: string): string {
 
 function matchesPattern(text: string, pattern: string | RegExp): boolean {
   if (typeof pattern === 'string') {
-    return text.includes(pattern);
+    // Use a negative lookaround so a pattern only matches when it is not
+    // part of a larger ASCII word. This prevents substring overlaps like
+    // "i want" also matching "i wan" while still allowing non-ASCII
+    // prefixes/suffixes (e.g., Twi/Pidgin phrases) to match correctly.
+    const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'i');
+    return regex.test(text);
   }
   return pattern.test(text);
-}
-
-function getMatchedPatterns(text: string, patterns: (string | RegExp)[]): string[] {
-  const matched: string[] = [];
-  for (const pattern of patterns) {
-    if (matchesPattern(text, pattern)) {
-      matched.push(typeof pattern === 'string' ? pattern : pattern.source);
-    }
-  }
-  return matched;
 }
 
 const INTENT_RULES: IntentRules[] = [
@@ -202,7 +198,7 @@ const INTENT_RULES: IntentRules[] = [
         weight: 0.6,
       },
       {
-        patterns: [/\bFD-\d{3,}\b/],
+        patterns: [/\bFD-\d{3,}\b/i],
         weight: 0.5,
       },
     ],
@@ -271,22 +267,31 @@ interface IntentScore {
   matchedPatterns: string[];
 }
 
+/**
+ * Score an intent using an additive-with-saturation model: every matched
+ * pattern contributes its rule's weight, the total is capped at 1.0, and
+ * an ambiguity penalty is applied when the top two intents are close.
+ *
+ * This makes confidence proportional to the number of independent signals
+ * in the message, while keeping scores bounded and deterministic.
+ */
 function scoreIntent(text: string, rules: IntentRules): IntentScore {
   let score = 0;
   const matchedPatterns: string[] = [];
 
   for (const rule of rules.rules) {
-    const matched = getMatchedPatterns(text, rule.patterns);
-    if (matched.length > 0) {
-      score += rule.weight;
-      matchedPatterns.push(...matched);
+    for (const pattern of rule.patterns) {
+      if (matchesPattern(text, pattern)) {
+        score += rule.weight;
+        matchedPatterns.push(typeof pattern === 'string' ? pattern : pattern.source);
+      }
     }
   }
 
   return {
     intent: rules.intent,
     score: Math.min(score, 1.0),
-    matchedPatterns,
+    matchedPatterns: [...new Set(matchedPatterns)],
   };
 }
 

@@ -7,31 +7,56 @@ import { formatCurrency } from '@/lib/utils';
 import OrderCard from './OrderCard';
 import EmptyState from '@/components/shared/EmptyState';
 
-const COLUMNS: OrderStatus[] = ['PENDING', 'CONFIRMED', 'PROCESSING', 'FULFILLED'];
+const COLUMNS: OrderStatus[] = ['PENDING', 'CONFIRMED', 'PROCESSING', 'FULFILLED', 'CANCELLED'];
 
-function OrderCardDraggable({ order, onClick }: { order: OrderWithRelations; onClick: (o: OrderWithRelations) => void }): React.JSX.Element {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: order.id, data: { order } });
+/**
+ * CANCELLED is a terminal state — orders there shouldn't be draggable.
+ * Other OrderStatuses render the draggable wrapper.
+ */
+function OrderCardDraggable({
+  order,
+  onClick,
+  draggable,
+}: {
+  order: OrderWithRelations;
+  onClick: (o: OrderWithRelations) => void;
+  draggable: boolean;
+}): React.JSX.Element {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: order.id,
+    data: { order },
+    disabled: !draggable,
+  });
 
   const style = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, opacity: isDragging ? 0.5 : 1 }
     : { opacity: isDragging ? 0.5 : 1 };
 
   return (
-    <div ref={setNodeRef} style={style} {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing">
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...(draggable ? { ...listeners, ...attributes } : {})}
+      className={draggable ? 'cursor-grab active:cursor-grabbing' : ''}
+    >
       <OrderCard order={order} onClick={onClick} />
-    </div>
+  </div>
   );
 }
 
 function KanbanColumn({
   status,
   onSelectOrder,
+  isDropTarget,
+  staffId,
 }: {
   status: OrderStatus;
   onSelectOrder: (order: OrderWithRelations) => void;
+  isDropTarget: boolean;
+  staffId: string;
 }): React.JSX.Element {
-  const { data: orders, isLoading, error } = useOrdersByStatus(status);
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const { data: orders, isLoading, error } = useOrdersByStatus(status, staffId || undefined);
+  const { setNodeRef, isOver } = useDroppable({ id: status, disabled: !isDropTarget });
 
   const { count, totalValue } = useMemo(() => {
     const list = orders ?? [];
@@ -46,27 +71,37 @@ function KanbanColumn({
     return [...orders].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [orders]);
 
+  const isCancelled = status === 'CANCELLED';
+
   return (
     <div
-      ref={setNodeRef}
+      ref={isDropTarget ? setNodeRef : undefined}
       className={`flex flex-col rounded-[var(--radius-md)] border ${
-        isOver ? 'border-[var(--color-primary)] bg-[var(--color-primary-muted)]' : 'border-[var(--color-border)] bg-[var(--color-surface)]'
+        isOver
+          ? 'border-[var(--color-primary)] bg-[var(--color-primary-muted)]'
+          : isCancelled
+          ? 'border-[var(--color-border)] bg-[var(--color-surface)] opacity-90'
+          : 'border-[var(--color-border)] bg-[var(--color-surface)]'
       } transition-colors`}
       style={{ maxHeight: 'calc(100vh - 180px)' }}
     >
       <div className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-primary)]">
+          <span
+            className={`text-xs font-semibold uppercase tracking-wider ${
+              isCancelled ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-primary)]'
+            }`}
+          >
             {status}
-          </span>
+        </span>
           <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--color-surface-elevated)] px-1.5 text-[11px] font-medium text-[var(--color-text-secondary)]">
             {count}
-          </span>
-        </div>
-        <span className="font-mono text-xs text-[var(--color-text-muted)]">
-          {formatCurrency(totalValue)}
         </span>
       </div>
+        <span className="font-mono text-xs text-[var(--color-text-muted)]">
+          {formatCurrency(totalValue)}
+      </span>
+    </div>
 
       <div className="flex-1 space-y-2 overflow-y-auto p-2">
         {isLoading && (
@@ -83,7 +118,7 @@ function KanbanColumn({
         {error && (
           <div className="py-4 text-center text-sm text-[var(--color-danger)]">
             Failed to load orders
-          </div>
+        </div>
         )}
 
         {!isLoading && !error && sortedOrders.length === 0 && (
@@ -94,19 +129,21 @@ function KanbanColumn({
           />
         )}
 
-        {!isLoading && !error && sortedOrders.map((order) => (
-          <OrderCardDraggable key={order.id} order={order} onClick={onSelectOrder} />
-        ))}
-      </div>
+        {!isLoading && !error &&
+          sortedOrders.map((order) => (
+            <OrderCardDraggable key={order.id} order={order} onClick={onSelectOrder} draggable={!isCancelled} />
+          ))}
     </div>
+  </div>
   );
 }
 
 interface OrderBoardProps {
   onSelectOrder: (order: OrderWithRelations) => void;
+  staffId: string;
 }
 
-export default function OrderBoard({ onSelectOrder }: OrderBoardProps): React.JSX.Element {
+export default function OrderBoard({ onSelectOrder, staffId }: OrderBoardProps): React.JSX.Element {
   const updateStatus = useUpdateOrderStatus();
 
   const handleDragEnd = (event: DragEndEvent): void => {
@@ -118,16 +155,24 @@ export default function OrderBoard({ onSelectOrder }: OrderBoardProps): React.JS
 
     if (active.data.current?.order?.status === newStatus) return;
 
-    updateStatus.mutate({ orderId, data: { status: newStatus } });
+    // Drop on CANCELLED = intentional cancel. Pass a note so the history records a reason.
+    const note = newStatus === 'CANCELLED' ? 'Cancelled via Kanban' : undefined;
+    updateStatus.mutate({ orderId, data: { status: newStatus, ...(note ? { note } : {}) } });
   };
 
   return (
     <DndContext onDragEnd={handleDragEnd}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {COLUMNS.map((status) => (
-          <KanbanColumn key={status} status={status} onSelectOrder={onSelectOrder} />
+          <KanbanColumn
+            key={status}
+            status={status}
+            onSelectOrder={onSelectOrder}
+            isDropTarget={status !== 'CANCELLED'}
+            staffId={staffId}
+          />
         ))}
-      </div>
-    </DndContext>
+     </div>
+   </DndContext>
   );
 }

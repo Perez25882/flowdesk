@@ -110,7 +110,9 @@ model Business {
 
   // Owner info
   ownerName String
-  phone     String @unique // Normalized: 233XXXXXXXXX — also the login identifier
+  email     String? // From Meta /me — optional for Paystack/billing records
+  phone     String? // Normalized: 233XXXXXXXXX — may be derived from connected WA number
+  metaUserId String? @unique // Meta user id from /me — owner identity for login
 
   // WhatsApp Business API connection
   waPhoneNumberId   String?  @unique // Meta's phone number ID for this WABA

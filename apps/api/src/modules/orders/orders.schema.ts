@@ -15,12 +15,19 @@ export const CreateOrderItemSchema = z.object({
   unitPrice: z.coerce.number().nonnegative().default(0),
 });
 
-export const CreateOrderSchema = z.object({
-  customerId: z.string().min(1),
-  rawMessage: z.string().min(1),
-  items: z.array(CreateOrderItemSchema).min(1),
-  notes: z.string().optional(),
-});
+export const CreateOrderSchema = z
+  .object({
+    customerId: z.string().min(1).optional(),
+    customerPhone: z.string().min(1).optional(),
+    customerName: z.string().optional(),
+    rawMessage: z.string().min(1),
+    items: z.array(CreateOrderItemSchema).min(1),
+    notes: z.string().optional(),
+  })
+  .refine((data) => data.customerId || data.customerPhone, {
+    message: 'Either customerId or customerPhone is required',
+    path: ['customerId'],
+  });
 
 export const UpdateOrderStatusSchema = z.object({
   status: OrderStatusSchema,

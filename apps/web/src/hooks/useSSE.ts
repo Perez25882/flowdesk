@@ -53,6 +53,8 @@ function connect(): EventSource | null {
 
   es.onerror = () => {
     es.close();
+    globalEventSource = null;
+    sseEventBus.emit('sse.disconnected', null);
     scheduleReconnect();
   };
 

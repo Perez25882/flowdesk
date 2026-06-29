@@ -1,34 +1,10 @@
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Store, User, Phone, ArrowRight, Loader2, CheckCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Loader2, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-
-interface RegisterFormData {
-  ownerName: string;
-  businessName: string;
-  phone: string;
-}
-
-function normalizePhone(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('0')) return `233${digits.slice(1)}`;
-  if (digits.startsWith('233')) return digits;
-  return `233${digits}`;
-}
-
-async function registerBusiness(data: RegisterFormData): Promise<{ id: string; trialEndsAt: string }> {
-  const res = await fetch('/api/v1/auth/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Registration failed' }));
-    throw new Error(err.error ?? 'Registration failed');
-  }
-  const payload = await res.json();
-  return payload.data;
-}
+import { useMetaSignup, isAuthenticated } from '@/hooks/useAuth';
+import { useFacebookSignup } from '@/hooks/useFacebookSignup';
+import { useWhatsAppConfig } from '@/hooks/useWhatsApp';
 
 function FloatingOrb({ size, x, y, delay, color }: { size: number; x: string; y: string; delay: number; color: string }): React.JSX.Element {
   return (
@@ -43,45 +19,34 @@ function FloatingOrb({ size, x, y, delay, color }: { size: number; x: string; y:
 
 export default function RegisterPage(): React.JSX.Element {
   const navigate = useNavigate();
-  const [form, setForm] = useState<RegisterFormData>({ ownerName: '', businessName: '', phone: '' });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const signup = useMetaSignup();
+  const { data: config } = useWhatsAppConfig();
+  const enabled = Boolean(config?.embeddedSignupEnabled);
+  const [sdkError, setSdkError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  const handleChange = (field: keyof RegisterFormData, value: string) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    setError(null);
-  };
+  useEffect(() => {
+    if (isAuthenticated()) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [navigate]);
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!form.ownerName.trim() || !form.businessName.trim() || !form.phone.trim()) {
-        setError('Fill in all fields');
-        return;
-      }
-      const normalized = normalizePhone(form.phone);
-      if (normalized.length < 12) {
-        setError('That does not look like a valid Ghana number');
-        return;
-      }
-
-      setLoading(true);
-      try {
-        await registerBusiness({
-          ownerName: form.ownerName.trim(),
-          businessName: form.businessName.trim(),
-          phone: normalized,
-        });
-        setSuccess(true);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Something went wrong. Try again.');
-      } finally {
-        setLoading(false);
-      }
+  const { launch: launchSignup, isLoading: launching } = useFacebookSignup({
+    config,
+    onSuccess: (result) => {
+      setSdkError(null);
+      signup.mutate(result, {
+        onSuccess: () => {
+          setSuccess(true);
+          navigate('/dashboard', { replace: true });
+        },
+      });
     },
-    [form],
-  );
+    onError: (message) => setSdkError(message),
+  });
+
+  const busy = signup.isPending || launching;
+  const error = sdkError ?? (signup.error instanceof Error ? signup.error.message : null);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#0f0f0f] p-4">
@@ -117,17 +82,9 @@ export default function RegisterPage(): React.JSX.Element {
                 <div>
                   <h2 className="text-2xl font-semibold text-[#f0f0f0]">You are all set</h2>
                   <p className="mt-2 text-sm text-[#888]">
-                    Your account is ready. Log in with your phone number to get started.
+                    Your WhatsApp Business is connected and your dashboard is ready.
                   </p>
                 </div>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => navigate('/login')}
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3d6b52] to-[#4d8a68] py-2.5 text-sm font-semibold text-white transition-all hover:shadow-[0_0_20px_rgba(61,107,82,0.3)]"
-                >
-                  Log in <ArrowRight className="h-4 w-4" />
-                </motion.button>
               </motion.div>
             ) : (
               <motion.div
@@ -143,96 +100,56 @@ export default function RegisterPage(): React.JSX.Element {
                     transition={{ duration: 0.5 }}
                     className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[#2a2a2a] bg-gradient-to-br from-[#3d6b52]/20 to-[#4d8a68]/10 backdrop-blur-sm"
                   >
-                    <Store className="h-7 w-7 text-[#4d8a68]" />
+                    <svg width="28" height="28" viewBox="0 0 360 362" fill="none">
+                      <path
+                        fill="#25D366"
+                        d="M307.546 52.566C273.709 18.684 228.706.017 180.756 0 81.951 0 1.538 80.404 1.504 179.235c-.017 31.594 8.242 62.432 23.928 89.609L0 361.736l95.024-24.925c26.179 14.285 55.659 21.805 85.655 21.814h.077c98.788 0 179.21-80.413 179.244-179.244.017-47.898-18.608-92.926-52.454-126.807v-.008Zm-126.79 275.788h-.06c-26.73-.008-52.952-7.194-75.831-20.765l-5.44-3.231-56.391 14.791 15.05-54.981-3.542-5.638c-14.912-23.721-22.793-51.139-22.776-79.286.035-82.14 66.867-148.973 149.051-148.973 39.793.017 77.198 15.53 105.328 43.695 28.131 28.157 43.61 65.596 43.593 105.398-.035 82.149-66.867 148.982-148.982 148.982v.008Z"
+                      />
+                    </svg>
                   </motion.div>
-                  <h1 className="text-2xl font-semibold text-[#f0f0f0]">Set up your business</h1>
-                  <p className="text-sm text-[#888]">14-day free trial. No card needed.</p>
+                  <h1 className="text-2xl font-semibold text-[#f0f0f0]">Connect your WhatsApp Business</h1>
+                  <p className="text-sm text-[#888]">14-day free trial. No card needed. One Facebook login creates your account and connects your number.</p>
                 </div>
 
-                <form onSubmit={handleSubmit} className="space-y-4">
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-[#f0f0f0]">Your name</label>
-                    <div className="relative">
-                      <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#555]" />
-                      <input
-                        type="text"
-                        value={form.ownerName}
-                        onChange={(e) => handleChange('ownerName', e.target.value)}
-                        placeholder="Ama Mensah"
-                        className="w-full rounded-xl border border-[#2a2a2a] bg-[#0f0f0f]/60 py-2.5 pl-10 pr-4 text-sm text-[#f0f0f0] placeholder:text-[#555] focus:border-[#3d6b52] focus:outline-none transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-[#f0f0f0]">Business name</label>
-                    <div className="relative">
-                      <Store className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#555]" />
-                      <input
-                        type="text"
-                        value={form.businessName}
-                        onChange={(e) => handleChange('businessName', e.target.value)}
-                        placeholder="Ama's Grocery"
-                        className="w-full rounded-xl border border-[#2a2a2a] bg-[#0f0f0f]/60 py-2.5 pl-10 pr-4 text-sm text-[#f0f0f0] placeholder:text-[#555] focus:border-[#3d6b52] focus:outline-none transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-[#f0f0f0]">WhatsApp number</label>
-                    <div className="relative">
-                      <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#555]" />
-                      <input
-                        type="tel"
-                        value={form.phone}
-                        onChange={(e) => handleChange('phone', e.target.value)}
-                        placeholder="0244 123 456"
-                        className="w-full rounded-xl border border-[#2a2a2a] bg-[#0f0f0f]/60 py-2.5 pl-10 pr-4 text-sm text-[#f0f0f0] placeholder:text-[#555] focus:border-[#3d6b52] focus:outline-none transition-colors"
-                      />
-                    </div>
-                    <p className="mt-1.5 text-xs text-[#555]">
-                      The number connected to your WhatsApp Business account
-                    </p>
-                  </div>
-
-                  {error && (
-                    <motion.p
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="text-sm text-[#ef4444]"
-                    >
-                      {error}
-                    </motion.p>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => void launchSignup()}
+                  disabled={busy || !enabled}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3d6b52] to-[#4d8a68] py-3 text-sm font-semibold text-white transition-all hover:shadow-[0_0_20px_rgba(61,107,82,0.3)] disabled:opacity-50 disabled:hover:shadow-none"
+                >
+                  {busy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+                    </svg>
                   )}
+                  Continue with Facebook
+                </motion.button>
 
-                  <motion.button
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    type="submit"
-                    disabled={loading}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#3d6b52] to-[#4d8a68] py-2.5 text-sm font-semibold text-white transition-all hover:shadow-[0_0_20px_rgba(61,107,82,0.3)] disabled:opacity-50 disabled:hover:shadow-none"
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mt-4 text-center text-sm text-[#ef4444]"
                   >
-                    {loading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <>
-                        Create account <ArrowRight className="h-4 w-4" />
-                      </>
-                    )}
-                  </motion.button>
-                </form>
+                    {error}
+                  </motion.p>
+                )}
 
-                <div className="mt-6 border-t border-[#2a2a2a] pt-6">
-                  <p className="text-center text-sm text-[#555]">
-                    Already have an account?{' '}
-                    <button
-                      onClick={() => navigate('/login')}
-                      className="font-medium text-[#4d8a68] transition-colors hover:text-[#3d6b52]"
-                    >
-                      Log in
-                    </button>
+                {!enabled && !error && (
+                  <p className="mt-4 text-center text-xs text-[#555]">
+                    Embedded Signup is not configured. Set META_CONFIG_ID on the server to enable it.
                   </p>
-                </div>
+                )}
+
+                <p className="mt-6 text-center text-sm text-[#666]">
+                  Already have an account?{' '}
+                  <Link to="/login" className="font-medium text-[#4d8a68] hover:text-[#3d6b52]">
+                    Sign in
+                  </Link>
+                </p>
               </motion.div>
             )}
           </AnimatePresence>

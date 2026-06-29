@@ -1,22 +1,33 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { OrderWithRelations, OrderStatus } from '@/types/order';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 import OrderBoard from '@/components/orders/OrderBoard';
 import OrderDetailDrawer from '@/components/orders/OrderDetailDrawer';
 import ManualOrderModal from '@/components/orders/ManualOrderModal';
 import { useOrdersByStatus } from '@/hooks/useOrders';
+import { useStaff } from '@/hooks/useStaff';
 import OrderCard from '@/components/orders/OrderCard';
 import EmptyState from '@/components/shared/EmptyState';
 import { ClipboardList } from 'lucide-react';
 
-const TABS: OrderStatus[] = ['PENDING', 'CONFIRMED', 'PROCESSING', 'FULFILLED'];
+const TABS: OrderStatus[] = ['PENDING', 'CONFIRMED', 'PROCESSING', 'FULFILLED', 'CANCELLED'];
 
-function MobileOrderList({ status }: { status: OrderStatus }): React.JSX.Element {
-  const { data: orders, isLoading } = useOrdersByStatus(status);
+function MobileOrderList({
+  status,
+  staffId,
+  onSelectOrder,
+}: {
+  status: OrderStatus;
+  staffId: string;
+  onSelectOrder: (order: OrderWithRelations) => void;
+}): React.JSX.Element {
+  const { data: orders, isLoading } = useOrdersByStatus(status, staffId || undefined);
 
-  const sorted = [...(orders ?? [])].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
+  const sorted = useMemo(() => {
+    return [...(orders ?? [])].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  }, [orders]);
 
   if (isLoading) {
     return (
@@ -24,7 +35,7 @@ function MobileOrderList({ status }: { status: OrderStatus }): React.JSX.Element
         {[1, 2, 3].map((i) => (
           <div key={i} className="h-[100px] animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />
         ))}
-      </div>
+     </div>
     );
   }
 
@@ -41,16 +52,18 @@ function MobileOrderList({ status }: { status: OrderStatus }): React.JSX.Element
   return (
     <div className="space-y-3">
       {sorted.map((order) => (
-        <OrderCard key={order.id} order={order} onClick={() => { /* handled by parent */ }} />
+        <OrderCard key={order.id} order={order} onClick={() => onSelectOrder(order)} />
       ))}
-    </div>
+   </div>
   );
 }
 
 export default function OrdersPage(): React.JSX.Element {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<OrderStatus>('PENDING');
+  const [staffId, setStaffId] = useState('');
 
+  const { data: staffList = [] } = useStaff();
   useRealtimeOrders();
 
   const handleSelectOrder = (order: OrderWithRelations): void => {
@@ -60,26 +73,26 @@ export default function OrdersPage(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-4">
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            placeholder="Search by ref or customer..."
-            className="w-[200px] rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-          />
-          <select className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none">
-            <option value="">All staff</option>
-            <option value="s1">Kofi</option>
-            <option value="s2">Ama</option>
-          </select>
-        </div>
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <select
+          value={staffId}
+          onChange={(e) => setStaffId(e.target.value)}
+          className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
+        >
+          <option value="">All staff</option>
+          {staffList.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} — {s.role}
+           </option>
+          ))}
+       </select>
         <ManualOrderModal />
-      </div>
+     </div>
 
       {/* Desktop Kanban */}
       <div className="hidden md:block">
-        <OrderBoard onSelectOrder={handleSelectOrder} />
-      </div>
+        <OrderBoard onSelectOrder={handleSelectOrder} staffId={staffId} />
+     </div>
 
       {/* Mobile Tabs */}
       <div className="md:hidden">
@@ -95,15 +108,15 @@ export default function OrdersPage(): React.JSX.Element {
               }`}
             >
               {tab}
-            </button>
+           </button>
           ))}
-        </div>
+       </div>
         <div className="mt-3">
-          <MobileOrderList status={activeTab} />
-        </div>
-      </div>
+          <MobileOrderList status={activeTab} staffId={staffId} onSelectOrder={handleSelectOrder} />
+       </div>
+     </div>
 
       <OrderDetailDrawer orderId={selectedOrderId} onClose={() => setSelectedOrderId(null)} />
-    </div>
+   </div>
   );
 }

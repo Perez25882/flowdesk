@@ -19,6 +19,11 @@ const envSchema = z.object({
   REDIS_URL: z.string().url('REDIS_URL must be a valid connection URL'),
   JWT_SECRET: z.string().min(REQUIRED_SECRET_MIN_LENGTH),
   JWT_REFRESH_SECRET: z.string().min(REQUIRED_SECRET_MIN_LENGTH),
+  // 32-byte key encoded as 64 hex chars — used for AES-256-GCM encryption of
+  // secrets at rest (per-business WhatsApp access tokens).
+  ENCRYPTION_KEY: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes)'),
   META_APP_ID: z.string().min(1),
   META_APP_SECRET: z.string().min(REQUIRED_SECRET_MIN_LENGTH),
   META_VERIFY_TOKEN: z.string().min(1),
@@ -26,7 +31,15 @@ const envSchema = z.object({
   META_API_VERSION: z.string().regex(/^v\d+\.\d+$/, 'META_API_VERSION must look like v20.0'),
   META_PHONE_NUMBER_ID: z.string().min(1),
   META_ACCESS_TOKEN: z.string().min(1),
+  // Meta Embedded Signup configuration id (from the WhatsApp Embedded Signup
+  // flow). Optional — only needed for self-serve business onboarding.
+  META_CONFIG_ID: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().min(1),
+  // AI provider selection: 'anthropic' (default) or 'nvidia'.
+  // For local dev testing you can switch to NVIDIA NIM without changing code.
+  AI_PROVIDER: z.enum(['anthropic', 'nvidia']).default('anthropic'),
+  NVIDIA_API_KEY: z.string().optional(),
+  NVIDIA_MODEL: z.string().min(1).default('meta/llama-3.1-8b-instruct'),
   AWS_ACCESS_KEY_ID: z.string().min(1),
   AWS_SECRET_ACCESS_KEY: z.string().min(1),
   AWS_REGION: z.string().min(1),

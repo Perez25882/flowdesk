@@ -3,12 +3,14 @@ import { ClassificationSource } from '@flowdesk/shared';
 import { env } from '../../config/env.js';
 import { classifyIntent } from './rule-engine.js';
 import { ClaudeHaikuClassifier } from './haiku-classifier.js';
+import { NvidiaClassifier } from './nvidia-classifier.js';
 import type { AiClassifier } from './ai-classifier.js';
 
 const HAIKU_CONFIDENCE_THRESHOLD = env.HAIKU_CONFIDENCE_THRESHOLD;
 const HAIKU_FALLBACK_ENABLED = env.HAIKU_FALLBACK_ENABLED;
 
-const aiClassifier: AiClassifier = new ClaudeHaikuClassifier();
+const aiClassifier: AiClassifier =
+  env.AI_PROVIDER === 'nvidia' ? new NvidiaClassifier() : new ClaudeHaikuClassifier();
 
 function toClassificationResult(
   classification: IntentClassification,

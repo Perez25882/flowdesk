@@ -1,5 +1,3 @@
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   ShoppingCart,
   Clock,
@@ -16,23 +14,11 @@ import { usePayments } from '@/hooks/usePayments';
 import { useMessages } from '@/hooks/useMessages';
 import { useLowStockProducts } from '@/hooks/useProducts';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
-import { isAuthenticated } from '@/hooks/useAuth';
 import StatCard from '@/components/shared/StatCard';
 import EmptyState from '@/components/shared/EmptyState';
 import { formatCurrency, timeAgo } from '@/lib/utils';
 
-function useAuthGuard(): boolean {
-  const navigate = useNavigate();
-  useEffect(() => {
-    if (!isAuthenticated()) {
-      navigate('/login', { replace: true });
-    }
-  }, [navigate]);
-  return isAuthenticated();
-}
-
 export default function DashboardPage(): React.JSX.Element {
-  const authed = useAuthGuard();
   const { data: pendingOrders, isLoading: pendingLoading } = useOrdersByStatus('PENDING');
   const { data: stats } = useOrderStats('today');
   const { data: customers } = useCustomers(undefined, undefined, true);
@@ -41,14 +27,6 @@ export default function DashboardPage(): React.JSX.Element {
   const { data: lowStockProducts } = useLowStockProducts();
 
   useRealtimeOrders();
-
-  if (!authed) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--color-primary)] border-t-transparent" />
-      </div>
-    );
-  }
 
   const pendingCount = stats?.byStatus?.PENDING ?? pendingOrders?.length ?? 0;
   const pendingValue = pendingOrders?.reduce((sum, o) => sum + (o.totalAmount ?? 0), 0) ?? 0;
@@ -91,20 +69,20 @@ export default function DashboardPage(): React.JSX.Element {
           icon={MessageSquareWarning}
           variant="danger"
         />
-      </div>
+     </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Live Order Feed */}
-        <div className="lg:col-span-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 lg:col-span-2">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             <Package className="h-4 w-4" /> Live Orders
-          </h3>
+         </h3>
           {pendingLoading && (
             <div className="space-y-2">
               {[1, 2, 3].map((i) => (
                 <div key={i} className="h-12 animate-pulse rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)]" />
               ))}
-            </div>
+           </div>
           )}
           {!pendingLoading && (!pendingOrders || pendingOrders.length === 0) && (
             <EmptyState icon={Package} title="No pending orders" description="New orders will appear here in real time." />
@@ -119,28 +97,28 @@ export default function DashboardPage(): React.JSX.Element {
                   <div className="flex items-center gap-3">
                     <span className="font-mono text-xs font-semibold text-[var(--color-primary-light)]">
                       {order.referenceNumber}
-                    </span>
+                   </span>
                     <span className="text-sm text-[var(--color-text-primary)]">
                       {order.customer.name ?? order.customer.waNumber}
-                    </span>
-                  </div>
+                   </span>
+                 </div>
                   <div className="flex items-center gap-3">
                     <span className="font-mono text-sm text-[var(--color-text-secondary)]">
                       {formatCurrency(order.totalAmount)}
-                    </span>
+                   </span>
                     <span className="text-xs text-[var(--color-text-muted)]">{timeAgo(order.createdAt)}</span>
-                  </div>
-                </div>
+                 </div>
+               </div>
               ))}
-            </div>
+           </div>
           )}
-        </div>
+       </div>
 
         {/* Outstanding Balances */}
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             <Users className="h-4 w-4" /> Outstanding Balances
-          </h3>
+         </h3>
           {topDebtors.length === 0 && (
             <EmptyState icon={Users} title="All caught up" description="No customers owe money right now." />
           )}
@@ -153,16 +131,16 @@ export default function DashboardPage(): React.JSX.Element {
                 >
                   <span className="text-sm text-[var(--color-text-primary)]">
                     {customer.name ?? customer.waNumber}
-                  </span>
+                 </span>
                   <span className="font-mono text-sm font-semibold text-[var(--color-danger)]">
                     {formatCurrency(customer.outstandingBalance)}
-                  </span>
-                </div>
+                 </span>
+               </div>
               ))}
-            </div>
+           </div>
           )}
-        </div>
-      </div>
+       </div>
+     </div>
 
       {/* Alerts Row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -170,7 +148,7 @@ export default function DashboardPage(): React.JSX.Element {
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             <MessageSquare className="h-4 w-4" /> Messages to Review
-          </h3>
+         </h3>
           {(!reviewMessages || reviewMessages.length === 0) && (
             <EmptyState icon={MessageSquare} title="No flagged messages" description="Messages requiring review will appear here." />
           )}
@@ -181,19 +159,19 @@ export default function DashboardPage(): React.JSX.Element {
                   <div>
                     <span className="text-sm text-[var(--color-text-primary)]">{msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown'}</span>
                     <p className="text-xs text-[var(--color-text-muted)]">{msg.body ?? '(no text)'}</p>
-                  </div>
+                 </div>
                   <span className="rounded-[var(--radius-sm)] bg-[var(--color-warning-muted)] px-1.5 py-0.5 text-[10px] text-[var(--color-warning)]">{msg.intent}</span>
-                </div>
+               </div>
               ))}
-            </div>
+           </div>
           )}
-        </div>
+       </div>
 
         {/* Stock Alerts */}
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             <AlertTriangle className="h-4 w-4" /> Low Stock Alerts
-          </h3>
+         </h3>
           {(!lowStockProducts || lowStockProducts.length === 0) && (
             <EmptyState icon={Package} title="Stock levels healthy" description="All products are above their reorder thresholds." />
           )}
@@ -204,13 +182,13 @@ export default function DashboardPage(): React.JSX.Element {
                   <span className="text-sm text-[var(--color-text-primary)]">{product.name}</span>
                   <span className="font-mono text-sm text-[var(--color-warning)]">
                     {product.stockQuantity} / {product.reorderThreshold}
-                  </span>
-                </div>
+                 </span>
+               </div>
               ))}
-            </div>
+           </div>
           )}
-        </div>
-      </div>
-    </div>
+       </div>
+     </div>
+   </div>
   );
 }

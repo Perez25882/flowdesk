@@ -75,7 +75,9 @@ export interface OrderStats {
 }
 
 export interface CreateOrderInput {
-  customerId: string;
+  customerId?: string;
+  customerPhone?: string;
+  customerName?: string;
   rawMessage: string;
   items: Array<{
     productId?: string;

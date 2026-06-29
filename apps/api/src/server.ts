@@ -5,12 +5,14 @@ import { logger } from './config/logger.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
 import { messageProcessorWorker } from './workers/message-processor.worker.js';
 import { intentClassifierWorker } from './workers/intent-classifier.worker.js';
+import { deadLetterWorker } from './workers/dead-letter.worker.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
 async function drainQueues(): Promise<void> {
   await messageProcessorWorker.close();
   await intentClassifierWorker.close();
+  await deadLetterWorker.close();
   logger.info('Queue drain completed');
 }
 

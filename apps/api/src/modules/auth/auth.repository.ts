@@ -5,10 +5,12 @@ import { prisma } from '../../config/database.js';
 export interface CreateBusinessInput {
   name: string;
   ownerName: string;
-  phone: string;
-  plan?: BusinessPlan;
+  phone?: string | undefined;
+  email?: string | undefined;
+  metaUserId: string;
+  plan?: BusinessPlan | undefined;
   trialEndsAt: Date;
-  paystackCustomerId?: string;
+  paystackCustomerId?: string | undefined;
 }
 
 export interface CreateSessionInput {
@@ -46,10 +48,12 @@ export async function createBusiness(data: CreateBusinessInput): Promise<Busines
   const businessData: Prisma.BusinessCreateInput = {
     name: data.name,
     ownerName: data.ownerName,
-    phone: data.phone,
+    metaUserId: data.metaUserId,
     plan: data.plan ?? 'STARTER',
     trialEndsAt: data.trialEndsAt,
   };
+  if (data.phone !== undefined) businessData.phone = data.phone;
+  if (data.email !== undefined) businessData.email = data.email;
   if (data.paystackCustomerId !== undefined) businessData.paystackCustomerId = data.paystackCustomerId;
 
   const business = await prisma.business.create({ data: businessData });
@@ -61,6 +65,15 @@ export async function findBusinessByPhone(phone: string): Promise<Business | nul
   return prisma.business.findFirst({
     where: {
       phone,
+      deletedAt: null,
+    },
+  });
+}
+
+export async function findBusinessByMetaUserId(metaUserId: string): Promise<Business | null> {
+  return prisma.business.findFirst({
+    where: {
+      metaUserId,
       deletedAt: null,
     },
   });

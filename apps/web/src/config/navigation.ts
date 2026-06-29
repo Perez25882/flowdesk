@@ -8,7 +8,7 @@ export interface NavItem {
 }
 
 export const navItems: NavItem[] = [
-  { label: 'Dashboard', path: '/', icon: 'LayoutDashboard', mobile: true },
+  { label: 'Dashboard', path: '/dashboard', icon: 'LayoutDashboard', mobile: true },
   { label: 'Orders', path: '/orders', icon: 'ShoppingCart', badge: 'pendingOrders', mobile: true },
   { label: 'Customers', path: '/customers', icon: 'Users', mobile: true, roles: ['owner', 'MANAGER', 'OPERATIONS'] },
   { label: 'Products', path: '/products', icon: 'Package', roles: ['owner', 'MANAGER', 'OPERATIONS'] },

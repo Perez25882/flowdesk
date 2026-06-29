@@ -129,9 +129,16 @@ export async function createApp(): Promise<FastifyInstance> {
 
   await app.register(helmet);
 
+  // Rate limiting: 100 req/min per IP for anonymous traffic, 1000 req/min per
+  // authenticated business (keyed by the bearer token so each business/session
+  // gets its own bucket). The auth token is opaque here — we only use it as a
+  // stable key, not for trust decisions.
+  // NOTE: uses the default in-memory store (correct for a single instance).
+  // For multi-instance horizontal scaling, back this with the shared Redis.
   await app.register(rateLimit, {
-    max: 100,
+    max: (request) => (request.headers.authorization ? 1000 : 100),
     timeWindow: '1 minute',
+    keyGenerator: (request) => request.headers.authorization ?? request.ip,
   });
 
   await app.register(sensible);
@@ -155,7 +162,10 @@ export async function createApp(): Promise<FastifyInstance> {
       await protectedApp.register((await import('./modules/customers/customers.route.js')).default);
       await protectedApp.register((await import('./modules/messages/messages.route.js')).default);
       await protectedApp.register((await import('./modules/settings/settings.route.js')).default);
+      await protectedApp.register((await import('./modules/whatsapp/whatsapp.route.js')).default);
       await protectedApp.register((await import('./modules/staff/staff.route.js')).default);
+      await protectedApp.register((await import('./modules/dashboard/dashboard.route.js')).default);
+      await protectedApp.register((await import('./modules/billing/billingCheckout.route.js')).default);
     });
   }, { prefix: '/api/v1' });
 

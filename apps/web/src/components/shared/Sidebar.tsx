@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -12,6 +13,8 @@ import {
 } from 'lucide-react';
 import { getNavItemsForRole, type NavItem } from '@/config/navigation';
 import { getUserRole } from '@/hooks/useAuth';
+import { useBadges } from '@/hooks/useBadges';
+import { useBusiness } from '@/hooks/useBusiness';
 
 const iconMap: Record<string, LucideIcon> = {
   LayoutDashboard,
@@ -28,38 +31,41 @@ interface SidebarProps {
   collapsed: boolean;
 }
 
-interface BadgeCounts {
-  pendingOrders: number;
-  reviewMessages: number;
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'FD';
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
 }
 
-const mockBadgeCounts: BadgeCounts = {
-  pendingOrders: 3,
-  reviewMessages: 1,
-};
-
 function BusinessProfile(): React.JSX.Element {
+  const { data: business, isLoading } = useBusiness();
+  const initials = business ? getInitials(business.name) : 'FD';
+  const planLabel = business?.plan
+    ? business.plan.charAt(0) + business.plan.slice(1).toLowerCase()
+    : '—';
+  const phone = business?.phone ?? '';
+  const name = business?.name ?? '';
+
   return (
     <div className="border-t border-[var(--color-border)] p-4">
       <div className="flex items-center gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-primary)] text-sm font-semibold text-white">
-          AM
-        </div>
+          {isLoading ? '…' : initials}
+       </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-[var(--color-text-primary)]">
-            Ama&apos;s Grocery
-          </p>
+            {isLoading ? 'Loading…' : name || 'Your business'}
+         </p>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center rounded-[var(--radius-sm)] bg-[var(--color-primary-muted)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-primary-light)]">
-              Starter
-            </span>
-          </div>
-        </div>
-      </div>
-      <p className="mt-2 truncate text-xs text-[var(--color-text-muted)]">
-        233244123456
-      </p>
-    </div>
+              {planLabel}
+           </span>
+         </div>
+       </div>
+     </div>
+      <p className="mt-2 truncate text-xs text-[var(--color-text-muted)]">{phone}</p>
+   </div>
   );
 }
 
@@ -68,14 +74,15 @@ function SidebarItem({
   isActive,
   collapsed,
   onClick,
+  badgeCount,
 }: {
   item: NavItem;
   isActive: boolean;
   collapsed: boolean;
   onClick: () => void;
+  badgeCount: number;
 }): React.JSX.Element {
   const Icon = iconMap[item.icon]!;
-  const badgeCount = item.badge ? mockBadgeCounts[item.badge] : 0;
 
   return (
     <button
@@ -96,11 +103,11 @@ function SidebarItem({
           {badgeCount > 0 && (
             <span className="ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--color-danger)] px-1.5 text-[11px] font-semibold text-white">
               {badgeCount}
-            </span>
+           </span>
           )}
         </>
       )}
-    </button>
+   </button>
   );
 }
 
@@ -109,6 +116,19 @@ export default function Sidebar({ collapsed }: SidebarProps): React.JSX.Element 
   const navigate = useNavigate();
   const role = getUserRole();
   const visibleNavItems = getNavItemsForRole(role);
+  const { data: badges } = useBadges();
+
+  // Map each nav badge key to the count returned by the backend.
+  // Memoize so SidebarItem doesn't re-render on unrelated query updates.
+  const badgeByItem = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const item of visibleNavItems) {
+      if (!item.badge) continue;
+      if (item.badge === 'pendingOrders') map[item.path] = badges?.pendingOrders ?? 0;
+      if (item.badge === 'reviewMessages') map[item.path] = badges?.reviewMessages ?? 0;
+    }
+    return map;
+  }, [visibleNavItems, badges]);
 
   return (
     <aside
@@ -120,28 +140,29 @@ export default function Sidebar({ collapsed }: SidebarProps): React.JSX.Element 
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-primary)]">
             <span className="text-xs font-bold text-white">FD</span>
-          </div>
+         </div>
           {!collapsed && (
             <span className="text-base font-semibold tracking-tight text-[var(--color-text-primary)]">
               Flowdesk
-            </span>
+           </span>
           )}
-        </div>
-      </div>
+       </div>
+     </div>
 
       <nav className="flex-1 space-y-0.5 p-2 overflow-y-auto">
         {visibleNavItems.map((item) => (
           <SidebarItem
             key={item.path}
             item={item}
-            isActive={location.pathname === item.path}
+            isActive={location.pathname.startsWith(item.path) && item.path !== '/dashboard' || location.pathname === item.path}
             collapsed={collapsed}
             onClick={() => navigate(item.path)}
+            badgeCount={badgeByItem[item.path] ?? 0}
           />
         ))}
-      </nav>
+     </nav>
 
       {!collapsed && <BusinessProfile />}
-    </aside>
+   </aside>
   );
 }

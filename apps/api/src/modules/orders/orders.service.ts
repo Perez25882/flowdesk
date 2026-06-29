@@ -21,6 +21,8 @@ import {
 } from '../products/products.repository.js';
 import type { CreateOrderInput as ManualOrderInput } from './orders.schema.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
+import { normalizeGhanaPhone } from '../auth/auth.service.js';
+import { upsertCustomerByPhone } from '../customers/customers.service.js';
 
 export async function createOrderFromMessage(
   message: ParsedIncomingMessage,
@@ -246,6 +248,19 @@ export async function createManualOrder(
   data: ManualOrderInput,
   businessId: string,
 ): Promise<OrderWithRelations> {
+  // Resolve customer. Two ways in:
+  //   1) customerId: an existing Customer row (e.g. picked from the dropdown)
+  //   2) customerPhone: a new walk-in phone number — we'll upsert a Customer.
+  // The schema guarantees one of these is present.
+  let resolvedCustomerId: string;
+  if (data.customerId) {
+    resolvedCustomerId = data.customerId;
+  } else {
+    const phone = normalizeGhanaPhone(data.customerPhone!);
+    const customer = await upsertCustomerByPhone(businessId, phone, data.customerName ?? null);
+    resolvedCustomerId = customer.id;
+  }
+
   const referenceNumber = await generateOrderReference(businessId);
 
   const orderItems = data.items.map((item) => {
@@ -259,7 +274,7 @@ export async function createManualOrder(
 
   const createData: CreateOrderInput = {
     businessId,
-    customerId: data.customerId,
+    customerId: resolvedCustomerId,
     referenceNumber,
     rawMessage: data.rawMessage,
     isManual: true,
@@ -282,6 +297,7 @@ export async function createManualOrder(
 export async function getOrdersByStatus(
   businessId: string,
   status: OrderStatus,
+  staffId?: string,
 ): Promise<OrderWithRelations[]> {
-  return findOrdersByStatus(businessId, status);
+  return findOrdersByStatus(businessId, status, staffId);
 }

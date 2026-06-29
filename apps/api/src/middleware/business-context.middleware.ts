@@ -20,12 +20,14 @@ export async function attachBusinessContext(
       name: true,
       ownerName: true,
       phone: true,
+      email: true,
       plan: true,
       trialEndsAt: true,
       suspendedAt: true,
       suspendReason: true,
       active: true,
       paystackSubCode: true,
+      paystackCustomerId: true,
     },
   });
 
@@ -58,11 +60,13 @@ export async function attachBusinessContext(
     name: business.name,
     ownerName: business.ownerName,
     phone: business.phone,
+    email: business.email,
     plan: business.plan,
     trialEndsAt: business.trialEndsAt,
     suspendedAt: business.suspendedAt,
     suspendReason: business.suspendReason,
     active: business.active,
     paystackSubCode: business.paystackSubCode,
+    paystackCustomerId: business.paystackCustomerId,
   };
 }

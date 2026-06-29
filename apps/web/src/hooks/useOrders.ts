@@ -22,10 +22,12 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 
 const STALE_TIME = 30_000;
 
-export function useOrdersByStatus(status: OrderStatus) {
+export function useOrdersByStatus(status: OrderStatus, staffId?: string) {
+  const params = new URLSearchParams({ status });
+  if (staffId) params.set('staffId', staffId);
   return useQuery({
-    queryKey: ['orders', 'byStatus', status],
-    queryFn: () => fetchJson<OrderWithRelations[]>(`/orders?status=${status}`),
+    queryKey: ['orders', 'byStatus', status, staffId ?? null],
+    queryFn: () => fetchJson<OrderWithRelations[]>(`/orders?${params.toString()}`),
     staleTime: STALE_TIME,
   });
 }
@@ -100,10 +102,12 @@ export function useAssignOrder() {
   });
 }
 
-export function useOrderStats(period: 'today' | 'week' | 'month' = 'today') {
+export function useOrderStats(period: 'today' | 'week' | 'month' = 'today', staffId?: string) {
+  const params = new URLSearchParams({ period });
+  if (staffId) params.set('staffId', staffId);
   return useQuery({
-    queryKey: ['orders', 'stats', period],
-    queryFn: () => fetchJson<OrderStats>(`/orders/stats?period=${period}`),
+    queryKey: ['orders', 'stats', period, staffId ?? null],
+    queryFn: () => fetchJson<OrderStats>(`/orders/stats?${params.toString()}`),
     staleTime: STALE_TIME,
   });
 }

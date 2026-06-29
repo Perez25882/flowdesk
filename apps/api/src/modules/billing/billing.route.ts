@@ -23,7 +23,29 @@ interface PaystackWebhookBody {
   };
 }
 
+/**
+ * Resolve the Prisma `BusinessPlan` enum matching a Paystack plan-key string.
+ * ENTERPRISE upgrades can't be self-served so we fall back to STARTER if the
+ * metadata is something we don't recognise — the row will not end up in a
+ * state Prisma can't serialise.
+ */
+function resolvePlan(metadataPlan: unknown): 'STARTER' | 'BUSINESS' | 'GROWTH' {
+  if (typeof metadataPlan === 'string') {
+    const up = metadataPlan.toUpperCase();
+    if (up === 'STARTER' || up === 'BUSINESS' || up === 'GROWTH') {
+      return up as 'STARTER' | 'BUSINESS' | 'GROWTH';
+    }
+  }
+  return 'STARTER';
+}
+
 export default async function billingRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * POST /webhooks/paystack
+   *
+   * Paystack calls this for every lifecycle event. Mounted outside the
+   * auth-protected sub-app so the deliveries don't need a JWT.
+   */
   app.post('/webhooks/paystack', async (request: FastifyRequest, reply: FastifyReply) => {
     const signature = request.headers['x-paystack-signature'];
     if (typeof signature !== 'string') {
@@ -48,11 +70,12 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         await prisma.business.update({
           where: { id: businessId },
           data: {
+            plan: resolvePlan(data.metadata?.plan),
             suspendedAt: null,
             suspendReason: null,
           },
         });
-        logger.info({ businessId, reference: data.reference }, 'Business reactivated after successful payment');
+        logger.info({ businessId, reference: data.reference }, 'Business upgraded after successful payment');
       }
     }
 

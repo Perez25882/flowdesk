@@ -20,6 +20,7 @@ import type { ParsedIncomingMessage } from '../modules/webhook/webhook.types.js'
 import {
   INTENT_CLASSIFICATION_QUEUE_NAME,
 } from './message-processor.worker.js';
+import { moveToDeadLetter } from './dead-letter.worker.js';
 
 const WORKER_CONCURRENCY = 3;
 
@@ -295,7 +296,7 @@ intentClassifierWorker.on('completed', (job) => {
   logger.info({ jobId: job.id, messageId: job.data.messageId }, 'Intent classification completed');
 });
 
-intentClassifierWorker.on('failed', (job, error) => {
+intentClassifierWorker.on('failed', async (job, error) => {
   logger.error(
     {
       error,
@@ -305,4 +306,8 @@ intentClassifierWorker.on('failed', (job, error) => {
     },
     'Intent classification job exhausted or failed',
   );
+
+  if (job && job.attemptsMade >= 3) {
+    await moveToDeadLetter(INTENT_CLASSIFICATION_QUEUE_NAME, job.id, job.data, error);
+  }
 });

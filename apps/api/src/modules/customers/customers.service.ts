@@ -46,3 +46,18 @@ export async function updateCustomer(
   if (!existing) throw new NotFoundError('Customer not found');
   return repository.updateCustomer(id, businessId, data);
 }
+
+export async function upsertCustomerByPhone(
+  businessId: string,
+  waNumber: string,
+  displayName: string | null,
+): Promise<repository.CustomerWithStats> {
+  return repository.upsertCustomerByPhone(businessId, waNumber, displayName);
+}
+
+export async function findCustomerByPhone(
+  businessId: string,
+  waNumber: string,
+): Promise<repository.CustomerWithStats | null> {
+  return repository.findCustomerByPhone(businessId, waNumber);
+}

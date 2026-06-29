@@ -10,6 +10,8 @@ import {
 import { useState } from 'react';
 import type { OrderStatus } from '@/types/order';
 import { useOrderDetail, useUpdateOrderStatus, useAssignOrder } from '@/hooks/useOrders';
+import { useCreatePayment } from '@/hooks/usePayments';
+import { useStaff } from '@/hooks/useStaff';
 import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetBody } from '@/components/ui/Sheet';
 import { formatCurrency, timeAgo } from '@/lib/utils';
 
@@ -36,6 +38,8 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
   const { data: order, isLoading } = useOrderDetail(orderId);
   const updateStatus = useUpdateOrderStatus();
   const assignOrder = useAssignOrder();
+  const createPayment = useCreatePayment();
+  const { data: staffList = [] } = useStaff();
   const [assignStaffId, setAssignStaffId] = useState('');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('MOMO_MTN');
@@ -51,28 +55,53 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
 
   const handleAssign = (): void => {
     if (!order || !assignStaffId) return;
-    assignOrder.mutate({ orderId: order.id, data: { staffId: assignStaffId } });
+    assignOrder.mutate(
+      { orderId: order.id, data: { staffId: assignStaffId } },
+      { onSuccess: () => setAssignStaffId('') },
+    );
+  };
+
+  const handleLogPayment = (): void => {
+    if (!order) return;
+    const amount = Number.parseFloat(paymentAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    createPayment.mutate(
+      {
+        customerId: order.customer.id,
+        orderId: order.id,
+        amount,
+        method: paymentMethod,
+        ...(paymentRef ? { reference: paymentRef } : {}),
+      },
+      {
+        onSuccess: () => {
+          setPaymentAmount('');
+          setPaymentRef('');
+        },
+      },
+    );
   };
 
   const customerPhone = order?.customer.waNumber ?? '';
   const whatsappLink = customerPhone ? `https://wa.me/${customerPhone}` : '#';
+  const remainingAmount = order ? Math.max(0, order.totalAmount - order.amountPaid) : 0;
 
   return (
     <Sheet open={!!orderId} onOpenChange={(open) => !open && onClose()}>
       <SheetTrigger asChild>
         <span className="hidden" />
-      </SheetTrigger>
+     </SheetTrigger>
       <SheetContent side="right" className="!w-[400px] !p-0 md:!w-[480px]">
         {isLoading && (
           <div className="flex h-full items-center justify-center">
             <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--color-primary)] border-t-transparent" />
-          </div>
+         </div>
         )}
 
         {!isLoading && !order && (
           <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-muted)]">
             Order not found
-          </div>
+         </div>
         )}
 
         {!isLoading && order && (
@@ -82,49 +111,49 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
                 <div className="flex flex-col gap-1">
                   <SheetTitle className="font-mono text-[var(--color-primary-light)]">
                     {order.referenceNumber}
-                  </SheetTitle>
+                 </SheetTitle>
                   <span className="text-xs text-[var(--color-text-muted)]">
                     {timeAgo(order.createdAt)}
-                  </span>
-                </div>
+                 </span>
+               </div>
                 <span className="inline-flex rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-2 py-1 text-xs font-semibold uppercase text-[var(--color-text-secondary)]">
                   {order.status}
-                </span>
-              </div>
-            </SheetHeader>
+               </span>
+             </div>
+           </SheetHeader>
 
             <SheetBody className="flex-1 space-y-5 overflow-y-auto">
               {/* Customer */}
               <div className="space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                   Customer
-                </h4>
+               </h4>
                 <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-3">
                   <p className="font-medium text-[var(--color-text-primary)]">
                     {order.customer.name ?? 'Unknown'}
-                  </p>
+                 </p>
                   <p className="text-sm text-[var(--color-text-secondary)]">
                     {order.customer.waNumber}
-                  </p>
+                 </p>
                   {order.customer.totalOrders !== undefined && (
                     <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                       {order.customer.totalOrders} orders
-                    </p>
+                   </p>
                   )}
                   {(order.customer.outstandingBalance ?? 0) > 0 && (
                     <p className="mt-1 flex items-center gap-1 text-xs font-medium text-[var(--color-danger)]">
                       <AlertTriangle className="h-3 w-3" />
                       Owes {formatCurrency(order.customer.outstandingBalance ?? 0)}
-                    </p>
+                   </p>
                   )}
-                </div>
-              </div>
+               </div>
+             </div>
 
               {/* Items */}
               <div className="space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                   Items
-                </h4>
+               </h4>
                 <div className="space-y-1">
                   {order.items.map((item) => (
                     <div
@@ -135,48 +164,48 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
                         <Package className={`h-4 w-4 ${item.matched ? 'text-[var(--color-success)]' : 'text-[var(--color-text-muted)]'}`} />
                         <span className="text-sm text-[var(--color-text-primary)]">
                           {item.description}
-                        </span>
-                      </div>
+                       </span>
+                     </div>
                       <div className="text-right">
                         <span className="text-sm text-[var(--color-text-secondary)]">
                           × {item.quantity}
-                        </span>
+                       </span>
                         <p className="font-mono text-xs text-[var(--color-text-muted)]">
                           {formatCurrency(item.unitPrice)}
-                        </p>
-                      </div>
-                    </div>
+                       </p>
+                     </div>
+                   </div>
                   ))}
-                </div>
+               </div>
                 <div className="flex items-center justify-between border-t border-[var(--color-border)] pt-2">
                   <span className="text-sm font-medium text-[var(--color-text-primary)]">Total</span>
                   <span className="font-mono text-lg font-semibold text-[var(--color-text-primary)]">
                     {formatCurrency(order.totalAmount)}
-                  </span>
-                </div>
+                 </span>
+               </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-[var(--color-text-secondary)]">Paid</span>
                   <span className="font-mono text-sm text-[var(--color-success)]">
                     {formatCurrency(order.amountPaid)}
-                  </span>
-                </div>
+                 </span>
+               </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-[var(--color-text-secondary)]">Balance</span>
                   <span className="font-mono text-sm text-[var(--color-danger)]">
                     {formatCurrency(order.totalAmount - order.amountPaid)}
-                  </span>
-                </div>
+                 </span>
+               </div>
                 <div className="flex items-center gap-1.5">
                   <CreditCard className="h-4 w-4 text-[var(--color-text-muted)]" />
                   <span className={`text-xs font-medium ${pmt.color}`}>{pmt.label}</span>
-                </div>
-              </div>
+               </div>
+             </div>
 
               {/* Timeline */}
               <div className="space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                   Status History
-                </h4>
+               </h4>
                 <div className="space-y-2">
                   {order.statusHistory.map((entry) => (
                     <div key={entry.id} className="flex items-start gap-2 text-sm">
@@ -185,24 +214,24 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
                         <span className="text-[var(--color-text-primary)]">
                           {entry.fromStatus ? `${entry.fromStatus} → ` : ''}
                           {entry.toStatus}
-                        </span>
+                       </span>
                         <p className="text-xs text-[var(--color-text-muted)]">
                           {entry.changedBy ?? 'System'} · {timeAgo(entry.createdAt)}
-                        </p>
+                       </p>
                         {entry.note && (
                           <p className="text-xs text-[var(--color-text-secondary)]">{entry.note}</p>
                         )}
-                      </div>
-                    </div>
+                     </div>
+                   </div>
                   ))}
-                </div>
-              </div>
+               </div>
+             </div>
 
               {/* Staff Assignment */}
               <div className="space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                   Assigned To
-                </h4>
+               </h4>
                 <div className="flex items-center gap-2">
                   {order.assignedTo ? (
                     <>
@@ -212,65 +241,85 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
                   ) : (
                     <span className="text-sm text-[var(--color-text-muted)]">Unassigned</span>
                   )}
-                </div>
+               </div>
                 <div className="flex gap-2">
-                  <input
-                    type="text"
+                  <select
                     value={assignStaffId}
                     onChange={(e) => setAssignStaffId(e.target.value)}
-                    placeholder="Staff ID"
-                    className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                  />
+                    className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
+                  >
+                    <option value="">Select staff member</option>
+                    {staffList.filter((s) => s.active).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} — {s.role.toLowerCase().replace('_', ' ')}
+                     </option>
+                    ))}
+                 </select>
                   <button
                     onClick={handleAssign}
-                    className="rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)]"
+                    disabled={!assignStaffId || assignOrder.isPending}
+                    className="rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)] disabled:opacity-50"
                   >
-                    Assign
-                  </button>
-                </div>
-              </div>
+                    {assignOrder.isPending ? '…' : 'Assign'}
+                 </button>
+               </div>
+             </div>
 
               {/* Log Payment */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Log Payment
-                </h4>
-                <div className="flex gap-2">
+              {remainingAmount > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                    Log Payment
+                 </h4>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={0.01}
+                      step={0.01}
+                      max={remainingAmount}
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      placeholder={`Amount (max ${formatCurrency(remainingAmount)})`}
+                      className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
+                    />
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value)}
+                      className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                    >
+                      <option value="MOMO_MTN">MTN MoMo</option>
+                      <option value="MOMO_VODAFONE">Vodafone Cash</option>
+                      <option value="MOMO_AIRTELTIGO">AirtelTigo</option>
+                      <option value="CASH">Cash</option>
+                      <option value="BANK_TRANSFER">Bank</option>
+                      <option value="OTHER">Other</option>
+                   </select>
+                 </div>
                   <input
-                    type="number"
-                    value={paymentAmount}
-                    onChange={(e) => setPaymentAmount(e.target.value)}
-                    placeholder="Amount"
-                    className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
+                    type="text"
+                    value={paymentRef}
+                    onChange={(e) => setPaymentRef(e.target.value)}
+                    placeholder="Reference / MoMo ID (optional)"
+                    className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
                   />
-                  <select
-                    value={paymentMethod}
-                    onChange={(e) => setPaymentMethod(e.target.value)}
-                    className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+                  <button
+                    onClick={handleLogPayment}
+                    disabled={
+                      !paymentAmount ||
+                      createPayment.isPending ||
+                      (Number.parseFloat(paymentAmount) || 0) <= 0
+                    }
+                    className="w-full rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)] disabled:opacity-50"
                   >
-                    <option value="MOMO_MTN">MTN MoMo</option>
-                    <option value="MOMO_VODAFONE">Vodafone Cash</option>
-                    <option value="MOMO_AIRTELTIGO">AirtelTigo</option>
-                    <option value="CASH">Cash</option>
-                    <option value="BANK_TRANSFER">Bank</option>
-                  </select>
-                </div>
-                <input
-                  type="text"
-                  value={paymentRef}
-                  onChange={(e) => setPaymentRef(e.target.value)}
-                  placeholder="Reference number"
-                  className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                />
-                <button
-                  onClick={() => {
-                    // Payment logging mutation will be wired when payment module is built
-                  }}
-                  className="w-full rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2 text-sm font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
-                >
-                  Log Payment
-                </button>
-              </div>
+                    {createPayment.isPending ? 'Logging…' : 'Log Payment'}
+                 </button>
+                  {createPayment.isError && (
+                    <p className="text-xs text-[var(--color-danger)]">
+                      {(createPayment.error as Error).message}
+                   </p>
+                  )}
+               </div>
+              )}
 
               {/* Actions */}
               {actions && actions.length > 0 && (
@@ -279,21 +328,23 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
                     <button
                       key={action.next}
                       onClick={() => handleStatusChange(action.next)}
-                      className="flex w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--color-primary-light)]"
+                      disabled={updateStatus.isPending}
+                      className="flex w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--color-primary-light)] disabled:opacity-50"
                     >
                       <CheckCircle2 className="h-4 w-4" />
                       {action.label}
-                    </button>
+                   </button>
                   ))}
                   {order.status !== 'CANCELLED' && order.status !== 'FULFILLED' && (
                     <button
                       onClick={() => handleStatusChange('CANCELLED')}
-                      className="w-full rounded-[var(--radius-md)] border border-[var(--color-danger)] px-4 py-2.5 text-sm font-medium text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-muted)]"
+                      disabled={updateStatus.isPending}
+                      className="w-full rounded-[var(--radius-md)] border border-[var(--color-danger)] px-4 py-2.5 text-sm font-medium text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-muted)] disabled:opacity-50"
                     >
                       Cancel Order
-                    </button>
+                   </button>
                   )}
-                </div>
+               </div>
               )}
 
               {/* WhatsApp */}
@@ -305,11 +356,11 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
               >
                 <Send className="h-4 w-4" />
                 Message on WhatsApp
-              </a>
-            </SheetBody>
-          </div>
+             </a>
+           </SheetBody>
+         </div>
         )}
-      </SheetContent>
-    </Sheet>
+     </SheetContent>
+   </Sheet>
   );
 }
