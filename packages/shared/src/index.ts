@@ -5,6 +5,49 @@ export { IntentType, ClassificationSource, type IntentClassification, type Class
 export { MIN_PASSWORD_LENGTH } from './auth.js';
 
 export {
+  ASSISTANT_CONTRACT_VERSION,
+  ASSISTANT_LANGUAGES,
+  ASSISTANT_SENTIMENTS,
+  ASSISTANT_ACTIONS,
+  ESCALATION_REASONS,
+  CLARIFICATION_FIELDS,
+  type AssistantLanguage,
+  type AssistantSentiment,
+  type AssistantEvidenceRef,
+  type AssistantProductMention,
+  type AssistantDecision,
+  type AssistantAction,
+  type EscalationReason,
+  type ClarificationField,
+} from './assistant.js';
+
+export {
+  BUSINESS_TYPES,
+  BUSINESS_TYPE_LABELS,
+  DAYS_OF_WEEK,
+  DAY_LABELS,
+  PAYMENT_METHODS,
+  PAYMENT_METHOD_LABELS,
+  PRICING_STANCES,
+  PRICING_STANCE_LABELS,
+  PROFILE_QUESTIONS,
+  AI_ASSIST_MODES,
+  AI_ASSIST_MODE_LABELS,
+  isProfileEmpty,
+  countAnsweredQuestions,
+  hasGroundableFacts,
+  type BusinessType,
+  type DayOfWeek,
+  type PaymentMethod,
+  type PricingStance,
+  type TimeOfDay,
+  type OpeningHours,
+  type BusinessProfile,
+  type ProfileQuestion,
+  type AiAssistMode,
+} from './business-profile.js';
+
+export {
   ROLE_CAPABILITIES,
   hasCapability,
   isAssignmentScoped,

@@ -28,6 +28,14 @@ export type Capability =
   | 'payments.delete'
   | 'messages.read'
   | 'messages.write'
+  /**
+   * Send a message to a customer as the business.
+   *
+   * Separate from `messages.write`, which only means "relabel an intent".
+   * Folding the two together would silently hand every counter clerk the
+   * ability to speak to customers in the shop's name.
+   */
+  | 'messages.send'
   | 'staff.read'
   | 'staff.manage'
   | 'settings.read'
@@ -65,6 +73,7 @@ export const ROLE_CAPABILITIES: Record<StaffRole, readonly Capability[]> = {
     'payments.delete',
     'messages.read',
     'messages.write',
+    'messages.send',
     'staff.read',
     'staff.manage',
     'settings.read',
@@ -90,6 +99,9 @@ export const ROLE_CAPABILITIES: Record<StaffRole, readonly Capability[]> = {
     'payments.create',
     'messages.read',
     'messages.write',
+    // Answering a customer on WhatsApp is the counter's actual job, and they
+    // can already take the order that follows from it.
+    'messages.send',
     'settings.read',
   ],
 

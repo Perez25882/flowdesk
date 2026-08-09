@@ -57,6 +57,26 @@ model Business {
   monthlyOrderCount  Int                @default(0)
   orderCountResetAt  DateTime?
   replyTemplates     Json?
+  /// What kind of shop this is. Shapes how the assistant reads a message —
+  /// "do you have panadol" is a stock question at a pharmacy and noise at a
+  /// hardware store.
+  businessType       BusinessType?
+  /// Free text, only when businessType is OTHER.
+  businessTypeOther  String?
+  /// Structured, checkable facts — hours, delivery areas and fees, payment
+  /// methods, minimums. Validated against `BusinessProfile` in the shared
+  /// package. These may ground a reply the assistant sends by itself, because
+  /// an answer can be verified against them.
+  businessProfile    Json?
+  /// Prose the owner wants the assistant to know. Informs DRAFTS only: a
+  /// paraphrase of a policy cannot be checked, so it must never justify an
+  /// automatic send.
+  businessPolicyNotes String?
+  /// When the facts were last confirmed. An answer quoted from a delivery fee
+  /// nobody has touched in a year deserves less confidence than a fresh one.
+  profileUpdatedAt   DateTime?
+  /// How much this business lets the assistant do unsupervised.
+  aiAssistMode       AiAssistMode       @default(DRAFT_ONLY)
   notifyOnNewOrder   Boolean            @default(true)
   notifyOnLowStock   Boolean            @default(true)
   notifyOnPayment    Boolean            @default(true)
@@ -72,6 +92,7 @@ model Business {
   orders             Order[]
   passwordResets     PasswordResetToken[]
   payments           Payment[]
+  pendingOrders      PendingOrder[]
   products           Product[]
   sessions           Session[]
   staff              Staff[]
@@ -136,7 +157,19 @@ model Customer {
   waNumberInvalid    Boolean   @default(false)
   vip                Boolean   @default(false)
   tags               String[]  @default([])
+  /// Last activity of any kind, inbound or outbound. Drives list ordering and
+  /// "last seen" display. NOT a valid basis for the Meta service window — the
+  /// owner's own replies bump it (see `lastInboundAt`).
   lastInteractionAt  DateTime?
+  /// Last message received FROM this customer.
+  ///
+  /// Meta's 24-hour customer-service window opens only on a customer-initiated
+  /// message, so this is the only field that may gate a free-form send.
+  /// `lastInteractionAt` is also written when the owner replies from the
+  /// WhatsApp Business app (an `smb_message_echo`), which would push our idea of
+  /// the window past the real one: sends would be accepted here, rejected by
+  /// Meta, and dead-lettered with nothing shown to the owner.
+  lastInboundAt      DateTime?
   firstOrderAt       DateTime?
   notes              String?
   createdAt          DateTime  @default(now())
@@ -145,6 +178,7 @@ model Customer {
   business           Business  @relation(fields: [businessId], references: [id])
   messages           Message[]
   orders             Order[]
+  pendingOrders      PendingOrder[]
   payments           Payment[]
 
   @@unique([businessId, waNumber])
@@ -342,6 +376,35 @@ model Message {
   /// suppressed for a window after one of these, so the assistant never talks
   /// over a human who has just taken the conversation over.
   sentFromApp      Boolean               @default(false)
+
+  // ── Assistant reply ─────────────────────────────────────────────────────
+  // A reply the assistant wrote for THIS inbound message. Kept on the message
+  // rather than in its own table because it is strictly one-per-message and the
+  // review UI already reads messages.
+
+  /// The suggested reply text. Survives sending, so an owner can see what went
+  /// out and how much they had to change it.
+  aiReplyText        String?
+  aiReplyStatus      AiReplyStatus?
+  /// Evidence ids the answer was built from (`product:<id>`, `fact:deliveryFee`).
+  /// Recorded so a wrong answer can be traced to what it was derived from.
+  aiReplyGroundedOn  String[]              @default([])
+  /// Guardrail checks the generated text failed. Non-empty forces a draft.
+  aiValidationFailed String[]              @default([])
+  /// The full decision envelope, for auditing and offline evaluation. Never
+  /// read at runtime — routing decisions are made from the typed columns.
+  aiDecision         Json?
+  aiReplyModel       String?
+  aiDetectedLanguage String?
+
+  /// The inbound message an outbound row is answering. `relatedOrderId` is a
+  /// bare string with no relation, so without this there is no way to render a
+  /// thread — or to measure how often owners edit what the assistant wrote,
+  /// which is the one number that says whether it can be trusted to send.
+  inReplyToMessageId String?
+  /// Set when a person sent this from the dashboard rather than automation.
+  sentByStaffId      String?
+
   createdAt        DateTime              @default(now())
   business         Business              @relation(fields: [businessId], references: [id])
   customer         Customer?             @relation(fields: [customerId], references: [id])
@@ -355,6 +418,12 @@ model Message {
   @@index([businessId, processed, createdAt(sort: Desc)])
   /// Serves the human-takeover lookup: newest app-sent message per customer.
   @@index([customerId, sentFromApp, createdAt(sort: Desc)])
+  /// Serves conversation reconstruction: the recent back-and-forth with one
+  /// customer, newest first, which the assistant needs as context.
+  @@index([businessId, customerId, createdAt(sort: Desc)])
+  /// Serves the owner's queue of drafts waiting to be sent.
+  @@index([businessId, aiReplyStatus, createdAt(sort: Desc)])
+  @@index([inReplyToMessageId])
   @@map("messages")
 }
 
@@ -510,6 +579,50 @@ enum IntentType {
   UNCLASSIFIED
 }
 
+/// Lifecycle of an assistant-written reply.
+enum AiReplyStatus {
+  /// Written, waiting for the owner. Editable.
+  DRAFT
+  /// Sent by the assistant on its own, because the answer was grounded and
+  /// passed every guardrail.
+  AUTO_SENT
+  /// Sent by a person from the dashboard, edited or not.
+  SENT
+  /// The owner decided not to reply.
+  DISMISSED
+  /// The customer said something else before the draft was sent, so it answers
+  /// a question that has moved on and must not be sent as written.
+  SUPERSEDED
+  /// The 24-hour service window closed before anyone sent it.
+  EXPIRED
+}
+
+/// Kind of business. Mirrors `BUSINESS_TYPES` in `@flowdesk/shared`.
+enum BusinessType {
+  PROVISIONS
+  FOOD
+  FASHION
+  BEAUTY
+  ELECTRONICS
+  PHARMACY
+  HARDWARE
+  AGRICULTURE
+  WHOLESALE
+  SERVICES
+  OTHER
+}
+
+/// How much the assistant may do without the owner. Mirrors `AI_ASSIST_MODES`.
+enum AiAssistMode {
+  /// Fixed templates only — the assistant writes nothing.
+  OFF
+  /// The assistant writes replies; the owner sends them.
+  DRAFT_ONLY
+  /// The assistant answers directly when the answer is grounded and verified,
+  /// and drafts everything else.
+  GROUNDED_AUTO
+}
+
 enum ClassificationSource {
   RULE_ENGINE
   HAIKU
@@ -538,4 +651,57 @@ enum StockMovementType {
   RESTOCK
   ADJUSTMENT
   RETURN
+}
+
+/// An order that has been asked about but is not yet clear enough to create.
+///
+/// The alternative was creating an `Order` immediately and patching it as the
+/// conversation went on, which puts half-formed rows in front of the owner and
+/// counts them against their plan before anyone has agreed to buy anything.
+/// Holding the draft here instead means an `Order` only ever exists once the
+/// customer has actually said what they want.
+model PendingOrder {
+  id                String             @id @default(cuid())
+  businessId        String
+  customerId        String
+  /// Items understood so far — the same shape as the assistant's product
+  /// mentions, not order items, because prices are not settled yet.
+  draftItems        Json               @default("[]")
+  /// What still has to be answered before this can become an order.
+  missing           String[]           @default([])
+  /// How many questions we have already asked. Capped, then handed to a person:
+  /// a customer who has not answered twice will not be helped by a third ask.
+  clarificationCount Int               @default(0)
+  /// The question currently outstanding, so a bare "2 bags" is read as its answer.
+  lastQuestion      String?
+  status            PendingOrderStatus @default(AWAITING_REPLY)
+  /// The inbound message that started it, for tracing back from the order.
+  sourceMessageId   String?
+  /// Set once this becomes a real order. Also the idempotency guard: a second
+  /// attempt to convert the same pending order finds this already populated.
+  resolvedOrderId   String?
+  /// Evaluated on read rather than swept. This repo has no scheduler, and adding
+  /// one to expire a handful of rows would be a lot of moving parts for a
+  /// timestamp comparison that any read can do.
+  expiresAt         DateTime
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  business          Business           @relation(fields: [businessId], references: [id])
+  customer          Customer           @relation(fields: [customerId], references: [id])
+
+  /// Drives the "awaiting reply" surface on the dashboard.
+  @@index([businessId, status, updatedAt])
+  @@map("pending_orders")
+}
+
+enum PendingOrderStatus {
+  /// We have asked a question and are waiting on the customer.
+  AWAITING_REPLY
+  /// Became a real order.
+  RESOLVED
+  /// Went quiet for long enough that a reply would be confusing.
+  EXPIRED
+  /// The customer changed the subject, or a person took the conversation over.
+  ABANDONED
 }
