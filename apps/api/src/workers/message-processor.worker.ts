@@ -84,6 +84,9 @@ function buildCustomerCreate(
     businessId,
     waNumber,
     lastInteractionAt: jobData.message.timestamp,
+    // This message is FROM the customer, so it opens Meta's 24-hour service
+    // window. Only inbound may set this — see the field docs on Customer.
+    lastInboundAt: jobData.message.timestamp,
   };
   const name = optionalStringUpdate(jobData.message.profileName);
   if (name !== undefined) create.name = name;
@@ -93,6 +96,7 @@ function buildCustomerCreate(
 function buildCustomerUpdate(jobData: MessageJobData): Prisma.CustomerUpdateInput {
   const update: Prisma.CustomerUpdateInput = {
     lastInteractionAt: jobData.message.timestamp,
+    lastInboundAt: jobData.message.timestamp,
   };
   const name = optionalStringUpdate(jobData.message.profileName);
   if (name !== undefined) update.name = name;

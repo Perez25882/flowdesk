@@ -44,6 +44,8 @@ async function recordSentMessage(
         processed: true,
         processedAt: new Date(),
         relatedOrderId: data.relatedOrderId ?? null,
+        inReplyToMessageId: data.inReplyToMessageId ?? null,
+        sentByStaffId: data.sentByStaffId ?? null,
       },
     })
     .catch((error: unknown) => {
@@ -56,7 +58,38 @@ async function recordSentMessage(
     });
 }
 
+/**
+ * True when the owner started answering from their own phone after this job was
+ * queued.
+ *
+ * The takeover gate runs at enqueue time, but generation plus queue latency can
+ * be several seconds — ample time for the owner to begin replying in the
+ * WhatsApp Business app. Re-checking here, immediately before the send, closes
+ * that window; without it the assistant talks over a human mid-conversation,
+ * which is the failure most likely to make an owner switch the product off.
+ */
+async function ownerTookOver(data: OutboundJobData): Promise<boolean> {
+  if (!data.suppressIfOwnerRepliedSince || !data.customerId) return false;
+
+  const since = new Date(data.suppressIfOwnerRepliedSince);
+
+  const takeover = await prisma.message.findFirst({
+    where: { customerId: data.customerId, sentFromApp: true, createdAt: { gt: since } },
+    select: { id: true },
+  });
+
+  return takeover !== null;
+}
+
 async function processOutbound(data: OutboundJobData): Promise<void> {
+  if (await ownerTookOver(data)) {
+    logger.info(
+      { businessId: data.businessId, customerId: data.customerId },
+      'Outbound message dropped: owner answered from the WhatsApp Business app while it was queued',
+    );
+    return;
+  }
+
   const credentials = await loadTenantCredentials(data.businessId);
 
   if (!credentials) {

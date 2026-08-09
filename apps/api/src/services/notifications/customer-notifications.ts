@@ -24,17 +24,96 @@ import {
  * messaging outage cannot roll back a database transaction or fail an API call.
  */
 
-interface NotificationContext {
+export interface NotificationContext {
   businessId: string;
   businessName: string;
   templateConfig: ReturnType<typeof parseTemplateConfig>;
   customerId: string | null;
   customerWaNumber: string;
   customerName: string | null;
-  lastInteractionAt: Date | null;
+  lastInboundAt: Date | null;
   blacklisted: boolean;
   relatedOrderId?: string;
 }
+
+/** Why a message was not delivered. Machine-readable so callers can explain it. */
+export type DeliverySuppressionReason =
+  | 'blacklisted'
+  | 'template_disabled'
+  | 'owner_replying'
+  | 'outside_service_window'
+  | 'plan_allowance_exhausted';
+
+export interface DeliveryDecision {
+  allowed: boolean;
+  reason?: DeliverySuppressionReason;
+}
+
+export interface EvaluateDeliveryOptions {
+  /** Checked against the owner's disabled list. Omit for messages with no template. */
+  templateKey?: TemplateKey;
+  /**
+   * Skip the human-takeover gate.
+   *
+   * Only for messages the owner (or their staff) typed themselves — refusing to
+   * send a human's reply because a human recently replied is nonsense. Never set
+   * this for automated messages.
+   */
+  humanInitiated?: boolean;
+}
+
+/**
+ * The one place that decides whether a message may go to a customer.
+ *
+ * Extracted so that every send path — templated auto-replies, assistant-written
+ * answers, and the owner's own dashboard replies — is judged by the same rules
+ * in the same order. Historically each new send path re-implemented this and
+ * quietly dropped a gate; returning a decision instead of sending keeps that
+ * from happening again and lets an HTTP caller explain the refusal.
+ */
+export async function evaluateDelivery(
+  context: NotificationContext,
+  options: EvaluateDeliveryOptions = {},
+): Promise<DeliveryDecision> {
+  // 1. Owner has muted this contact.
+  if (context.blacklisted) {
+    return { allowed: false, reason: 'blacklisted' };
+  }
+
+  // 2. Owner switched this particular reply off.
+  if (options.templateKey && !isTemplateEnabled(context.templateConfig, options.templateKey)) {
+    return { allowed: false, reason: 'template_disabled' };
+  }
+
+  // 3. A human is already handling this conversation from the WhatsApp app.
+  if (!options.humanInitiated && (await ownerRepliedRecently(context.customerId))) {
+    return { allowed: false, reason: 'owner_replying' };
+  }
+
+  // 4. Meta only permits free-form messages inside the 24h window a customer
+  //    message opens. Sending outside it fails and hurts the number's rating.
+  if (!shouldSendAutoReply(context.lastInboundAt).withinWindow) {
+    return { allowed: false, reason: 'outside_service_window' };
+  }
+
+  // 5. Plan allowance. Last, because inbound processing continues regardless —
+  //    only automated outbound pauses, so no customer data is ever lost.
+  if (!(await canSendOutbound(context.businessId))) {
+    return { allowed: false, reason: 'plan_allowance_exhausted' };
+  }
+
+  return { allowed: true };
+}
+
+/** Human-readable log line for a suppression, kept next to the reasons themselves. */
+const SUPPRESSION_LOG: Record<DeliverySuppressionReason, string> = {
+  blacklisted: 'Auto-reply suppressed: customer is blacklisted',
+  template_disabled: 'Auto-reply suppressed: template disabled by owner',
+  owner_replying:
+    'Auto-reply suppressed: owner is handling this conversation from the WhatsApp Business app',
+  outside_service_window: 'Auto-reply suppressed: outside the 24-hour customer service window',
+  plan_allowance_exhausted: 'Auto-reply suppressed: conversation allowance exhausted',
+};
 
 /**
  * How long the assistant stays quiet after the owner replies from their own
@@ -86,54 +165,42 @@ async function deliver(
   key: TemplateKey,
   variables: Record<string, string>,
 ): Promise<void> {
-
-  if (context.blacklisted) {
-    logger.info(
-      { businessId: context.businessId, template: key },
-      'Auto-reply suppressed: customer is blacklisted',
-    );
-    return;
-  }
-
-  if (!isTemplateEnabled(context.templateConfig, key)) {
-    logger.debug(
-      { businessId: context.businessId, template: key },
-      'Auto-reply suppressed: template disabled by owner',
-    );
-    return;
-  }
-
-  if (await ownerRepliedRecently(context.customerId)) {
-    logger.info(
-      { businessId: context.businessId, customerId: context.customerId, template: key },
-      'Auto-reply suppressed: owner is handling this conversation from the WhatsApp Business app',
-    );
-    return;
-  }
-
-  if (!shouldSendAutoReply(context.lastInteractionAt).withinWindow) {
-    logger.info(
-      { businessId: context.businessId, template: key },
-      'Auto-reply suppressed: outside the 24-hour customer service window',
-    );
-    return;
-  }
-
-  // Plan allowance is the last gate. Inbound processing continues regardless —
-  // only automated outbound pauses, so no customer data is ever lost.
-  if (!(await canSendOutbound(context.businessId))) {
-    logger.warn(
-      { businessId: context.businessId, template: key },
-      'Auto-reply suppressed: conversation allowance exhausted',
-    );
-    return;
-  }
-
   const text = renderTemplate(context.templateConfig, key, {
     name: getCustomerFirstName(context.customerName) || 'there',
     business: context.businessName,
     ...variables,
   });
+
+  await deliverText(context, text, { templateKey: key });
+}
+
+/**
+ * Sends a body that has already been composed — an assistant-written answer or a
+ * server-composed question — through the same gates as a templated reply.
+ *
+ * Shares `evaluateDelivery` with `deliver()` deliberately: a second send path
+ * that re-implemented the checks is exactly how a gate gets lost.
+ */
+export async function deliverText(
+  context: NotificationContext,
+  text: string,
+  options: EvaluateDeliveryOptions = {},
+): Promise<DeliveryDecision> {
+  const decision = await evaluateDelivery(context, options);
+
+  if (!decision.allowed) {
+    const reason = decision.reason!;
+    logger.info(
+      {
+        businessId: context.businessId,
+        customerId: context.customerId,
+        template: options.templateKey,
+        reason,
+      },
+      SUPPRESSION_LOG[reason],
+    );
+    return decision;
+  }
 
   try {
     await enqueueOutboundMessage({
@@ -141,16 +208,21 @@ async function deliver(
       customerId: context.customerId,
       to: context.customerWaNumber,
       body: text,
-      templateKey: key,
+      ...(options.templateKey ? { templateKey: options.templateKey } : {}),
       ...(context.relatedOrderId ? { relatedOrderId: context.relatedOrderId } : {}),
+      // Automated sends abort if the owner starts replying by hand between now
+      // and delivery. Human-initiated sends deliberately carry no such guard.
+      ...(options.humanInitiated ? {} : { suppressIfOwnerRepliedSince: new Date().toISOString() }),
     });
   } catch (error: unknown) {
     // Failing to enqueue must not roll back the order that triggered it.
     logger.error(
-      { error, businessId: context.businessId, template: key },
-      'Failed to queue customer auto-reply',
+      { error, businessId: context.businessId, template: options.templateKey },
+      'Failed to queue customer message',
     );
   }
+
+  return decision;
 }
 
 interface OrderNotificationRow {
@@ -163,7 +235,7 @@ interface OrderNotificationRow {
     id: string;
     waNumber: string;
     name: string | null;
-    lastInteractionAt: Date | null;
+    lastInboundAt: Date | null;
     blacklisted: boolean;
   };
   assignedTo: { name: string } | null;
@@ -179,7 +251,7 @@ async function loadOrderContext(orderId: string): Promise<OrderNotificationRow |
       cancelReason: true,
       business: { select: { id: true, name: true, replyTemplates: true } },
       customer: {
-        select: { id: true, waNumber: true, name: true, lastInteractionAt: true, blacklisted: true },
+        select: { id: true, waNumber: true, name: true, lastInboundAt: true, blacklisted: true },
       },
       assignedTo: { select: { name: true } },
     },
@@ -194,7 +266,7 @@ function toContext(row: OrderNotificationRow): NotificationContext {
     customerId: row.customer.id,
     customerWaNumber: row.customer.waNumber,
     customerName: row.customer.name,
-    lastInteractionAt: row.customer.lastInteractionAt,
+    lastInboundAt: row.customer.lastInboundAt,
     blacklisted: row.customer.blacklisted,
     relatedOrderId: row.id,
   };
@@ -244,7 +316,7 @@ export async function notifyPaymentReceived(paymentId: string): Promise<void> {
         amount: true,
         business: { select: { id: true, name: true, replyTemplates: true } },
         customer: {
-          select: { id: true, waNumber: true, name: true, lastInteractionAt: true, blacklisted: true },
+          select: { id: true, waNumber: true, name: true, lastInboundAt: true, blacklisted: true },
         },
         order: { select: { id: true, referenceNumber: true } },
       },
@@ -263,7 +335,7 @@ export async function notifyPaymentReceived(paymentId: string): Promise<void> {
     customerId: payment.customer.id,
     customerWaNumber: payment.customer.waNumber,
     customerName: payment.customer.name,
-    lastInteractionAt: payment.customer.lastInteractionAt,
+    lastInboundAt: payment.customer.lastInboundAt,
     blacklisted: payment.customer.blacklisted,
     ...(payment.order ? { relatedOrderId: payment.order.id } : {}),
   };
@@ -275,6 +347,42 @@ export async function notifyPaymentReceived(paymentId: string): Promise<void> {
 }
 
 /**
+ * Loads the delivery context for a customer.
+ *
+ * Shared rather than duplicated so the assistant runs through the same gates as
+ * every templated reply. A second, hand-rolled context is how one of these paths
+ * quietly ends up missing the blacklist or the takeover check.
+ */
+export async function loadNotificationContext(
+  businessId: string,
+  customerId: string,
+): Promise<NotificationContext | null> {
+  const [business, customer] = await Promise.all([
+    prisma.business.findUnique({
+      where: { id: businessId },
+      select: { id: true, name: true, replyTemplates: true },
+    }),
+    prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { waNumber: true, name: true, lastInboundAt: true, blacklisted: true },
+    }),
+  ]);
+
+  if (!business || !customer) return null;
+
+  return {
+    businessId: business.id,
+    businessName: business.name,
+    templateConfig: parseTemplateConfig(business.replyTemplates),
+    customerId,
+    customerWaNumber: customer.waNumber,
+    customerName: customer.name,
+    lastInboundAt: customer.lastInboundAt,
+    blacklisted: customer.blacklisted,
+  };
+}
+
+/**
  * Replies to a non-order message (greeting, inquiry, complaint, …). Kept
  * separate from the order flow because it is driven by intent, not by a record.
  */
@@ -283,33 +391,10 @@ export async function notifyIntentReply(
   customerId: string,
   key: TemplateKey,
 ): Promise<void> {
-  const [business, customer] = await Promise.all([
-    prisma.business.findUnique({
-      where: { id: businessId },
-      select: { id: true, name: true, replyTemplates: true },
-    }),
-    prisma.customer.findUnique({
-      where: { id: customerId },
-      select: { waNumber: true, name: true, lastInteractionAt: true, blacklisted: true },
-    }),
-  ]);
+  const context = await loadNotificationContext(businessId, customerId);
+  if (!context) return;
 
-  if (!business || !customer) return;
-
-  await deliver(
-    {
-      businessId: business.id,
-      businessName: business.name,
-      templateConfig: parseTemplateConfig(business.replyTemplates),
-      customerId,
-      customerWaNumber: customer.waNumber,
-      customerName: customer.name,
-      lastInteractionAt: customer.lastInteractionAt,
-      blacklisted: customer.blacklisted,
-    },
-    key,
-    {},
-  );
+  await deliver(context, key, {});
 }
 
 /**
@@ -322,28 +407,34 @@ export async function notifyUnknownOrderReference(
   reference: string,
 ): Promise<void> {
   const [business, customer] = await Promise.all([
-    prisma.business.findUnique({ where: { id: businessId }, select: { name: true } }),
+    prisma.business.findUnique({
+      where: { id: businessId },
+      select: { name: true, replyTemplates: true },
+    }),
     prisma.customer.findUnique({
       where: { id: customerId },
-      select: { waNumber: true, blacklisted: true, lastInteractionAt: true },
+      select: { waNumber: true, name: true, blacklisted: true, lastInboundAt: true },
     }),
   ]);
 
-  if (!business || !customer || customer.blacklisted) return;
-
-  if (!shouldSendAutoReply(customer.lastInteractionAt).withinWindow) return;
-  if (!(await canSendOutbound(businessId))) return;
+  if (!business || !customer) return;
 
   const text = `We couldn't find order ${reference}. Please check the reference number or contact us. — ${business.name}`;
 
-  try {
-    await enqueueOutboundMessage({
+  // Routed through deliverText rather than its own checks. Hand-rolled here, it
+  // had drifted out of sync and was missing the owner-takeover gate — so it
+  // could talk over an owner already answering this exact question by hand.
+  await deliverText(
+    {
       businessId,
+      businessName: business.name,
+      templateConfig: parseTemplateConfig(business.replyTemplates),
       customerId,
-      to: customer.waNumber,
-      body: text,
-    });
-  } catch (error: unknown) {
-    logger.error({ error, businessId, reference }, 'Failed to queue unknown-reference reply');
-  }
+      customerWaNumber: customer.waNumber,
+      customerName: customer.name,
+      lastInboundAt: customer.lastInboundAt,
+      blacklisted: customer.blacklisted,
+    },
+    text,
+  );
 }

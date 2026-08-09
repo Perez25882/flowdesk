@@ -159,6 +159,61 @@ export async function createOrderFromMessage(
   return order;
 }
 
+export interface AssistantOrderItem {
+  productId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+/**
+ * Creates an order the assistant has settled over several turns.
+ *
+ * Separate from `createOrderFromMessage` because there is nothing left to
+ * extract: the items were resolved against the catalogue across the
+ * conversation, and re-parsing the last message ("2 bags") would throw that away
+ * and produce an unpriced line instead.
+ *
+ * `rawMessage` carries the conversation's own words so the owner can still see
+ * what was actually asked for.
+ */
+export async function createOrderFromAssistant(
+  businessId: string,
+  customerId: string,
+  items: AssistantOrderItem[],
+  rawMessage: string,
+): Promise<OrderWithRelations> {
+  const order = await createOrderWithReference(businessId, (referenceNumber) => ({
+    businessId,
+    customerId,
+    referenceNumber,
+    rawMessage,
+    isManual: false,
+    items: items.map((item) => ({
+      productId: item.productId,
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+    })),
+  }));
+
+  await Promise.all([recalculateCustomerTotals(customerId), recordOrder(businessId)]);
+  await emitCreated(order);
+
+  logger.info(
+    {
+      orderId: order.id,
+      businessId,
+      reference: order.referenceNumber,
+      itemCount: items.length,
+      total: Number(order.totalAmount),
+    },
+    'Order created by the assistant',
+  );
+
+  return order;
+}
+
 export async function createManualOrder(
   data: ManualOrderInput,
   businessId: string,

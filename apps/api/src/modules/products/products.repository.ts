@@ -172,6 +172,57 @@ export async function findActiveCatalogProducts(
   }));
 }
 
+/** A catalog row as the assistant sees it: everything needed to answer, nothing more. */
+export interface CatalogProductWithStock {
+  id: string;
+  name: string;
+  aliases: string[];
+  unit: string;
+  price: number;
+  stockQuantity: number;
+}
+
+/**
+ * The active catalog including stock levels.
+ *
+ * Separate from `findActiveCatalogProducts` because that one feeds keyword
+ * scoring, which has no use for stock. Answering a customer does: "do you have
+ * malta?" is a stock question, and without the quantity the assistant can only
+ * confirm the product exists — which is how a shop promises something it cannot
+ * deliver.
+ *
+ * `price` and `stockQuantity` are Prisma `Decimal`s; they are converted here so
+ * callers never serialize `{"s":1,"e":1,"d":[50]}` into a prompt.
+ */
+export async function findCatalogProductsWithStock(
+  businessId: string,
+): Promise<CatalogProductWithStock[]> {
+  const products = await prisma.product.findMany({
+    where: {
+      businessId,
+      active: true,
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      name: true,
+      aliases: true,
+      unit: true,
+      price: true,
+      stockQuantity: true,
+    },
+  });
+
+  return products.map((p) => ({
+    id: p.id,
+    name: p.name,
+    aliases: p.aliases,
+    unit: p.unit,
+    price: Number(p.price),
+    stockQuantity: Number(p.stockQuantity),
+  }));
+}
+
 export interface StockDeductionAlert {
   productId: string;
   productName: string;

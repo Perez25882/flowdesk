@@ -329,3 +329,129 @@ export function extractItemsFromText(text: string, catalog: CatalogProduct[]): E
 
   return kept.map((result) => result.item);
 }
+
+/** Default ceiling on retrieved products, to bound prompt size. */
+const MAX_CANDIDATES = 8;
+
+/**
+ * Score for a product whose distinctive words appear in the message without the
+ * full term matching — "rice" against a catalog holding only "Rice 5kg" and
+ * "Rice 25kg". Deliberately well below a fuzzy match: it means "the customer is
+ * probably talking about this", not "this is the product".
+ */
+const PARTIAL_MATCH_SCORE = 0.6;
+
+/** Weakest candidate worth putting in a prompt. */
+const MIN_CANDIDATE_CONFIDENCE = 0.3;
+
+/**
+ * Tokens distinctive enough to identify a product on their own. Sizes and units
+ * ("5", "kg", "cl") are excluded: they recur across the whole catalog, so
+ * matching on them alone would surface every product that shares a pack size.
+ */
+function distinctiveTokens(tokens: string[]): string[] {
+  return tokens.filter((token) => token.length >= 3 && !/^\d+(\.\d+)?$/.test(token));
+}
+
+export interface ProductCandidate {
+  product: CatalogProduct;
+  /** 1 for an exact term match, otherwise the best fuzzy similarity. */
+  confidence: number;
+  /** The catalog term (name or alias) that matched, for debugging. */
+  matchedTerm: string;
+}
+
+/**
+ * Finds every catalog product a message plausibly refers to.
+ *
+ * This is retrieval, not extraction, and the difference matters. `extractItems-
+ * FromText` is tuned for precision — it splits the message into one fragment per
+ * line item, returns on the first exact hit, and discards unmatched fragments
+ * once anything matched — because a wrong line item becomes a wrong order.
+ *
+ * Answering a question needs the opposite bias. "Do you have coke or fanta?" is
+ * a single fragment to the extractor (it splits on `and`/`+`/`,` but not `or`)
+ * and would surface only the first product, leaving the assistant to answer
+ * about one drink and say nothing about the other. So this scans the whole token
+ * stream for every term independently, keeps all of them, and returns the best
+ * score per product.
+ *
+ * Bounded by `limit` because the result goes into a prompt.
+ */
+export function findCandidateProducts(
+  text: string,
+  catalog: CatalogProduct[],
+  limit: number = MAX_CANDIDATES,
+): ProductCandidate[] {
+  const tokens = tokenize(text);
+
+  if (tokens.length === 0 || catalog.length === 0 || limit <= 0) {
+    return [];
+  }
+
+  const messageTokens = new Set(tokens);
+  const bestByProduct = new Map<string, ProductCandidate>();
+
+  for (const term of buildTerms(catalog)) {
+    let confidence = 0;
+
+    if (term.tokens.length <= tokens.length) {
+      if (findContiguousRun(tokens, term.tokens) !== -1) {
+        confidence = 1;
+      } else if (term.text.length >= MIN_FUZZY_TERM_LENGTH) {
+        // Best-scoring window anywhere in the message, so a product named late
+        // in a long sentence is found just as readily as one named first.
+        let bestFuzzy = 0;
+        for (let start = 0; start + term.tokens.length <= tokens.length; start += 1) {
+          const window = tokens.slice(start, start + term.tokens.length).join(' ');
+          const score = similarityScore(term.text, window);
+          if (score > bestFuzzy) bestFuzzy = score;
+        }
+
+        // Still held to the full similarity bar. Admitting weaker fuzzy scores
+        // just because retrieval tolerates weak candidates matches unrelated
+        // words on shape alone — "fanta" scores 0.33 against "sunday".
+        if (bestFuzzy >= SIMILARITY_THRESHOLD) confidence = bestFuzzy;
+      }
+    }
+
+    // Partial match, on distinctive whole words rather than string shape.
+    // Without this, a shop whose catalog is "Rice 5kg" and "Rice 25kg"
+    // retrieves NOTHING for "I want rice" — no term is the bare word — and the
+    // assistant cannot even ask which size the customer means. That question is
+    // the whole point of the clarification flow.
+    if (confidence === 0) {
+      const significant = distinctiveTokens(term.tokens);
+
+      if (significant.length > 0) {
+        const hits = significant.filter((token) => messageTokens.has(token)).length;
+        const overlap = hits / significant.length;
+
+        // Half the distinctive words is the floor; one word out of three is
+        // more likely coincidence than reference.
+        if (overlap >= 0.5) {
+          confidence = Math.max(confidence, PARTIAL_MATCH_SCORE * overlap);
+        }
+      }
+    }
+
+    if (confidence < MIN_CANDIDATE_CONFIDENCE) continue;
+
+    const existing = bestByProduct.get(term.product.id);
+
+    // One product can match through several aliases; keep its strongest.
+    if (!existing || confidence > existing.confidence) {
+      bestByProduct.set(term.product.id, {
+        product: term.product,
+        confidence,
+        matchedTerm: term.text,
+      });
+    }
+  }
+
+  return [...bestByProduct.values()]
+    .sort(
+      (a, b) => b.confidence - a.confidence || a.product.name.localeCompare(b.product.name),
+    )
+    .slice(0, limit);
+}

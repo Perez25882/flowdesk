@@ -125,6 +125,20 @@ const envSchema = z.object({
     .max(1)
     .default(DEFAULT_HAIKU_CONFIDENCE_THRESHOLD),
 
+  // ── The assistant ───────────────────────────────────────────────────────
+  // Distinct from the label-only classifier above. This one is given the shop's
+  // catalogue and facts and asked to decide how to respond — a much harder task
+  // than picking a label, so it wants a bigger model than the classifier uses.
+  //
+  // Unset means "the provider's default", resolved below rather than here so the
+  // right default follows AI_PROVIDER instead of being pinned to one vendor.
+  ASSISTANT_MODEL: optionalString,
+  // Anthropic only. Ignored by other providers.
+  ASSISTANT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
+  ASSISTANT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(20_000),
+  // Caps reasoning AND the reply together, so it needs room for both.
+  ASSISTANT_MAX_TOKENS: z.coerce.number().int().min(512).max(16_000).default(2_048),
+
   // ── AWS S3 (media) ──────────────────────────────────────────────────────
   // Absent = inbound media is recorded but not archived. Meta media URLs
   // expire in ~5 minutes, so production requires this.

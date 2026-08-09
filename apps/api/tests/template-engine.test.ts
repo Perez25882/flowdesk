@@ -118,6 +118,14 @@ describe('isTemplateEnabled', () => {
   });
 });
 
+/**
+ * The window is measured from the last message received FROM the customer.
+ *
+ * Passing `lastInteractionAt` here was a real defect: the owner replying from
+ * the WhatsApp Business app bumps that field, so Flowdesk believed the window
+ * was open after Meta had closed it, and the send died in the dead-letter queue
+ * with nothing shown to the owner.
+ */
 describe('shouldSendAutoReply', () => {
   it('allows a reply inside the 24-hour service window', () => {
     const anHourAgo = new Date(Date.now() - 60 * 60 * 1000);
@@ -133,8 +141,19 @@ describe('shouldSendAutoReply', () => {
     expect(shouldSendAutoReply(twoDaysAgo).withinWindow).toBe(false);
   });
 
-  it('allows a reply when there is no recorded interaction yet', () => {
-    expect(shouldSendAutoReply(null).withinWindow).toBe(true);
+  it('blocks a reply when the customer has never messaged in', () => {
+    // No inbound message means the window has never opened. This used to
+    // return true, which is the wrong way to fail on a rule Meta enforces:
+    // a customer the owner messaged first would be replied to automatically
+    // and every send would be rejected.
+    expect(shouldSendAutoReply(null).withinWindow).toBe(false);
+    expect(shouldSendAutoReply(undefined).withinWindow).toBe(false);
+  });
+
+  it('treats the boundary as closed rather than open', () => {
+    const exactlyTwentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    expect(shouldSendAutoReply(exactlyTwentyFourHoursAgo).withinWindow).toBe(false);
   });
 });
 

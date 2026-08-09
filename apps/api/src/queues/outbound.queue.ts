@@ -13,6 +13,30 @@ export interface OutboundJobData {
   templateKey?: string;
   /** Order the message concerns, when applicable. */
   relatedOrderId?: string;
+  /** The inbound message this answers, so the thread can be reconstructed. */
+  inReplyToMessageId?: string;
+  /** Set when a person sent this from the dashboard rather than automation. */
+  sentByStaffId?: string;
+  /**
+   * Abort if the owner replied from their own phone after this moment.
+   *
+   * The takeover check runs when the message is queued, but generation and the
+   * queue itself add seconds — long enough for the owner to start typing in the
+   * WhatsApp Business app and for the assistant to then talk over them. The
+   * worker re-checks this immediately before sending, which closes the window.
+   *
+   * Absent for human-initiated sends: refusing to deliver a person's own reply
+   * because a person recently replied is nonsense.
+   */
+  suppressIfOwnerRepliedSince?: string;
+}
+
+export interface EnqueueOptions {
+  /**
+   * Idempotency key. BullMQ drops a second job with the same id, so a retry or
+   * a double-click cannot deliver the same message twice.
+   */
+  jobId?: string;
 }
 
 /**
@@ -43,10 +67,14 @@ export const outboundMessagesQueue = new Queue<OutboundJobData, unknown, string>
 );
 
 /** Enqueues a message for delivery through the owning tenant's own number. */
-export async function enqueueOutboundMessage(data: OutboundJobData): Promise<void> {
+export async function enqueueOutboundMessage(
+  data: OutboundJobData,
+  options: EnqueueOptions = {},
+): Promise<void> {
   await outboundMessagesQueue.add(
     // @ts-expect-error BullMQ v5 NameType inference
     'send-whatsapp-message',
     data,
+    options.jobId ? { jobId: options.jobId } : undefined,
   );
 }

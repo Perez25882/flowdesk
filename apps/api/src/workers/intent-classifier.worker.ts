@@ -1,10 +1,12 @@
 import { Worker } from 'bullmq';
-import { IntentType, type ClassificationSource } from '@flowdesk/shared';
+import { IntentType, type AssistantAction, type ClassificationSource } from '@flowdesk/shared';
 import { prisma } from '../config/database.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
 import { emitMessageFlagged } from '../services/sse/sse.events.js';
 import { classifyMessage } from '../services/intent/index.js';
+import { runAssistant } from '../services/assistant/index.js';
+import { requiresReview } from '../services/assistant/router.js';
 import {
   notifyIntentReply,
   notifyOrderStatus,
@@ -19,8 +21,18 @@ import {
   INTENT_CLASSIFICATION_QUEUE_NAME,
 } from './message-processor.worker.js';
 import { moveToDeadLetter } from './dead-letter.worker.js';
+import { withTenantSlot } from './tenant-fairness.js';
 
-const WORKER_CONCURRENCY = 3;
+/**
+ * Raised from 3 once the assistant landed.
+ *
+ * The job is almost entirely waiting on a model — measured at 2–4s per call —
+ * so at 3 the whole platform handled roughly 50 messages a minute regardless of
+ * how many tenants were sending. The work is I/O, not CPU, so the ceiling is the
+ * provider's rate limit rather than this number; per-tenant fairness (below)
+ * keeps one busy shop from taking every slot.
+ */
+const WORKER_CONCURRENCY = 10;
 
 interface IntentClassificationJobData {
   businessId: string;
@@ -28,17 +40,27 @@ interface IntentClassificationJobData {
   waMessageId: string;
 }
 
-function requiresReviewByIntent(
-  intent: IntentType,
-  confidence: number,
-): boolean {
-  if (intent === IntentType.UNCLASSIFIED) return true;
-  if (intent === IntentType.COMPLAINT) return true;
-  if (intent === IntentType.INQUIRY) return true;
-  if (intent === IntentType.PAYMENT) return true;
-  if (confidence < 0.6) return true;
-  return false;
-}
+/**
+ * Intents the assistant handles instead of a template.
+ *
+ * ORDER is included now that pending orders exist to hold an incomplete one
+ * between turns — before that, an ambiguous order would have been held and then
+ * silently forgotten, which is worse than the generic reply it replaced. The
+ * old record-driven path is still the fallback when the assistant does not run.
+ *
+ * STATUS_CHECK is deliberately left out: looking up a reference number is an
+ * exact database lookup with a templated answer, and a model adds latency and
+ * failure modes to something that already works.
+ */
+const ASSISTANT_INTENTS: ReadonlySet<IntentType> = new Set([
+  IntentType.ORDER,
+  IntentType.INQUIRY,
+  IntentType.PAYMENT,
+  IntentType.COMPLAINT,
+  IntentType.GREETING,
+  IntentType.OTHER,
+  IntentType.UNCLASSIFIED,
+]);
 
 interface ClassifiedMessage {
   id: string;
@@ -167,7 +189,6 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
   const catalogTerms = catalog.flatMap((product) => [product.name, ...product.aliases]);
 
   const result = await classifyMessage(message.body, message.businessId, { catalogTerms });
-  const needsReview = requiresReviewByIntent(result.intent, result.confidence);
 
   await prisma.message.update({
     where: { id: jobData.messageId },
@@ -177,58 +198,119 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
       classifiedBy: result.source as ClassificationSource,
       processed: true,
       processedAt: new Date(),
-      requiresReview: needsReview,
     },
+  });
+
+  // Blacklist is enforced again inside the notification layer, but short-
+  // circuiting here also avoids creating orders — and spending model calls —
+  // for muted contacts.
+  if (message.customer?.blacklisted) {
+    logger.info(
+      { messageId: jobData.messageId, customerId: message.customer.id },
+      'Skipping intent side effects: customer is blacklisted',
+    );
+    await flagIfNeeded(jobData, result.intent, result.confidence, 'none', false);
+    return;
+  }
+
+  if (result.intent === IntentType.STATUS_CHECK) {
+    await flagIfNeeded(jobData, result.intent, result.confidence, 'none', false);
+    await handleStatusCheckIntent(message);
+    return;
+  }
+
+  // The assistant reads the message against this shop's catalogue and facts, and
+  // either answers it, asks about it, or writes the owner a draft. It falls back
+  // to the template when it is switched off, unconfigured, or unavailable.
+  const assisted =
+    ASSISTANT_INTENTS.has(result.intent) && message.customerId
+      ? await runAssistant({
+          businessId: message.businessId,
+          customerId: message.customerId,
+          messageId: message.id,
+          body: message.body,
+          ruleIntent: result.intent,
+          ruleConfidence: result.confidence,
+        })
+      : { action: 'template_reply' as const, escalated: false, intent: null, confidence: null };
+
+  // The assistant reads the message with the shop's catalogue in front of it, so
+  // where it disagrees with the rule engine it is better informed.
+  const finalIntent = assisted.intent ?? result.intent;
+  const finalConfidence = assisted.confidence ?? result.confidence;
+
+  await flagIfNeeded(
+    jobData,
+    finalIntent,
+    finalConfidence,
+    assisted.action,
+    assisted.escalated,
+  );
+
+  logger.info(
+    {
+      messageId: jobData.messageId,
+      intent: finalIntent,
+      confidence: finalConfidence,
+      source: result.source,
+      assistantAction: assisted.action,
+    },
+    'Message intent classified',
+  );
+
+  // The assistant did not run, and this is an order. Fall back to the old
+  // record-driven path so an order is still created — degrading to "no order
+  // was taken" would cost the owner a sale.
+  if (assisted.action === 'template_reply' && result.intent === IntentType.ORDER) {
+    await handleOrderIntent(message);
+    return;
+  }
+
+  // `draft` sends the courtesy template too. The owner has a reply waiting, but
+  // writing it takes them however long it takes, and leaving the customer with
+  // silence in the meantime is worse than a holding message — the owner's real
+  // answer follows it rather than replacing it.
+  if (assisted.action === 'template_reply' || assisted.action === 'draft') {
+    const templateKey = INTENT_TEMPLATE[finalIntent] ?? 'fallback';
+    await handleAutoReplyIntent(message, templateKey);
+  }
+}
+
+/**
+ * Records whether a person needs to look at this, and tells the dashboard.
+ *
+ * Split out because it now depends on what the assistant did, which is only
+ * known after it has run — the flag can no longer be written in the same update
+ * as the classification.
+ */
+async function flagIfNeeded(
+  jobData: IntentClassificationJobData,
+  intent: IntentType,
+  confidence: number,
+  action: AssistantAction,
+  escalated: boolean,
+): Promise<void> {
+  const needsReview = requiresReview(intent, confidence, action, escalated);
+
+  await prisma.message.update({
+    where: { id: jobData.messageId },
+    data: { intent, intentConfidence: confidence, requiresReview: needsReview },
   });
 
   if (needsReview) {
     emitMessageFlagged(jobData.businessId, {
       messageId: jobData.messageId,
       requiresReview: true,
-      intent: result.intent,
+      intent,
     });
   }
-
-  logger.info(
-    {
-      messageId: jobData.messageId,
-      intent: result.intent,
-      confidence: result.confidence,
-      source: result.source,
-      requiresReview: needsReview,
-    },
-    'Message intent classified',
-  );
-
-  // Blacklist is enforced again inside the notification layer, but short-
-  // circuiting here also avoids creating orders for muted contacts.
-  if (message.customer?.blacklisted) {
-    logger.info(
-      { messageId: jobData.messageId, customerId: message.customer.id },
-      'Skipping intent side effects: customer is blacklisted',
-    );
-    return;
-  }
-
-  if (result.intent === IntentType.ORDER) {
-    await handleOrderIntent(message);
-    return;
-  }
-
-  if (result.intent === IntentType.STATUS_CHECK) {
-    await handleStatusCheckIntent(message);
-    return;
-  }
-
-  const templateKey = INTENT_TEMPLATE[result.intent] ?? 'fallback';
-  await handleAutoReplyIntent(message, templateKey);
 }
 
 export const intentClassifierWorker = new Worker<IntentClassificationJobData>(
   INTENT_CLASSIFICATION_QUEUE_NAME,
   async (job) => {
     try {
-      await processIntentClassification(job.data);
+      await withTenantSlot(job.data.businessId, () => processIntentClassification(job.data));
     } catch (error: unknown) {
       logger.error(
         {

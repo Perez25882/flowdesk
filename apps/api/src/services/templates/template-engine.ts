@@ -24,7 +24,7 @@ interface TemplateVariables {
   reason?: string;
 }
 
-const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
+export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
   order_pending:
     'Hi {name}! We received your order (Ref: {ref}). We\'ll confirm shortly. — {business}',
   order_confirmed:
@@ -165,15 +165,31 @@ export function getCustomerFirstName(name: string | null | undefined): string {
   return name.split(' ')[0] ?? name;
 }
 
+export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether Meta's 24-hour customer-service window is open.
+ *
+ * Free-form messages may only be sent inside a window that a message FROM the
+ * customer opens, so this takes `lastInboundAt` — never `lastInteractionAt`,
+ * which the owner's own replies from the WhatsApp Business app also bump
+ * (`echo.service.ts`). Gating on the latter let us believe the window was open
+ * after Meta had closed it: the send was accepted here, rejected by Meta as
+ * non-retryable, and dead-lettered without anything surfacing to the owner.
+ *
+ * A missing value means no customer message has ever arrived, so the window has
+ * never opened. That is CLOSED. This previously returned open, which is the
+ * wrong way round to fail on a rule Meta enforces for us.
+ */
 export function shouldSendAutoReply(
-  lastInteractionAt: Date | null | undefined,
+  lastInboundAt: Date | null | undefined,
 ): { withinWindow: boolean } {
-  if (!lastInteractionAt) {
-    return { withinWindow: true };
+  if (!lastInboundAt) {
+    return { withinWindow: false };
   }
 
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  return { withinWindow: lastInteractionAt > twentyFourHoursAgo };
+  const windowOpenedAfter = new Date(Date.now() - SERVICE_WINDOW_MS);
+  return { withinWindow: lastInboundAt > windowOpenedAfter };
 }
 
 export function getTemplateKeyForOrderStatus(status: OrderStatus): TemplateKey | null {
