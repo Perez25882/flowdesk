@@ -1,23 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
 
-const API_BASE = '/api/v1';
 
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('accessToken');
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error ?? `HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  return data.data as T;
-}
 
 export interface Product {
   id: string;
@@ -47,38 +32,38 @@ export interface StockAdjustmentInput {
   note?: string;
 }
 
-export function useProducts(search?: string) {
+export function useProducts(search?: string): UseQueryResult<Product[], Error> {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
   return useQuery({
     queryKey: ['products', search],
-    queryFn: () => fetchJson<Product[]>(`/products${query}`),
+    queryFn: () => apiFetch<Product[]>(`/products${query}`),
     staleTime: 30_000,
   });
 }
 
-export function useProductDetail(productId: string | null) {
+export function useProductDetail(productId: string | null): UseQueryResult<Product, Error> {
   return useQuery({
     queryKey: ['products', 'detail', productId],
-    queryFn: () => fetchJson<Product>(`/products/${productId}`),
+    queryFn: () => apiFetch<Product>(`/products/${productId}`),
     enabled: !!productId,
     staleTime: 30_000,
   });
 }
 
-export function useCreateProduct() {
+export function useCreateProduct(): UseMutationResult<Product, Error, CreateProductInput> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: CreateProductInput) =>
-      fetchJson<Product>('/products', { method: 'POST', body: JSON.stringify(data) }),
+      apiFetch<Product>('/products', { method: 'POST', body: data }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['products'] }),
   });
 }
 
-export function useUpdateProduct() {
+export function useUpdateProduct(): UseMutationResult<Product, Error, { id: string; data: Partial<CreateProductInput> }> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<CreateProductInput> }) =>
-      fetchJson<Product>(`/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+      apiFetch<Product>(`/products/${id}`, { method: 'PATCH', body: data }),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ['products'] });
       qc.invalidateQueries({ queryKey: ['products', 'detail', id] });
@@ -86,28 +71,28 @@ export function useUpdateProduct() {
   });
 }
 
-export function useDeleteProduct() {
+export function useDeleteProduct(): UseMutationResult<void, Error, string> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      fetchJson<void>(`/products/${id}`, { method: 'DELETE' }),
+      apiFetch<void>(`/products/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['products'] }),
   });
 }
 
-export function useLowStockProducts() {
+export function useLowStockProducts(): UseQueryResult<Product[], Error> {
   return useQuery({
     queryKey: ['products', 'low-stock'],
-    queryFn: () => fetchJson<Product[]>('/products/low-stock'),
+    queryFn: () => apiFetch<Product[]>('/products/low-stock'),
     staleTime: 30_000,
   });
 }
 
-export function useAdjustStock() {
+export function useAdjustStock(): UseMutationResult<Product, Error, { id: string; data: StockAdjustmentInput }> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: StockAdjustmentInput }) =>
-      fetchJson<Product>(`/products/${id}/stock`, { method: 'POST', body: JSON.stringify(data) }),
+      apiFetch<Product>(`/products/${id}/stock`, { method: 'POST', body: data }),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ['products'] });
       qc.invalidateQueries({ queryKey: ['products', 'detail', id] });

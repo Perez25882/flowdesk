@@ -7,9 +7,13 @@ export interface StaffMember {
   businessId: string;
   name: string;
   phone: string;
-  role: string;
+  /** Typed as the enum, not `string` — the role drives authorisation decisions. */
+  role: StaffRole;
   active: boolean;
   passwordHash: string | null;
+  inviteToken: string | null;
+  /** Enforced on accept — an invite link outlives the message it was sent in. */
+  inviteExpiry: Date | null;
   inviteAcceptedAt: Date | null;
   lastLoginAt: Date | null;
   createdAt: Date;
@@ -45,6 +49,21 @@ export async function findStaffByPhone(phone: string, businessId: string): Promi
     where: { phone, businessId },
   });
   return staff as StaffMember | null;
+}
+
+/**
+ * Every active, onboarded staff record for a phone number, across all
+ * businesses.
+ *
+ * Staff sign in with a phone number and no business context, and the same
+ * person may work for more than one Flowdesk business, so the caller
+ * disambiguates by password.
+ */
+export async function findActiveStaffByPhone(phone: string): Promise<StaffMember[]> {
+  const staff = await prisma.staff.findMany({
+    where: { phone, active: true, passwordHash: { not: null } },
+  });
+  return staff as StaffMember[];
 }
 
 export async function findStaffById(id: string, businessId: string): Promise<StaffMember | null> {
@@ -101,11 +120,29 @@ export async function recordLogin(id: string): Promise<void> {
   });
 }
 
-export async function getStaffActivity(staffId: string, businessId: string) {
-  const activities = await prisma.staffActivity.findMany({
+/** Deletes every refresh session belonging to a staff member. */
+export async function deleteStaffSessions(staffId: string): Promise<void> {
+  await prisma.session.deleteMany({ where: { staffId } });
+}
+
+export interface StaffActivityEntry {
+  id: string;
+  staffId: string;
+  action: string;
+  resourceType: string | null;
+  resourceId: string | null;
+  note: string | null;
+  createdAt: Date;
+}
+
+/** Most recent actions by a staff member, for the owner's activity log. */
+export async function getStaffActivity(
+  staffId: string,
+  businessId: string,
+): Promise<StaffActivityEntry[]> {
+  return prisma.staffActivity.findMany({
     where: { staffId, staff: { businessId } },
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
-  return activities;
 }

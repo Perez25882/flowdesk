@@ -1,45 +1,69 @@
 import crypto from 'node:crypto';
+import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { env } from '../../config/env.js';
-import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
-import { UnauthorizedError, ConflictError, ExternalServiceError } from '../../utils/errors.js';
-import { encryptSecret } from '../../utils/crypto.js';
-import {
-  exchangeCodeForToken,
-  fetchMetaUserInfo,
-  fetchPhoneNumberInfo,
-  subscribeWabaToApp,
-} from '../../services/whatsapp/meta.js';
+import { prisma } from '../../config/database.js';
+import { redis } from '../../config/redis.js';
+import { ConflictError, UnauthorizedError, ValidationError } from '../../utils/errors.js';
+import { normalizeGhanaPhone } from '../../utils/phone.js';
+import { createPaystackCustomer } from '../../services/billing/paystack-customer.js';
+import { businessSubject, revokeTokensFor } from '../../services/auth/revocation.js';
 import type { BusinessPlan, StaffRole } from '../../types/prisma-enums.js';
 import {
   createBusiness,
-  findBusinessByMetaUserId,
-  findSession,
+  findBusinessByEmail,
+  consumeSession,
   createSession,
   deleteSession,
   deleteAllSessions,
+  registerFailedLogin,
+  registerSuccessfulLogin,
+  setBusinessPassword,
+  createPasswordResetToken,
+  consumePasswordResetToken,
   type CreateBusinessInput,
 } from './auth.repository.js';
+import type { LoginInput, RegisterInput } from './auth.schema.js';
 
 const ACCESS_TOKEN_EXPIRY = '15m';
-const REFRESH_TOKEN_EXPIRY = '7d';
+const REFRESH_TOKEN_EXPIRY_DAYS = 30;
 const TRIAL_DAYS = 14;
-const PAYSTACK_API_URL = 'https://api.paystack.co/customer';
+
+/** bcrypt cost factor. 12 is the project's security baseline. */
+const BCRYPT_ROUNDS = 12;
+
+/** Failed sign-ins tolerated before the account is temporarily locked. */
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000;
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * A bcrypt hash of a throwaway value, compared against when no account exists
+ * for the submitted email. Without it, a missing account would return far
+ * faster than a wrong password and the timing difference would let an attacker
+ * enumerate which emails are registered.
+ */
+const DUMMY_HASH = bcrypt.hashSync('flowdesk-timing-equalizer', BCRYPT_ROUNDS);
 
 export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
 }
 
-export interface MetaSignupInput {
-  code: string;
-  phoneNumberId: string;
-  wabaId?: string | undefined;
+export interface AuthenticatedBusiness {
+  id: string;
+  name: string;
+  ownerName: string;
+  email: string | null;
+  plan: BusinessPlan;
+  trialEndsAt: Date | null;
+  waConnected: boolean;
 }
 
-export interface MetaLoginInput {
-  code: string;
+export interface AuthResult extends AuthTokens {
+  business: AuthenticatedBusiness;
 }
 
 interface AccessTokenPayload {
@@ -59,219 +83,334 @@ function signAccessToken(payload: AccessTokenPayload): string {
 }
 
 function signRefreshToken(payload: RefreshTokenPayload): string {
-  return jwt.sign(payload, env.JWT_REFRESH_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRY });
+  return jwt.sign(payload, env.JWT_REFRESH_SECRET, {
+    expiresIn: `${REFRESH_TOKEN_EXPIRY_DAYS}d`,
+  });
 }
 
-function verifyRefreshToken(token: string): RefreshTokenPayload {
-  return jwt.verify(token, env.JWT_REFRESH_SECRET) as RefreshTokenPayload;
-}
-
+/** Refresh tokens are stored as SHA-256 digests so a database leak is not replayable. */
 function hashToken(raw: string): string {
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
-export function normalizeGhanaPhone(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
+const REFRESH_CLAIM_PREFIX = 'flowdesk:refresh:claim:';
+// Just long enough to cover the redemption; the session row is the durable
+// record, this only serialises concurrent replays.
+const REFRESH_CLAIM_TTL_SECONDS = 30;
 
-  if (digits.startsWith('0')) {
-    return `233${digits.slice(1)}`;
+/**
+ * Atomically claims a refresh token for redemption. Returns false if it was
+ * already claimed (a concurrent or replayed use). Fails OPEN on a Redis outage
+ * — the DB session delete remains the correctness backstop, and locking every
+ * refresh out during a Redis blip is worse than the narrow race it guards.
+ */
+async function claimRefreshToken(refreshTokenHash: string): Promise<boolean> {
+  try {
+    const result = await redis.set(
+      `${REFRESH_CLAIM_PREFIX}${refreshTokenHash}`,
+      '1',
+      'EX',
+      REFRESH_CLAIM_TTL_SECONDS,
+      'NX',
+    );
+    return result === 'OK';
+  } catch (error: unknown) {
+    logger.warn({ error }, 'Refresh-token claim unavailable — proceeding on DB guard alone');
+    return true;
   }
-
-  if (digits.startsWith('233')) {
-    return digits;
-  }
-
-  return `233${digits}`;
 }
 
-async function createSessionTokens(businessId: string, plan: BusinessPlan): Promise<AuthTokens> {
+function refreshExpiry(): Date {
+  return new Date(Date.now() + REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Mints an access/refresh pair and records the session.
+ *
+ * Exported so staff sign-in issues sessions through exactly the same path as
+ * owner sign-in — staff previously minted tokens by hand without creating a
+ * Session row, so their refresh always failed and they were signed out after
+ * fifteen minutes.
+ */
+export async function issueTokens(
+  businessId: string,
+  plan: BusinessPlan,
+  staff?: { id: string; role: StaffRole },
+): Promise<AuthTokens> {
   const accessPayload: AccessTokenPayload = { businessId, plan };
-  const jti = crypto.randomUUID();
-  const refreshPayload: RefreshTokenPayload = { businessId, jti };
+  if (staff) {
+    accessPayload.staffId = staff.id;
+    accessPayload.role = staff.role;
+  }
 
   const accessToken = signAccessToken(accessPayload);
-  const refreshToken = signRefreshToken(refreshPayload);
-  const refreshTokenHash = hashToken(refreshToken);
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const refreshToken = signRefreshToken({ businessId, jti: crypto.randomUUID() });
 
-  await createSession({
+  const sessionInput: Parameters<typeof createSession>[0] = {
     businessId,
-    refreshTokenHash,
-    expiresAt,
-  });
+    refreshTokenHash: hashToken(refreshToken),
+    expiresAt: refreshExpiry(),
+  };
+  if (staff) sessionInput.staffId = staff.id;
+
+  await createSession(sessionInput);
 
   return { accessToken, refreshToken };
 }
 
-export async function createPaystackCustomer(
-  email: string,
-  name: string,
-  phone?: string,
-): Promise<string> {
-  const response = await fetch(PAYSTACK_API_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.PAYSTACK_SECRET_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      email,
-      first_name: name,
-      ...(phone ? { phone } : {}),
-    }),
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => 'unknown');
-    logger.error({ status: response.status, body: errorBody }, 'Paystack customer creation failed');
-    throw new ExternalServiceError('Failed to create Paystack customer');
-  }
-
-  const data = (await response.json()) as { data: { customer_code: string } };
-  return data.data.customer_code;
+function toAuthenticatedBusiness(business: {
+  id: string;
+  name: string;
+  ownerName: string;
+  email: string | null;
+  plan: BusinessPlan;
+  trialEndsAt: Date | null;
+  waPhoneNumberId: string | null;
+}): AuthenticatedBusiness {
+  return {
+    id: business.id,
+    name: business.name,
+    ownerName: business.ownerName,
+    email: business.email,
+    plan: business.plan,
+    trialEndsAt: business.trialEndsAt,
+    waConnected: business.waPhoneNumberId !== null,
+  };
 }
 
-export async function signupWithMeta(input: MetaSignupInput): Promise<AuthTokens> {
-  const accessToken = await exchangeCodeForToken(input.code);
-  const metaUser = await fetchMetaUserInfo(accessToken);
+/**
+ * Creates a business account. The owner can start working immediately; the
+ * WhatsApp number is attached afterwards through the whatsapp module, so a
+ * Meta outage never blocks sign-up.
+ */
+export async function register(input: RegisterInput): Promise<AuthResult> {
+  const existing = await findBusinessByEmail(input.email);
 
-  const existing = await findBusinessByMetaUserId(metaUser.id);
   if (existing) {
-    throw new ConflictError('An account already exists for this Facebook user. Please sign in instead.');
+    throw new ConflictError('An account with this email already exists');
   }
 
-  if (input.wabaId) {
-    await subscribeWabaToApp(input.wabaId, accessToken);
-  }
-
-  const phoneInfo = await fetchPhoneNumberInfo(input.phoneNumberId, accessToken);
-
-  const phone = phoneInfo.displayPhoneNumber
-    ? normalizeGhanaPhone(phoneInfo.displayPhoneNumber)
-    : undefined;
+  const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
 
   const trialEndsAt = new Date();
   trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
 
-  const billingEmail = metaUser.email ?? `${metaUser.id}@flowdesk.local`;
-  let paystackCustomerId: string | undefined;
-  try {
-    paystackCustomerId = await createPaystackCustomer(billingEmail, metaUser.name, phone);
-  } catch (error: unknown) {
-    logger.warn({ error, metaUserId: metaUser.id }, 'Paystack customer creation failed — proceeding without Paystack ID');
-  }
-
   const createData: CreateBusinessInput = {
-    name: metaUser.name || 'My Business',
-    ownerName: metaUser.name || 'Owner',
-    metaUserId: metaUser.id,
-    email: metaUser.email,
-    phone,
+    name: input.businessName,
+    ownerName: input.ownerName,
+    email: input.email,
+    passwordHash,
     trialEndsAt,
   };
-  if (paystackCustomerId !== undefined) createData.paystackCustomerId = paystackCustomerId;
+  if (input.phone) createData.phone = normalizeGhanaPhone(input.phone);
 
-  const business = await createBusiness(createData);
-
-  await prisma.business.update({
-    where: { id: business.id },
-    data: {
-      waPhoneNumberId: input.phoneNumberId,
-      waAccessToken: encryptSecret(accessToken),
-      waWebhookVerified: true,
-    },
+  // Billing is set up opportunistically — a Paystack outage must not prevent
+  // someone from creating an account during their free trial.
+  const paystackCustomerId = await createPaystackCustomer(
+    input.email,
+    input.ownerName,
+    createData.phone,
+  ).catch((error: unknown) => {
+    logger.warn({ error, email: input.email }, 'Paystack customer creation failed at signup');
+    return undefined;
   });
 
-  logger.info(
-    { businessId: business.id, metaUserId: metaUser.id, phoneNumberId: input.phoneNumberId },
-    'Business created and WhatsApp connected via Meta signup',
-  );
+  if (paystackCustomerId) createData.paystackCustomerId = paystackCustomerId;
 
-  return createSessionTokens(business.id, business.plan);
+  const business = await createBusiness(createData);
+  const tokens = await issueTokens(business.id, business.plan);
+
+  logger.info({ businessId: business.id }, 'Business registered');
+
+  return { ...tokens, business: toAuthenticatedBusiness(business) };
 }
 
-export async function loginWithMeta(input: MetaLoginInput): Promise<AuthTokens> {
-  const accessToken = await exchangeCodeForToken(input.code);
-  const metaUser = await fetchMetaUserInfo(accessToken);
+export async function login(input: LoginInput): Promise<AuthResult> {
+  const business = await findBusinessByEmail(input.email);
 
-  const business = await findBusinessByMetaUserId(metaUser.id);
-  if (!business) {
-    throw new UnauthorizedError('No account found for this Facebook user. Please sign up first.');
+  // Always run a bcrypt comparison so the response time does not reveal
+  // whether the email is registered.
+  const passwordMatches = await bcrypt.compare(
+    input.password,
+    business?.passwordHash ?? DUMMY_HASH,
+  );
+
+  // Locked accounts are rejected BEFORE recording another failure. The old
+  // order recorded a failure on every wrong password and only checked the lock
+  // afterwards, so anyone who knew the email could keep submitting wrong
+  // passwords to roll the 15-minute lock forward indefinitely — a denial of
+  // service against the real owner. Now, once locked, further attempts neither
+  // extend the lock nor reach the counter.
+  if (business?.lockedUntil && business.lockedUntil > new Date()) {
+    throw new UnauthorizedError(
+      'Too many failed sign-in attempts. Please try again in a few minutes.',
+    );
+  }
+
+  if (!business || !business.passwordHash || !passwordMatches) {
+    if (business) {
+      await registerFailedLogin(business.id, MAX_LOGIN_ATTEMPTS, LOCKOUT_MS);
+    }
+    // Deliberately identical message for unknown email and wrong password.
+    throw new UnauthorizedError('Incorrect email or password');
   }
 
   if (!business.active) {
-    throw new UnauthorizedError('Business account is inactive');
+    throw new UnauthorizedError('This account is inactive');
   }
 
   if (business.suspendedAt) {
     throw new UnauthorizedError(
       business.suspendReason
-        ? `Business suspended: ${business.suspendReason}`
-        : 'Business account is suspended',
+        ? `Account suspended: ${business.suspendReason}`
+        : 'This account is suspended',
     );
   }
 
-  return createSessionTokens(business.id, business.plan);
+  await registerSuccessfulLogin(business.id);
+  const tokens = await issueTokens(business.id, business.plan);
+
+  logger.info({ businessId: business.id }, 'Business signed in');
+
+  return { ...tokens, business: toAuthenticatedBusiness(business) };
 }
 
+/**
+ * Issues a reset token. Always resolves successfully, whether or not the email
+ * is registered, so the endpoint cannot be used to discover accounts.
+ *
+ * Returns the raw token so the caller can deliver it; only its hash is stored.
+ */
+export async function requestPasswordReset(email: string): Promise<string | null> {
+  const business = await findBusinessByEmail(email);
+
+  if (!business) {
+    logger.info({ email }, 'Password reset requested for unknown email — no action taken');
+    return null;
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('base64url');
+
+  await createPasswordResetToken(
+    business.id,
+    hashToken(rawToken),
+    new Date(Date.now() + RESET_TOKEN_TTL_MS),
+  );
+
+  logger.info({ businessId: business.id }, 'Password reset token issued');
+
+  return rawToken;
+}
+
+export async function resetPassword(rawToken: string, newPassword: string): Promise<void> {
+  const claim = await consumePasswordResetToken(hashToken(rawToken));
+
+  if (!claim) {
+    throw new ValidationError('This reset link is invalid or has expired');
+  }
+
+  await setBusinessPassword(claim.businessId, await bcrypt.hash(newPassword, BCRYPT_ROUNDS));
+
+  // Every existing session is revoked: a password reset is the standard
+  // response to a suspected compromise, so old sessions must not survive it.
+  // Deleting sessions kills refresh; bumping the epoch kills any access token
+  // already issued (they are stateless and would otherwise live out their 15
+  // minutes).
+  await deleteAllSessions(claim.businessId);
+  await revokeTokensFor(businessSubject(claim.businessId));
+
+  logger.info({ businessId: claim.businessId }, 'Password reset completed');
+}
+
+export async function changePassword(
+  businessId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: { passwordHash: true },
+  });
+
+  if (!business?.passwordHash) {
+    throw new ValidationError('This account has no password set');
+  }
+
+  if (!(await bcrypt.compare(currentPassword, business.passwordHash))) {
+    throw new UnauthorizedError('Current password is incorrect');
+  }
+
+  await setBusinessPassword(businessId, await bcrypt.hash(newPassword, BCRYPT_ROUNDS));
+  await deleteAllSessions(businessId);
+  await revokeTokensFor(businessSubject(businessId));
+
+  logger.info({ businessId }, 'Password changed');
+}
+
+/**
+ * Rotates a refresh token. The presented token is always deleted, so a stolen
+ * token is usable at most once and the legitimate holder's next refresh fails
+ * visibly rather than silently sharing the session.
+ */
 export async function refreshTokens(rawRefreshToken: string): Promise<AuthTokens> {
   try {
-    verifyRefreshToken(rawRefreshToken);
+    jwt.verify(rawRefreshToken, env.JWT_REFRESH_SECRET);
   } catch {
     throw new UnauthorizedError('Invalid or expired refresh token');
   }
 
   const refreshTokenHash = hashToken(rawRefreshToken);
-  const session = await findSession(refreshTokenHash);
+
+  // Single-use enforcement via an atomic Redis claim on the token hash.
+  //
+  // A DB "delete-then-check" is not enough on its own here: Prisma compiles a
+  // delete on a non-primary unique field into a select-then-delete, so several
+  // concurrent replays can all read the row before any delete lands and each
+  // gets issued a fresh session — proven live, 5 of 10 parallel replays won.
+  // `SET NX` is atomic in Redis, so exactly one caller claims the token; the
+  // rest are rejected. Same pattern as the SSE ticket.
+  const claimed = await claimRefreshToken(refreshTokenHash);
+  if (!claimed) {
+    // Someone already redeemed this token. Delete the session too so the
+    // legitimate holder's next attempt fails visibly rather than sharing it.
+    await deleteSession(refreshTokenHash).catch(() => undefined);
+    throw new UnauthorizedError('Session not found or revoked');
+  }
+
+  const session = await consumeSession(refreshTokenHash);
 
   if (!session) {
     throw new UnauthorizedError('Session not found or revoked');
   }
 
   if (session.expiresAt < new Date()) {
-    await deleteSession(refreshTokenHash);
     throw new UnauthorizedError('Refresh token expired');
   }
 
-  await deleteSession(refreshTokenHash);
-
-  const accessPayload: AccessTokenPayload = {
-    businessId: session.business.id,
-    plan: session.business.plan,
-  };
-
-  if (session.staff) {
-    accessPayload.staffId = session.staff.id;
-    accessPayload.role = session.staff.role;
+  if (!session.business.active || session.business.suspendedAt) {
+    throw new UnauthorizedError('This account is no longer active');
   }
 
-  const jti = crypto.randomUUID();
-  const newRefreshPayload: RefreshTokenPayload = {
-    businessId: session.business.id,
-    jti,
-  };
+  // A staff member deactivated since this session was issued must not be able to
+  // refresh into a fresh access token. (Their sessions are also deleted on
+  // deactivation; this is the belt to that braces.)
+  if (session.staff && session.staff.active === false) {
+    throw new UnauthorizedError('This staff account is no longer active');
+  }
 
-  const accessToken = signAccessToken(accessPayload);
-  const newRefreshToken = signRefreshToken(newRefreshPayload);
-  const newRefreshTokenHash = hashToken(newRefreshToken);
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-  const sessionInput: Parameters<typeof createSession>[0] = {
-    businessId: session.business.id,
-    refreshTokenHash: newRefreshTokenHash,
-    expiresAt,
-  };
-  if (session.staffId !== null) sessionInput.staffId = session.staffId;
-  await createSession(sessionInput);
-
-  return { accessToken, refreshToken: newRefreshToken };
+  return issueTokens(
+    session.business.id,
+    session.business.plan,
+    session.staff ? { id: session.staff.id, role: session.staff.role } : undefined,
+  );
 }
 
 export async function logout(rawRefreshToken: string): Promise<void> {
-  const refreshTokenHash = hashToken(rawRefreshToken);
-  await deleteSession(refreshTokenHash);
+  await deleteSession(hashToken(rawRefreshToken));
 }
 
 export async function logoutAllSessions(businessId: string): Promise<void> {
   await deleteAllSessions(businessId);
+  // Also invalidate access tokens already issued, not just refresh sessions.
+  await revokeTokensFor(businessSubject(businessId));
 }

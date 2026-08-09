@@ -14,11 +14,24 @@ export const UpdateProductSchema = CreateProductSchema.partial().extend({
   active: z.boolean().optional(),
 });
 
-export const StockAdjustmentSchema = z.object({
-  quantity: z.coerce.number(),
-  type: z.enum(['RESTOCK', 'ADJUSTMENT']),
-  note: z.string().optional(),
-});
+export const StockAdjustmentSchema = z
+  .object({
+    /**
+     * RESTOCK expects a positive amount to add. ADJUSTMENT takes a signed
+     * delta, so a correction downwards is sent as a negative number.
+     */
+    quantity: z.coerce.number().finite(),
+    type: z.enum(['RESTOCK', 'ADJUSTMENT']),
+    note: z.string().max(500).optional(),
+  })
+  .refine((data) => data.type !== 'RESTOCK' || data.quantity > 0, {
+    message: 'A restock quantity must be greater than zero',
+    path: ['quantity'],
+  })
+  .refine((data) => data.quantity !== 0, {
+    message: 'A stock adjustment of zero has no effect',
+    path: ['quantity'],
+  });
 
 export const ListProductsQuerySchema = z.object({
   search: z.string().optional(),

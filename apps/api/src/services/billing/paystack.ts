@@ -1,29 +1,22 @@
+import crypto from 'node:crypto';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 
-import crypto from 'node:crypto';
+/**
+ * Paystack transaction and webhook helpers.
+ *
+ * Customer creation lives in `paystack-customer.ts`, which is timeout-bounded
+ * and degrades to `undefined` when billing is unconfigured. This module once
+ * carried a second `createPaystackCustomer` that nothing imported and that
+ * returned the numeric id where the rest of the system stores `customer_code` —
+ * removed, because two functions with one name and different return values is
+ * a trap rather than a convenience.
+ */
 
 const PAYSTACK_API_BASE = 'https://api.paystack.co';
 
-interface PaystackCustomer {
-  email: string;
-  phone?: string;
-  first_name?: string;
-  last_name?: string;
-}
-
-interface PaystackPlan {
-  name: string;
-  amount: number;
-  interval: string;
-  description?: string;
-}
-
-interface PaystackSubscription {
-  customer: string;
-  plan: string;
-  start_date?: string;
-}
+/** Paystack signs webhooks with SHA-512, so the hex digest is 128 characters. */
+const SIGNATURE_HEX_LENGTH = 128;
 
 interface PaystackInitTransaction {
   email: string;
@@ -62,48 +55,6 @@ async function paystackRequest<T>(
   return (await response.json()) as PaystackResponse<T>;
 }
 
-export async function createPaystackCustomer(data: PaystackCustomer): Promise<string> {
-  const result = await paystackRequest<{ id: number; customer_code: string }>('/customer', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-
-  if (!result.status || !result.data) {
-    throw new Error(`Failed to create Paystack customer: ${result.message}`);
-  }
-
-  return String(result.data.id);
-}
-
-export async function createPaystackPlan(data: PaystackPlan): Promise<string> {
-  const result = await paystackRequest<{ id: number; plan_code: string }>('/plan', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
-
-  if (!result.status || !result.data) {
-    throw new Error(`Failed to create Paystack plan: ${result.message}`);
-  }
-
-  return String(result.data.plan_code);
-}
-
-export async function createPaystackSubscription(data: PaystackSubscription): Promise<string> {
-  const result = await paystackRequest<{ id: number; subscription_code: string; email_token: string }>(
-    '/subscription',
-    {
-      method: 'POST',
-      body: JSON.stringify(data),
-    },
-  );
-
-  if (!result.status || !result.data) {
-    throw new Error(`Failed to create Paystack subscription: ${result.message}`);
-  }
-
-  return result.data.subscription_code;
-}
-
 export async function initializeTransaction(data: PaystackInitTransaction): Promise<{
   authorizationUrl: string;
   accessCode: string;
@@ -129,61 +80,40 @@ export async function initializeTransaction(data: PaystackInitTransaction): Prom
   };
 }
 
-export async function verifyTransaction(reference: string): Promise<{
-  status: string;
-  amount: number;
-  paidAt: string | null;
-  channel: string;
-  metadata: Record<string, unknown> | null;
-}> {
-  const result = await paystackRequest<{
-    status: string;
-    amount: number;
-    paid_at: string | null;
-    channel: string;
-    metadata: Record<string, unknown> | null;
-  }>(`/transaction/verify/${encodeURIComponent(reference)}`, {
-    method: 'GET',
-  });
-
-  if (!result.status || !result.data) {
-    throw new Error(`Failed to verify transaction: ${result.message}`);
+/**
+ * Verifies a Paystack webhook signature.
+ *
+ * `body` must be the exact bytes received. Hashing a re-serialised object
+ * compares JSON formatting, not authenticity: key order, escaped unicode and
+ * number formatting all differ from what was signed, so a legitimate delivery
+ * carrying an accented customer name would be rejected.
+ */
+export function verifyWebhookSignature(body: Buffer | string, signature: string): boolean {
+  // No secret configured means we cannot authenticate the caller. Reject rather
+  // than fall through to processing an unverified billing event.
+  if (!env.PAYSTACK_SECRET_KEY) {
+    logger.error('Paystack webhook received but PAYSTACK_SECRET_KEY is not configured');
+    return false;
   }
 
-  return {
-    status: result.data.status,
-    amount: result.data.amount,
-    paidAt: result.data.paid_at,
-    channel: result.data.channel,
-    metadata: result.data.metadata,
-  };
-}
+  // A malformed header decodes to a short buffer rather than throwing, so the
+  // shape is validated before comparing.
+  if (!new RegExp(`^[a-f0-9]{${SIGNATURE_HEX_LENGTH}}$`, 'i').test(signature)) {
+    return false;
+  }
 
-export function verifyWebhookSignature(body: string, signature: string): boolean {
-  const hash = crypto
+  const expected = crypto
     .createHmac('sha512', env.PAYSTACK_SECRET_KEY)
     .update(body)
     .digest('hex');
-  return hash === signature;
-}
 
-export async function fetchPaystackSubscription(subscriptionCode: string): Promise<{
-  status: string;
-  nextPaymentDate: string | null;
-}> {
-  const result = await paystackRequest<{
-    status: string;
-    next_payment_date: string | null;
-  }>(`/subscription/${encodeURIComponent(subscriptionCode)}`, {
-    method: 'GET',
-  });
+  // Constant-time comparison — a plain `===` leaks the digest via timing.
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  const receivedBuffer = Buffer.from(signature, 'hex');
 
-  if (!result.status || !result.data) {
-    throw new Error(`Failed to fetch subscription: ${result.message}`);
+  if (expectedBuffer.length !== receivedBuffer.length) {
+    return false;
   }
 
-  return {
-    status: result.data.status,
-    nextPaymentDate: result.data.next_payment_date,
-  };
+  return crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
 }

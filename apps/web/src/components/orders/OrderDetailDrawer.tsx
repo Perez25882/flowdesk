@@ -1,70 +1,153 @@
-import {
-  Package,
-  CreditCard,
-  Clock,
-  CheckCircle2,
-  AlertTriangle,
-  User,
-  Send,
-} from 'lucide-react';
+import { AlertTriangle, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import type { OrderStatus } from '@/types/order';
 import { useOrderDetail, useUpdateOrderStatus, useAssignOrder } from '@/hooks/useOrders';
 import { useCreatePayment } from '@/hooks/usePayments';
 import { useStaff } from '@/hooks/useStaff';
-import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetBody } from '@/components/ui/Sheet';
-import { formatCurrency, timeAgo } from '@/lib/utils';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetBody,
+  SheetFooter,
+} from '@/components/ui/Sheet';
+import { Button } from '@/components/ui/Button';
+import { OrderStatusBadge } from '@/components/ui/Badge';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { formatCurrency, timeAgo, cn } from '@/lib/utils';
 
 interface OrderDetailDrawerProps {
   orderId: string | null;
   onClose: () => void;
 }
 
-const actionMap: Record<OrderStatus, { label: string; next: OrderStatus; variant: string }[]> = {
-  PENDING: [{ label: 'Confirm Order', next: 'CONFIRMED', variant: 'primary' }],
-  CONFIRMED: [{ label: 'Mark Processing', next: 'PROCESSING', variant: 'primary' }],
-  PROCESSING: [{ label: 'Mark Fulfilled', next: 'FULFILLED', variant: 'primary' }],
-  FULFILLED: [],
-  CANCELLED: [],
+/**
+ * The order record.
+ *
+ * The single most consequential change here is that the primary action —
+ * "Confirm order", the reason the drawer was opened at all — used to sit at
+ * the very bottom, below the items, the status history, the staff picker and
+ * the payment form. On a phone that is four screens of scrolling to press one
+ * button. It now lives in a footer pinned to the bottom of the sheet.
+ *
+ * Everything else follows one rule: what is true about the order comes first
+ * (customer, items, money), what you can do to it comes last.
+ */
+
+const NEXT_ACTION: Record<OrderStatus, { label: string; next: OrderStatus } | null> = {
+  PENDING: { label: 'Confirm order', next: 'CONFIRMED' },
+  CONFIRMED: { label: 'Start packing', next: 'PROCESSING' },
+  PROCESSING: { label: 'Mark delivered', next: 'FULFILLED' },
+  FULFILLED: null,
+  CANCELLED: null,
 };
 
-const paymentStatus = (total: number, paid: number): { label: string; color: string } => {
-  if (paid >= total) return { label: 'Paid', color: 'text-[var(--color-success)]' };
-  if (paid > 0) return { label: 'Partial', color: 'text-[var(--color-warning)]' };
-  return { label: 'Unpaid', color: 'text-[var(--color-danger)]' };
-};
+const PAYMENT_METHODS = [
+  { value: 'MOMO_MTN', label: 'MTN MoMo' },
+  { value: 'MOMO_VODAFONE', label: 'Telecel Cash' },
+  { value: 'MOMO_AIRTELTIGO', label: 'AirtelTigo Money' },
+  { value: 'CASH', label: 'Cash' },
+  { value: 'BANK_TRANSFER', label: 'Bank transfer' },
+  { value: 'OTHER', label: 'Other' },
+];
 
-export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawerProps): React.JSX.Element {
+/** A labelled section separated by a rule, not a nested bordered card. */
+function Section({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <section className="border-t border-border-subtle py-5 first:border-t-0 first:pt-0">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <h3 className="fd-label">{title}</h3>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Label on the left, figure on the right, both on one baseline. */
+function Line({
+  label,
+  value,
+  tone = 'default',
+  strong = false,
+}: {
+  label: string;
+  value: string;
+  tone?: 'default' | 'success' | 'danger';
+  strong?: boolean;
+}): React.JSX.Element {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1">
+      <span className={cn('text-sm', strong ? 'font-medium text-text-primary' : 'text-text-secondary')}>
+        {label}
+      </span>
+      <span
+        className={cn(
+          'fd-figure',
+          strong ? 'text-lg font-semibold' : 'text-sm',
+          tone === 'success' && 'text-success',
+          tone === 'danger' && 'text-danger',
+          tone === 'default' && 'text-text-primary',
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+export default function OrderDetailDrawer({
+  orderId,
+  onClose,
+}: OrderDetailDrawerProps): React.JSX.Element {
   const { data: order, isLoading } = useOrderDetail(orderId);
   const updateStatus = useUpdateOrderStatus();
   const assignOrder = useAssignOrder();
   const createPayment = useCreatePayment();
   const { data: staffList = [] } = useStaff();
+
   const [assignStaffId, setAssignStaffId] = useState('');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('MOMO_MTN');
   const [paymentRef, setPaymentRef] = useState('');
 
-  const actions = order ? actionMap[order.status] : [];
-  const pmt = order ? paymentStatus(order.totalAmount, order.amountPaid) : { label: '', color: '' };
+  const action = order ? NEXT_ACTION[order.status] : null;
+  const remaining = order ? Math.max(0, order.totalAmount - order.amountPaid) : 0;
+  const isSettled = order ? order.amountPaid >= order.totalAmount : false;
+  const isOpen = order ? order.status !== 'CANCELLED' && order.status !== 'FULFILLED' : false;
 
-  const handleStatusChange = (nextStatus: OrderStatus): void => {
+  const customerPhone = order?.customer.waNumber ?? '';
+  const whatsappLink = customerPhone
+    ? `https://wa.me/${customerPhone.replace(/[^\d]/g, '')}`
+    : undefined;
+
+  function handleStatusChange(nextStatus: OrderStatus): void {
     if (!order) return;
     updateStatus.mutate({ orderId: order.id, data: { status: nextStatus } });
-  };
+  }
 
-  const handleAssign = (): void => {
+  function handleAssign(): void {
     if (!order || !assignStaffId) return;
     assignOrder.mutate(
       { orderId: order.id, data: { staffId: assignStaffId } },
       { onSuccess: () => setAssignStaffId('') },
     );
-  };
+  }
 
-  const handleLogPayment = (): void => {
+  function handleLogPayment(): void {
     if (!order) return;
     const amount = Number.parseFloat(paymentAmount);
     if (!Number.isFinite(amount) || amount <= 0) return;
+
     createPayment.mutate(
       {
         customerId: order.customer.id,
@@ -80,287 +163,278 @@ export default function OrderDetailDrawer({ orderId, onClose }: OrderDetailDrawe
         },
       },
     );
-  };
-
-  const customerPhone = order?.customer.waNumber ?? '';
-  const whatsappLink = customerPhone ? `https://wa.me/${customerPhone}` : '#';
-  const remainingAmount = order ? Math.max(0, order.totalAmount - order.amountPaid) : 0;
+  }
 
   return (
     <Sheet open={!!orderId} onOpenChange={(open) => !open && onClose()}>
-      <SheetTrigger asChild>
-        <span className="hidden" />
-     </SheetTrigger>
-      <SheetContent side="right" className="!w-[400px] !p-0 md:!w-[480px]">
+      <SheetContent side="right">
         {isLoading && (
-          <div className="flex h-full items-center justify-center">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--color-primary)] border-t-transparent" />
-         </div>
+          <>
+            <SheetHeader>
+              <SheetTitle className="sr-only">Loading order</SheetTitle>
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="mt-1.5 h-3 w-20" />
+            </SheetHeader>
+            <SheetBody className="space-y-4">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-32 w-full" />
+            </SheetBody>
+          </>
         )}
 
         {!isLoading && !order && (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-muted)]">
-            Order not found
-         </div>
+          <>
+            <SheetHeader>
+              <SheetTitle>Order not found</SheetTitle>
+            </SheetHeader>
+            <SheetBody>
+              <p className="text-sm text-text-secondary">
+                This order may have been deleted, or it belongs to a different business.
+              </p>
+            </SheetBody>
+          </>
         )}
 
         {!isLoading && order && (
-          <div className="flex h-full flex-col">
-            <SheetHeader className="shrink-0">
-              <div className="flex items-start justify-between">
-                <div className="flex flex-col gap-1">
-                  <SheetTitle className="font-mono text-[var(--color-primary-light)]">
-                    {order.referenceNumber}
-                 </SheetTitle>
-                  <span className="text-xs text-[var(--color-text-muted)]">
-                    {timeAgo(order.createdAt)}
-                 </span>
-               </div>
-                <span className="inline-flex rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-2 py-1 text-xs font-semibold uppercase text-[var(--color-text-secondary)]">
-                  {order.status}
-               </span>
-             </div>
-           </SheetHeader>
+          <>
+            <SheetHeader>
+              <div className="flex items-center justify-between gap-3">
+                <SheetTitle className="fd-figure text-base text-primary">
+                  {order.referenceNumber}
+                </SheetTitle>
+                <OrderStatusBadge status={order.status} />
+              </div>
+              <p className="text-xs text-text-muted">Opened {timeAgo(order.createdAt)}</p>
+            </SheetHeader>
 
-            <SheetBody className="flex-1 space-y-5 overflow-y-auto">
-              {/* Customer */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Customer
-               </h4>
-                <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-3">
-                  <p className="font-medium text-[var(--color-text-primary)]">
-                    {order.customer.name ?? 'Unknown'}
-                 </p>
-                  <p className="text-sm text-[var(--color-text-secondary)]">
-                    {order.customer.waNumber}
-                 </p>
-                  {order.customer.totalOrders !== undefined && (
-                    <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-                      {order.customer.totalOrders} orders
-                   </p>
-                  )}
-                  {(order.customer.outstandingBalance ?? 0) > 0 && (
-                    <p className="mt-1 flex items-center gap-1 text-xs font-medium text-[var(--color-danger)]">
-                      <AlertTriangle className="h-3 w-3" />
-                      Owes {formatCurrency(order.customer.outstandingBalance ?? 0)}
-                   </p>
-                  )}
-               </div>
-             </div>
-
-              {/* Items */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Items
-               </h4>
-                <div className="space-y-1">
-                  {order.items.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2"
+            <SheetBody className="py-0">
+              <Section
+                title="Customer"
+                action={
+                  whatsappLink ? (
+                    <a
+                      href={whatsappLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-primary underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary"
                     >
-                      <div className="flex items-center gap-2">
-                        <Package className={`h-4 w-4 ${item.matched ? 'text-[var(--color-success)]' : 'text-[var(--color-text-muted)]'}`} />
-                        <span className="text-sm text-[var(--color-text-primary)]">
-                          {item.description}
-                       </span>
-                     </div>
-                      <div className="text-right">
-                        <span className="text-sm text-[var(--color-text-secondary)]">
-                          × {item.quantity}
-                       </span>
-                        <p className="font-mono text-xs text-[var(--color-text-muted)]">
-                          {formatCurrency(item.unitPrice)}
-                       </p>
-                     </div>
-                   </div>
-                  ))}
-               </div>
-                <div className="flex items-center justify-between border-t border-[var(--color-border)] pt-2">
-                  <span className="text-sm font-medium text-[var(--color-text-primary)]">Total</span>
-                  <span className="font-mono text-lg font-semibold text-[var(--color-text-primary)]">
-                    {formatCurrency(order.totalAmount)}
-                 </span>
-               </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-[var(--color-text-secondary)]">Paid</span>
-                  <span className="font-mono text-sm text-[var(--color-success)]">
-                    {formatCurrency(order.amountPaid)}
-                 </span>
-               </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-[var(--color-text-secondary)]">Balance</span>
-                  <span className="font-mono text-sm text-[var(--color-danger)]">
-                    {formatCurrency(order.totalAmount - order.amountPaid)}
-                 </span>
-               </div>
-                <div className="flex items-center gap-1.5">
-                  <CreditCard className="h-4 w-4 text-[var(--color-text-muted)]" />
-                  <span className={`text-xs font-medium ${pmt.color}`}>{pmt.label}</span>
-               </div>
-             </div>
+                      Open chat
+                      <ExternalLink className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
+                    </a>
+                  ) : undefined
+                }
+              >
+                <p className="text-base font-semibold text-text-primary">
+                  {order.customer.name ?? 'Unknown customer'}
+                </p>
+                <p className="fd-figure text-sm text-text-secondary">{order.customer.waNumber}</p>
 
-              {/* Timeline */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Status History
-               </h4>
-                <div className="space-y-2">
-                  {order.statusHistory.map((entry) => (
-                    <div key={entry.id} className="flex items-start gap-2 text-sm">
-                      <Clock className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-text-muted)]" />
-                      <div>
-                        <span className="text-[var(--color-text-primary)]">
-                          {entry.fromStatus ? `${entry.fromStatus} → ` : ''}
-                          {entry.toStatus}
-                       </span>
-                        <p className="text-xs text-[var(--color-text-muted)]">
-                          {entry.changedBy ?? 'System'} · {timeAgo(entry.createdAt)}
-                       </p>
-                        {entry.note && (
-                          <p className="text-xs text-[var(--color-text-secondary)]">{entry.note}</p>
+                {order.customer.totalOrders !== undefined && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    {order.customer.totalOrders} order
+                    {order.customer.totalOrders === 1 ? '' : 's'} in total
+                  </p>
+                )}
+
+                {(order.customer.outstandingBalance ?? 0) > 0 && (
+                  <p className="mt-2.5 flex items-center gap-1.5 rounded-sm bg-danger-muted px-2 py-1.5 text-xs font-medium text-danger">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                    Owes {formatCurrency(order.customer.outstandingBalance ?? 0)} across all orders
+                  </p>
+                )}
+              </Section>
+
+              <Section title="Items">
+                <ul className="divide-y divide-border-subtle">
+                  {order.items.map((item) => (
+                    <li key={item.id} className="flex items-baseline justify-between gap-3 py-2">
+                      <span className="flex min-w-0 items-baseline gap-2">
+                        {/* An unmatched line is one Flowdesk could not tie to a
+                            catalogue product, so its price is a guess. Worth
+                            saying in words. */}
+                        {!item.matched && (
+                          <span
+                            className="shrink-0 rounded-xs bg-warning-muted px-1 py-px text-[10px] font-semibold uppercase text-warning"
+                            title="Not matched to a product in your catalogue"
+                          >
+                            Check
+                          </span>
                         )}
-                     </div>
-                   </div>
+                        <span className="truncate text-sm text-text-primary">
+                          {item.description}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-baseline gap-3">
+                        <span className="fd-figure text-xs text-text-muted">×{item.quantity}</span>
+                        <span className="fd-figure w-[76px] text-right text-sm text-text-secondary">
+                          {formatCurrency(item.unitPrice)}
+                        </span>
+                      </span>
+                    </li>
                   ))}
-               </div>
-             </div>
+                </ul>
 
-              {/* Staff Assignment */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Assigned To
-               </h4>
-                <div className="flex items-center gap-2">
-                  {order.assignedTo ? (
-                    <>
-                      <User className="h-4 w-4 text-[var(--color-primary-light)]" />
-                      <span className="text-sm text-[var(--color-text-primary)]">{order.assignedTo.name}</span>
-                    </>
-                  ) : (
-                    <span className="text-sm text-[var(--color-text-muted)]">Unassigned</span>
-                  )}
-               </div>
+                <div className="mt-3 border-t border-border pt-2">
+                  <Line label="Total" value={formatCurrency(order.totalAmount)} strong />
+                  <Line
+                    label="Paid"
+                    value={formatCurrency(order.amountPaid)}
+                    tone={order.amountPaid > 0 ? 'success' : 'default'}
+                  />
+                  <Line
+                    label={isSettled ? 'Settled' : 'Still owed'}
+                    value={formatCurrency(remaining)}
+                    tone={remaining > 0 ? 'danger' : 'success'}
+                  />
+                </div>
+              </Section>
+
+              <Section title="Assigned to">
+                <p className="mb-2.5 text-sm text-text-primary">
+                  {order.assignedTo ? order.assignedTo.name : 'Nobody yet'}
+                </p>
+
                 <div className="flex gap-2">
                   <select
+                    aria-label="Assign this order to a staff member"
                     value={assignStaffId}
                     onChange={(e) => setAssignStaffId(e.target.value)}
-                    className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
+                    className="fd-input fd-select fd-input-compact h-11 flex-1 py-0 sm:h-10"
                   >
-                    <option value="">Select staff member</option>
-                    {staffList.filter((s) => s.active).map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} — {s.role.toLowerCase().replace('_', ' ')}
-                     </option>
-                    ))}
-                 </select>
-                  <button
+                    <option value="">Choose someone</option>
+                    {staffList
+                      .filter((s) => s.active)
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} — {s.role.toLowerCase().replace('_', ' ')}
+                        </option>
+                      ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-10"
                     onClick={handleAssign}
-                    disabled={!assignStaffId || assignOrder.isPending}
-                    className="rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)] disabled:opacity-50"
+                    disabled={!assignStaffId}
+                    isLoading={assignOrder.isPending}
                   >
-                    {assignOrder.isPending ? '…' : 'Assign'}
-                 </button>
-               </div>
-             </div>
+                    Assign
+                  </Button>
+                </div>
+              </Section>
 
-              {/* Log Payment */}
-              {remainingAmount > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                    Log Payment
-                 </h4>
-                  <div className="flex gap-2">
+              {remaining > 0 && (
+                <Section title="Record a payment">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={0.01}
+                        step={0.01}
+                        max={remaining}
+                        value={paymentAmount}
+                        onChange={(e) => setPaymentAmount(e.target.value)}
+                        aria-label={`Amount received, up to ${formatCurrency(remaining)}`}
+                        placeholder={formatCurrency(remaining)}
+                        className="fd-input fd-input-compact h-11 w-full py-0 sm:h-10 sm:flex-1"
+                      />
+                      <select
+                        aria-label="How they paid"
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value)}
+                        className="fd-input fd-select fd-input-compact h-11 w-full py-0 sm:h-10 sm:w-[150px]"
+                      >
+                        {PAYMENT_METHODS.map((method) => (
+                          <option key={method.value} value={method.value}>
+                            {method.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <input
-                      type="number"
-                      min={0.01}
-                      step={0.01}
-                      max={remainingAmount}
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      placeholder={`Amount (max ${formatCurrency(remainingAmount)})`}
-                      className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
+                      type="text"
+                      value={paymentRef}
+                      onChange={(e) => setPaymentRef(e.target.value)}
+                      aria-label="Transaction reference"
+                      placeholder="Transaction ID, if you have one"
+                      className="fd-input fd-input-compact h-11 py-0 sm:h-10"
                     />
-                    <select
-                      value={paymentMethod}
-                      onChange={(e) => setPaymentMethod(e.target.value)}
-                      className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)]"
+
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-10"
+                      onClick={handleLogPayment}
+                      disabled={!paymentAmount || (Number.parseFloat(paymentAmount) || 0) <= 0}
+                      isLoading={createPayment.isPending}
                     >
-                      <option value="MOMO_MTN">MTN MoMo</option>
-                      <option value="MOMO_VODAFONE">Vodafone Cash</option>
-                      <option value="MOMO_AIRTELTIGO">AirtelTigo</option>
-                      <option value="CASH">Cash</option>
-                      <option value="BANK_TRANSFER">Bank</option>
-                      <option value="OTHER">Other</option>
-                   </select>
-                 </div>
-                  <input
-                    type="text"
-                    value={paymentRef}
-                    onChange={(e) => setPaymentRef(e.target.value)}
-                    placeholder="Reference / MoMo ID (optional)"
-                    className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                  />
-                  <button
-                    onClick={handleLogPayment}
-                    disabled={
-                      !paymentAmount ||
-                      createPayment.isPending ||
-                      (Number.parseFloat(paymentAmount) || 0) <= 0
-                    }
-                    className="w-full rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)] disabled:opacity-50"
-                  >
-                    {createPayment.isPending ? 'Logging…' : 'Log Payment'}
-                 </button>
-                  {createPayment.isError && (
-                    <p className="text-xs text-[var(--color-danger)]">
-                      {(createPayment.error as Error).message}
-                   </p>
-                  )}
-               </div>
+                      Record {paymentAmount ? formatCurrency(Number.parseFloat(paymentAmount) || 0) : 'payment'}
+                    </Button>
+
+                    {createPayment.isError && (
+                      <p role="alert" className="text-xs font-medium text-danger">
+                        {(createPayment.error as Error).message}
+                      </p>
+                    )}
+                  </div>
+                </Section>
               )}
 
-              {/* Actions */}
-              {actions && actions.length > 0 && (
-                <div className="space-y-2">
-                  {actions.map((action) => (
-                    <button
-                      key={action.next}
-                      onClick={() => handleStatusChange(action.next)}
-                      disabled={updateStatus.isPending}
-                      className="flex w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--color-primary-light)] disabled:opacity-50"
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      {action.label}
-                   </button>
+              <Section title="History">
+                <ol className="relative space-y-3 border-l border-border-subtle pl-4">
+                  {order.statusHistory.map((entry) => (
+                    <li key={entry.id} className="relative">
+                      <span
+                        aria-hidden="true"
+                        className="absolute -left-[21px] top-1.5 h-1.5 w-1.5 rounded-full bg-border-strong ring-4 ring-surface"
+                      />
+                      <p className="text-sm text-text-primary">
+                        {entry.fromStatus ? `${entry.fromStatus} → ` : ''}
+                        {entry.toStatus}
+                      </p>
+                      <p className="text-xs text-text-muted">
+                        {entry.changedBy ?? 'Flowdesk'} · {timeAgo(entry.createdAt)}
+                      </p>
+                      {entry.note && (
+                        <p className="mt-0.5 text-xs text-text-secondary">{entry.note}</p>
+                      )}
+                    </li>
                   ))}
-                  {order.status !== 'CANCELLED' && order.status !== 'FULFILLED' && (
-                    <button
-                      onClick={() => handleStatusChange('CANCELLED')}
-                      disabled={updateStatus.isPending}
-                      className="w-full rounded-[var(--radius-md)] border border-[var(--color-danger)] px-4 py-2.5 text-sm font-medium text-[var(--color-danger)] transition-colors hover:bg-[var(--color-danger-muted)] disabled:opacity-50"
-                    >
-                      Cancel Order
-                   </button>
-                  )}
-               </div>
-              )}
+                </ol>
+              </Section>
+            </SheetBody>
 
-              {/* WhatsApp */}
-              <a
-                href={whatsappLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-success-muted)] px-4 py-2.5 text-sm font-medium text-[var(--color-success)] transition-colors hover:bg-[rgba(34,197,94,0.2)]"
-              >
-                <Send className="h-4 w-4" />
-                Message on WhatsApp
-             </a>
-           </SheetBody>
-         </div>
+            {/* Pinned. The whole point of opening this drawer is usually the
+                first button in it. */}
+            {(action || isOpen) && (
+              <SheetFooter>
+                {action && (
+                  <Button
+                    fullWidth
+                    onClick={() => handleStatusChange(action.next)}
+                    isLoading={updateStatus.isPending}
+                  >
+                    {action.label}
+                  </Button>
+                )}
+                {isOpen && (
+                  <Button
+                    variant="secondary"
+                    className={cn('shrink-0 text-danger', !action && 'flex-1')}
+                    onClick={() => handleStatusChange('CANCELLED')}
+                    disabled={updateStatus.isPending}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </SheetFooter>
+            )}
+          </>
         )}
-     </SheetContent>
-   </Sheet>
+      </SheetContent>
+    </Sheet>
   );
 }

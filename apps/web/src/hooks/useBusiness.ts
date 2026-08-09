@@ -1,23 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
 
-const API_BASE = '/api/v1';
 
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('accessToken');
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error ?? `HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  return data.data as T;
-}
 
 export interface Business {
   id: string;
@@ -31,8 +16,18 @@ export interface Business {
   notifyOnNewOrder: boolean;
   notifyOnLowStock: boolean;
   notifyOnPayment: boolean;
-  replyTemplates: Record<string, string> | null;
+  replyTemplates: ReplyTemplatesConfig | null;
   createdAt: string;
+}
+
+/**
+ * Mirrors `ReplyTemplatesSchema` on the API: customised wording lives under
+ * `overrides` keyed by the reply engine's template keys, and `disabled` switches
+ * a reply off entirely. Sending a flat map instead is rejected with a 400.
+ */
+export interface ReplyTemplatesConfig {
+  overrides?: Record<string, string> | null;
+  disabled?: string[] | null;
 }
 
 export interface UpdateBusinessInput {
@@ -41,26 +36,26 @@ export interface UpdateBusinessInput {
   notifyOnNewOrder?: boolean;
   notifyOnLowStock?: boolean;
   notifyOnPayment?: boolean;
-  replyTemplates?: Record<string, string> | null;
+  replyTemplates?: ReplyTemplatesConfig | null;
 }
 
 export const BUSINESS_QUERY_KEY = ['business', 'me'] as const;
 
-export function useBusiness() {
+export function useBusiness(): UseQueryResult<Business, Error> {
   return useQuery({
     queryKey: BUSINESS_QUERY_KEY,
-    queryFn: () => fetchJson<Business>('/businesses/me'),
+    queryFn: () => apiFetch<Business>('/businesses/me'),
     staleTime: 60_000,
   });
 }
 
-export function useUpdateBusiness() {
+export function useUpdateBusiness(): UseMutationResult<Business, Error, UpdateBusinessInput> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: UpdateBusinessInput) =>
-      fetchJson<Business>('/businesses/me', {
+      apiFetch<Business>('/businesses/me', {
         method: 'PATCH',
-        body: JSON.stringify(data),
+        body: data,
       }),
     onSuccess: (data) => {
       qc.setQueryData(BUSINESS_QUERY_KEY, data);

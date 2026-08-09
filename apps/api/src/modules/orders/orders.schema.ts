@@ -29,10 +29,18 @@ export const CreateOrderSchema = z
     path: ['customerId'],
   });
 
-export const UpdateOrderStatusSchema = z.object({
-  status: OrderStatusSchema,
-  note: z.string().optional(),
-});
+export const UpdateOrderStatusSchema = z
+  .object({
+    status: OrderStatusSchema,
+    note: z.string().trim().max(500).optional(),
+  })
+  // A cancellation reason is mandatory: it is written to the immutable status
+  // history and sent to the customer, so a placeholder like "Cancelled via API"
+  // would be both a poor audit record and a confusing customer message.
+  .refine((data) => data.status !== 'CANCELLED' || (data.note?.length ?? 0) > 0, {
+    message: 'A reason is required when cancelling an order',
+    path: ['note'],
+  });
 
 export const AssignOrderSchema = z.object({
   staffId: z.string().min(1),

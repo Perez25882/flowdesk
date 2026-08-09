@@ -5,7 +5,12 @@ import type { ParsedIncomingMessage } from '../modules/webhook/webhook.types.js'
 export const INCOMING_MESSAGES_QUEUE_NAME = 'incoming-messages';
 
 export interface MessageJobData {
-  businessId: string;
+  /**
+   * Meta's phone number id for the receiving business. The worker resolves this
+   * to a Business, keeping the webhook handler free of database work so Meta is
+   * acknowledged immediately.
+   */
+  businessPhoneNumberId: string;
   waMessageId: string;
   message: ParsedIncomingMessage;
   receivedAt: string;

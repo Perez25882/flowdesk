@@ -12,8 +12,17 @@ export interface MetaWebhookEntry {
   changes: MetaWebhookChange[];
 }
 
+/**
+ * Webhook fields Flowdesk subscribes to.
+ *
+ * `smb_message_echoes` only arrives for numbers running WhatsApp Business app
+ * coexistence: it mirrors messages the owner sent from their own phone, which
+ * Flowdesk would otherwise never see.
+ */
+export type MetaWebhookField = 'messages' | 'smb_message_echoes' | string;
+
 export interface MetaWebhookChange {
-  field: 'messages' | string;
+  field: MetaWebhookField;
   value: MetaWebhookValue;
 }
 
@@ -23,7 +32,17 @@ export interface MetaWebhookValue {
   contacts?: MetaContact[];
   messages?: MetaMessage[];
   statuses?: MetaMessageStatus[];
+  /** Present on `smb_message_echoes` deliveries only. */
+  message_echoes?: MetaEchoMessage[];
 }
+
+/**
+ * An echo of a message the business sent from the WhatsApp Business app.
+ *
+ * Shape matches a normal message except the counterparty is in `to` — `from`
+ * is the business's own number, so it cannot be used to identify the customer.
+ */
+export type MetaEchoMessage = MetaMessage & { to: string };
 
 export interface MetaMetadata {
   display_phone_number: string;
@@ -196,6 +215,23 @@ export interface ParsedIncomingMessage {
     reactedToWaMessageId: string;
   } | undefined;
   rawPayload: MetaMessage;
+}
+
+/**
+ * A message the owner sent from their own phone, mirrored back to us.
+ *
+ * `to` is the customer's WhatsApp id — the inverse of {@link ParsedIncomingMessage},
+ * where the customer is in `from`.
+ */
+export interface ParsedEchoMessage {
+  businessPhoneNumberId: string;
+  displayPhoneNumber: string;
+  waMessageId: string;
+  to: string;
+  timestamp: Date;
+  type: MessageType;
+  body?: string | undefined;
+  rawPayload: MetaEchoMessage;
 }
 
 export interface WebhookVerificationParams {

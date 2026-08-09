@@ -1,10 +1,11 @@
-import type { OrderStatus } from '../../types/prisma-enums.js';
+import { Prisma, type OrderStatus } from '@prisma/client';
+import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
 import { NotFoundError, ValidationError } from '../../utils/errors.js';
 import { extractItemsFromText } from '../../utils/item-extractor.js';
-import { sendWhatsAppMessage } from '../../services/whatsapp/outbound.js';
+import { notifyOrderStatus } from '../../services/notifications/customer-notifications.js';
+import { recordOrder } from '../../services/plan/plan.service.js';
 import { emitOrderCreated, emitOrderUpdated, emitStockAlert } from '../../services/sse/sse.events.js';
-import type { ParsedIncomingMessage } from '../webhook/webhook.types.js';
 import {
   createOrder,
   findOrderById,
@@ -14,6 +15,7 @@ import {
   assignOrderToStaff,
   type OrderWithRelations,
   type CreateOrderInput,
+  type CreateOrderItemInput,
 } from './orders.repository.js';
 import {
   findActiveCatalogProducts,
@@ -21,225 +23,138 @@ import {
 } from '../products/products.repository.js';
 import type { CreateOrderInput as ManualOrderInput } from './orders.schema.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
-import { normalizeGhanaPhone } from '../auth/auth.service.js';
+import { normalizeGhanaPhone } from '../../utils/phone.js';
 import { upsertCustomerByPhone } from '../customers/customers.service.js';
+import { findCustomerById, recalculateCustomerTotals } from '../customers/customers.repository.js';
+import { findProductById } from '../products/products.repository.js';
 
-export async function createOrderFromMessage(
-  message: ParsedIncomingMessage,
+/**
+ * Legal order lifecycle transitions. Encoding them in one table means an
+ * invalid move is rejected identically wherever it is attempted, instead of
+ * relying on each service function to remember its own guard.
+ */
+const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
+  PENDING: ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['PROCESSING', 'CANCELLED'],
+  PROCESSING: ['FULFILLED', 'CANCELLED'],
+  FULFILLED: [],
+  CANCELLED: [],
+};
+
+/** A unique-constraint violation on (businessId, referenceNumber). */
+function isReferenceCollision(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    String(error.meta?.target ?? '').includes('referenceNumber')
+  );
+}
+
+/**
+ * Creates an order, regenerating the reference if another writer claimed it
+ * first. The Redis counter makes this rare, but two workers racing on a freshly
+ * seeded counter can still collide, and losing a customer's order to a 500 is
+ * not an acceptable outcome.
+ */
+async function createOrderWithReference(
   businessId: string,
-  customerId: string,
+  build: (referenceNumber: string) => CreateOrderInput,
 ): Promise<OrderWithRelations> {
-  const body = message.body ?? '';
+  const MAX_ATTEMPTS = 5;
+  let lastError: unknown;
 
-  const catalogProducts = await findActiveCatalogProducts(businessId);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const referenceNumber = await generateOrderReference(businessId);
 
-  const extractedItems = extractItemsFromText(body, catalogProducts);
+    try {
+      return await createOrder(build(referenceNumber), undefined);
+    } catch (error: unknown) {
+      if (!isReferenceCollision(error)) throw error;
+      lastError = error;
+      logger.warn({ businessId, referenceNumber, attempt }, 'Order reference collision — retrying');
+    }
+  }
 
-  const orderItems = extractedItems.map((item) => {
-    const base = {
+  throw lastError;
+}
+
+function toOrderItems(
+  items: Array<{
+    productId: string | null;
+    description: string;
+    quantity: number;
+    unitPrice: number;
+    confidence: number;
+  }>,
+): CreateOrderItemInput[] {
+  return items.map((item) => {
+    const base: CreateOrderItemInput = {
       description: item.description,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
     };
-    return item.productId ? { ...base, productId: item.productId } : base;
+    if (item.productId) {
+      base.productId = item.productId;
+      base.matchConfidence = item.confidence;
+    }
+    return base;
   });
+}
 
-  if (orderItems.length === 0) {
-    orderItems.push({
-      description: body,
-      quantity: 1,
-      unitPrice: 0,
-    });
-  }
-
-  const referenceNumber = await generateOrderReference(businessId);
-
-  const order = await createOrder(
-    {
-      businessId,
-      customerId,
-      referenceNumber,
-      rawMessage: body,
-      isManual: false,
-      items: orderItems,
-    },
-    undefined,
-  );
-
-  try {
-    await sendWhatsAppMessage(
-      message.from,
-      `Thank you! Your order ${order.referenceNumber} has been received. We will confirm it shortly.`,
-      businessId,
-    );
-  } catch (error: unknown) {
-    logger.error({ error, orderId: order.id }, 'Failed to send order confirmation auto-reply');
-  }
-
-  emitOrderCreated(businessId, {
+async function emitCreated(order: OrderWithRelations): Promise<void> {
+  emitOrderCreated(order.businessId, {
     orderId: order.id,
     referenceNumber: order.referenceNumber,
-    customerName: null,
+    customerName: order.customer?.name ?? null,
     totalAmount: Number(order.totalAmount),
   });
-
-  return order;
 }
 
-export async function confirmOrder(
-  orderId: string,
+/**
+ * Builds an order from an inbound WhatsApp message.
+ *
+ * Deliberately does NOT message the customer: the intent worker owns that, via
+ * the notification service, so exactly one confirmation is sent per order.
+ */
+export async function createOrderFromMessage(
+  body: string,
   businessId: string,
-  confirmedBy: string,
+  customerId: string,
 ): Promise<OrderWithRelations> {
-  const existing = await findOrderById(orderId, businessId);
-  if (!existing) {
-    throw new NotFoundError('Order not found');
-  }
+  const catalog = await findActiveCatalogProducts(businessId);
+  const extracted = extractItemsFromText(body, catalog);
 
-  if (existing.status !== 'PENDING') {
-    throw new ValidationError(`Cannot confirm order in ${existing.status} status`);
-  }
+  const items: CreateOrderItemInput[] =
+    extracted.length > 0
+      ? toOrderItems(extracted)
+      : // Never drop an order because parsing failed — record the raw text and
+        // let the owner price it by hand.
+        [{ description: body, quantity: 1, unitPrice: 0 }];
 
-  const previousStatus = existing.status;
+  const order = await createOrderWithReference(businessId, (referenceNumber) => ({
+    businessId,
+    customerId,
+    referenceNumber,
+    rawMessage: body,
+    isManual: false,
+    items,
+  }));
 
-  const order = await updateOrderStatus(orderId, 'CONFIRMED', confirmedBy, 'Order confirmed by staff', undefined);
+  await Promise.all([recalculateCustomerTotals(customerId), recordOrder(businessId)]);
 
-  if (!order.stockDeducted) {
-    const alerts = await deductStockForOrderItems(
-      orderId,
+  await emitCreated(order);
+
+  logger.info(
+    {
+      orderId: order.id,
       businessId,
-      confirmedBy,
-      order.items,
-    );
-
-    for (const alert of alerts) {
-      emitStockAlert(businessId, alert);
-    }
-  }
-
-  emitOrderUpdated(businessId, {
-    orderId: order.id,
-    status: order.status,
-    previousStatus,
-  });
-
-  await logActivity({
-    staffId: confirmedBy,
-    action: 'order.confirmed',
-    resourceId: orderId,
-    resourceType: 'order',
-    note: `Order ${order.referenceNumber} confirmed`,
-  }).catch(() => {});
-
-  return order;
-}
-
-export async function markProcessing(
-  orderId: string,
-  businessId: string,
-  staffId: string,
-): Promise<OrderWithRelations> {
-  const existing = await findOrderById(orderId, businessId);
-  if (!existing) {
-    throw new NotFoundError('Order not found');
-  }
-
-  if (existing.status !== 'CONFIRMED') {
-    throw new ValidationError(`Cannot mark as processing from ${existing.status} status`);
-  }
-
-  const previousStatus = existing.status;
-
-  await assignOrderToStaff(orderId, staffId, businessId);
-
-  const order = await updateOrderStatus(orderId, 'PROCESSING', staffId, 'Order assigned and processing started', undefined);
-
-  emitOrderUpdated(businessId, {
-    orderId: order.id,
-    status: order.status,
-    previousStatus,
-  });
-
-  await logActivity({
-    staffId,
-    action: 'order.processing',
-    resourceId: orderId,
-    resourceType: 'order',
-    note: `Order ${order.referenceNumber} marked as processing`,
-  }).catch(() => {});
-
-  return order;
-}
-
-export async function fulfillOrder(
-  orderId: string,
-  businessId: string,
-  staffId: string,
-): Promise<OrderWithRelations> {
-  const existing = await findOrderById(orderId, businessId);
-  if (!existing) {
-    throw new NotFoundError('Order not found');
-  }
-
-  if (existing.status !== 'PROCESSING') {
-    throw new ValidationError(`Cannot fulfill order in ${existing.status} status`);
-  }
-
-  const previousStatus = existing.status;
-  const order = await updateOrderStatus(orderId, 'FULFILLED', staffId, 'Order fulfilled', undefined);
-
-  emitOrderUpdated(businessId, {
-    orderId: order.id,
-    status: order.status,
-    previousStatus,
-  });
-
-  await logActivity({
-    staffId,
-    action: 'order.fulfilled',
-    resourceId: orderId,
-    resourceType: 'order',
-    note: `Order ${order.referenceNumber} fulfilled`,
-  }).catch(() => {});
-
-  return order;
-}
-
-export async function cancelOrder(
-  orderId: string,
-  businessId: string,
-  reason: string,
-  cancelledBy: string,
-): Promise<OrderWithRelations> {
-  const existing = await findOrderById(orderId, businessId);
-  if (!existing) {
-    throw new NotFoundError('Order not found');
-  }
-
-  if (existing.status === 'CANCELLED') {
-    throw new ValidationError('Order is already cancelled');
-  }
-
-  if (existing.status === 'FULFILLED') {
-    throw new ValidationError('Cannot cancel a fulfilled order');
-  }
-
-  const previousStatus = existing.status;
-  const order = await updateOrderStatus(orderId, 'CANCELLED', cancelledBy, reason, undefined);
-
-  emitOrderUpdated(businessId, {
-    orderId: order.id,
-    status: order.status,
-    previousStatus,
-  });
-
-  await logActivity({
-    staffId: cancelledBy,
-    action: 'order.cancelled',
-    resourceId: orderId,
-    resourceType: 'order',
-    note: `Order ${order.referenceNumber} cancelled: ${reason}`,
-  }).catch(() => {});
+      reference: order.referenceNumber,
+      itemCount: items.length,
+      matched: extracted.filter((item) => item.matched).length,
+      total: Number(order.totalAmount),
+    },
+    'Order created from customer message',
+  );
 
   return order;
 }
@@ -248,50 +163,226 @@ export async function createManualOrder(
   data: ManualOrderInput,
   businessId: string,
 ): Promise<OrderWithRelations> {
-  // Resolve customer. Two ways in:
-  //   1) customerId: an existing Customer row (e.g. picked from the dropdown)
-  //   2) customerPhone: a new walk-in phone number — we'll upsert a Customer.
-  // The schema guarantees one of these is present.
+  // Two ways in: an existing customer id, or a phone number for a walk-in that
+  // we upsert. The schema guarantees exactly one is present.
   let resolvedCustomerId: string;
+
   if (data.customerId) {
-    resolvedCustomerId = data.customerId;
+    // The id must belong to THIS business. Trusting it verbatim let one tenant
+    // attach another tenant's customer to an order — leaking that customer's
+    // name and phone in the response and injecting a fabricated balance into
+    // the victim's books. Ownership is verified before use.
+    const customer = await findCustomerById(data.customerId, businessId);
+    if (!customer) {
+      throw new NotFoundError('Customer not found');
+    }
+    resolvedCustomerId = customer.id;
   } else {
     const phone = normalizeGhanaPhone(data.customerPhone!);
     const customer = await upsertCustomerByPhone(businessId, phone, data.customerName ?? null);
     resolvedCustomerId = customer.id;
   }
 
-  const referenceNumber = await generateOrderReference(businessId);
-
-  const orderItems = data.items.map((item) => {
-    const base = {
+  // Product references are validated the same way — a foreign productId would
+  // otherwise be recorded as a "matched" line against another tenant's catalogue.
+  const items: CreateOrderItemInput[] = [];
+  for (const item of data.items) {
+    const base: CreateOrderItemInput = {
       description: item.description,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
     };
-    return item.productId ? { ...base, productId: item.productId } : base;
+    if (item.productId) {
+      const product = await findProductById(item.productId, businessId);
+      if (!product) {
+        throw new NotFoundError('Product not found');
+      }
+      base.productId = product.id;
+      base.matchConfidence = 1;
+    }
+    items.push(base);
+  }
+
+  const order = await createOrderWithReference(businessId, (referenceNumber) => {
+    const input: CreateOrderInput = {
+      businessId,
+      customerId: resolvedCustomerId,
+      referenceNumber,
+      rawMessage: data.rawMessage,
+      isManual: true,
+      items,
+    };
+    if (data.notes !== undefined) input.notes = data.notes;
+    return input;
   });
 
-  const createData: CreateOrderInput = {
-    businessId,
-    customerId: resolvedCustomerId,
-    referenceNumber,
-    rawMessage: data.rawMessage,
-    isManual: true,
-    items: orderItems,
-  };
-  if (data.notes !== undefined) createData.notes = data.notes;
+  await Promise.all([recalculateCustomerTotals(resolvedCustomerId), recordOrder(businessId)]);
 
-  const order = await createOrder(createData, undefined);
+  await emitCreated(order);
 
-  emitOrderCreated(businessId, {
+  // Manual orders get no auto-reply: the customer may have ordered in person and
+  // an unexpected WhatsApp message would be confusing.
+  return order;
+}
+
+interface TransitionOptions {
+  /** Required when cancelling. */
+  reason?: string;
+  /** Staff member to assign as part of the transition. */
+  assignStaffId?: string;
+}
+
+/**
+ * The single path for every order status change.
+ *
+ * Consolidating the transitions guarantees that validation, stock movement,
+ * customer-total recalculation, the WhatsApp notification, the SSE broadcast
+ * and the audit entry all happen for every transition — previously each
+ * function implemented its own subset and customers were never notified.
+ */
+async function transitionOrder(
+  orderId: string,
+  businessId: string,
+  actorId: string | null,
+  next: OrderStatus,
+  options: TransitionOptions = {},
+): Promise<OrderWithRelations> {
+  const existing = await findOrderById(orderId, businessId);
+
+  if (!existing) {
+    throw new NotFoundError('Order not found');
+  }
+
+  if (!ALLOWED_TRANSITIONS[existing.status].includes(next)) {
+    throw new ValidationError(
+      `Cannot move an order from ${existing.status} to ${next}`,
+    );
+  }
+
+  if (next === 'CANCELLED' && !options.reason?.trim()) {
+    throw new ValidationError('A reason is required when cancelling an order');
+  }
+
+  const previousStatus = existing.status;
+
+  if (options.assignStaffId) {
+    await assignOrderToStaff(orderId, options.assignStaffId, businessId);
+  }
+
+  const note = options.reason ?? `Order moved to ${next}`;
+  const order = await updateOrderStatus(orderId, next, actorId, note, undefined);
+
+  if (next === 'CANCELLED' && options.reason) {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { cancelReason: options.reason },
+    });
+  }
+
+  // Stock leaves inventory at CONFIRMED, not at PENDING: an unconfirmed order
+  // must not deplete stock the owner has not agreed to sell.
+  if (next === 'CONFIRMED' && !order.stockDeducted) {
+    const alerts = await deductStockForOrderItems(
+      orderId,
+      businessId,
+      actorId,
+      order.items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        matched: item.matched,
+      })),
+    );
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { stockDeducted: true },
+    });
+
+    for (const alert of alerts) {
+      emitStockAlert(businessId, alert);
+    }
+  }
+
+  // A status change moves the order in or out of the billable set, so the
+  // customer's outstanding balance has to be recomputed.
+  await recalculateCustomerTotals(order.customerId);
+
+  emitOrderUpdated(businessId, {
     orderId: order.id,
-    referenceNumber: order.referenceNumber,
-    customerName: null,
-    totalAmount: Number(order.totalAmount),
+    status: order.status,
+    previousStatus,
   });
+
+  await notifyOrderStatus(order.id, next);
+
+  // Staff activity is a staff-only audit trail — `StaffActivity.staffId` is a
+  // foreign key to Staff, and the owner has no staff row. Calling this with a
+  // placeholder id threw a constraint error that the `.catch` below swallowed,
+  // so owner transitions were silently never recorded. Skipped explicitly now.
+  if (actorId) {
+    await logActivity({
+      staffId: actorId,
+      action: `order.${next.toLowerCase()}`,
+      resourceId: orderId,
+      resourceType: 'order',
+      note: `Order ${order.referenceNumber} → ${next}${options.reason ? `: ${options.reason}` : ''}`,
+    }).catch(() => {});
+  }
 
   return order;
+}
+
+/**
+ * The actor on a transition is a staff id, or null when the owner did it.
+ *
+ * Null rather than a placeholder string: `assignedStaffId` and the audit trail
+ * are real foreign keys, so a sentinel like `'system'` fails the constraint. It
+ * did exactly that — an owner moving an order to Packing hit a 500 every time,
+ * because the transition tried to assign the order to a staff row named
+ * "system" that cannot exist.
+ */
+export async function confirmOrder(
+  orderId: string,
+  businessId: string,
+  confirmedBy: string | null,
+): Promise<OrderWithRelations> {
+  return transitionOrder(orderId, businessId, confirmedBy, 'CONFIRMED');
+}
+
+/**
+ * The assignment a transition should apply for a given actor.
+ *
+ * Exported for tests. `Order.assignedStaffId` is a foreign key to Staff, so it
+ * only ever accepts a real staff id — never a placeholder for "the owner".
+ */
+export function assignmentFor(staffId: string | null): { assignStaffId?: string } {
+  return staffId ? { assignStaffId: staffId } : {};
+}
+
+export async function markProcessing(
+  orderId: string,
+  businessId: string,
+  staffId: string | null,
+): Promise<OrderWithRelations> {
+  // Packing an order claims it, but only a real staff member can be assigned.
+  return transitionOrder(orderId, businessId, staffId, 'PROCESSING', assignmentFor(staffId));
+}
+
+export async function fulfillOrder(
+  orderId: string,
+  businessId: string,
+  staffId: string | null,
+): Promise<OrderWithRelations> {
+  return transitionOrder(orderId, businessId, staffId, 'FULFILLED');
+}
+
+export async function cancelOrder(
+  orderId: string,
+  businessId: string,
+  reason: string,
+  cancelledBy: string | null,
+): Promise<OrderWithRelations> {
+  return transitionOrder(orderId, businessId, cancelledBy, 'CANCELLED', { reason });
 }
 
 export async function getOrdersByStatus(

@@ -1,47 +1,83 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import type { OrderUpdatedPayload } from '@flowdesk/shared';
 import { sseEventBus } from '@/lib/events';
 
-interface OrderEvent {
-  id: string;
-  status?: string;
-}
+/**
+ * Turns realtime events into cache invalidations.
+ *
+ * Invalidations are batched on a short timer rather than issued per event: a
+ * webhook burst (a catalog import, a payment provider retrying) would otherwise
+ * fire one refetch per event per key, and several of these keys are shared, so
+ * the same query would be refetched repeatedly within a few milliseconds.
+ */
+
+/** Long enough to absorb a burst, short enough to feel immediate. */
+const INVALIDATE_DEBOUNCE_MS = 120;
 
 export function useRealtimeOrders(): void {
   const qc = useQueryClient();
 
   useEffect(() => {
+    const pending = new Set<string>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function flush(): void {
+      flushTimer = null;
+
+      for (const serialized of pending) {
+        qc.invalidateQueries({ queryKey: JSON.parse(serialized) as unknown[] });
+      }
+
+      pending.clear();
+    }
+
+    function queueInvalidate(queryKey: unknown[]): void {
+      pending.add(JSON.stringify(queryKey));
+      flushTimer ??= setTimeout(flush, INVALIDATE_DEBOUNCE_MS);
+    }
+
     const unsubscribe = sseEventBus.subscribe((event) => {
       if (event.type === 'order.created') {
-        qc.invalidateQueries({ queryKey: ['orders', 'byStatus'] });
-        qc.invalidateQueries({ queryKey: ['orders', 'stats'] });
+        queueInvalidate(['orders', 'byStatus']);
+        queueInvalidate(['orders', 'stats']);
         // Badges & dashboard react to new orders too.
-        qc.invalidateQueries({ queryKey: ['dashboard', 'badges'] });
+        queueInvalidate(['dashboard', 'badges']);
       }
 
       if (event.type === 'order.updated') {
-        const payload = event.payload as OrderEvent;
-        qc.invalidateQueries({ queryKey: ['orders', 'byStatus'] });
-        qc.invalidateQueries({ queryKey: ['orders', 'detail', payload.id] });
+        // The API sends `orderId`; this previously read `payload.id`, so the
+        // detail key resolved to `undefined` and an open drawer never updated.
+        const payload = event.payload as OrderUpdatedPayload;
+        queueInvalidate(['orders', 'byStatus']);
+        queueInvalidate(['orders', 'stats']);
+        queueInvalidate(['orders', 'detail', payload.orderId]);
+        // The nav badge counts pending orders, so any transition into or out of
+        // PENDING changes it. Without this the badge kept showing a count for a
+        // column the board had already emptied.
+        queueInvalidate(['dashboard', 'badges']);
       }
 
       if (event.type === 'message.flagged') {
-        qc.invalidateQueries({ queryKey: ['messages'] });
-        qc.invalidateQueries({ queryKey: ['dashboard', 'badges'] });
+        queueInvalidate(['messages']);
+        queueInvalidate(['dashboard', 'badges']);
       }
 
       if (event.type === 'payment.confirmed') {
-        qc.invalidateQueries({ queryKey: ['payments'] });
-        qc.invalidateQueries({ queryKey: ['orders'] });
-        qc.invalidateQueries({ queryKey: ['customers'] });
+        queueInvalidate(['payments']);
+        queueInvalidate(['orders']);
+        queueInvalidate(['customers']);
       }
 
       if (event.type === 'stock.alert') {
-        qc.invalidateQueries({ queryKey: ['products', 'low-stock'] });
-        qc.invalidateQueries({ queryKey: ['dashboard', 'badges'] });
+        queueInvalidate(['products', 'low-stock']);
+        queueInvalidate(['dashboard', 'badges']);
       }
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (flushTimer) clearTimeout(flushTimer);
+    };
   }, [qc]);
 }

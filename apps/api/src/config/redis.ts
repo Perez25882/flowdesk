@@ -47,7 +47,39 @@ function createRedisClient(connectionName: string): Redis {
 }
 
 export const redis = createRedisClient('flowdesk-main');
+
+/**
+ * BullMQ blocks on this connection while waiting for jobs, so it cannot be
+ * shared with request-path commands — a blocked client would stall them.
+ */
 export const redisSubscriber = createRedisClient('flowdesk-subscriber');
+
+/**
+ * Dedicated client for the rate limiter.
+ *
+ * `maxRetriesPerRequest` is set so a Redis stall fails the limiter quickly and
+ * `skipOnError` can let the request through, rather than queueing commands
+ * until every inbound request times out.
+ */
+export const rateLimitRedis = new Redis(env.REDIS_URL, {
+  connectionName: 'flowdesk-ratelimit',
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  retryStrategy,
+});
+
+rateLimitRedis.on('error', (error: Error) => {
+  logger.error({ connectionName: 'flowdesk-ratelimit', error }, 'Redis client error');
+});
+
+/**
+ * Dedicated connection for SSE fan-out.
+ *
+ * A Redis connection in subscriber mode may only issue subscribe commands, so
+ * this cannot share `redis` (request-path commands) or `redisSubscriber`
+ * (BullMQ blocks on it while waiting for jobs).
+ */
+export const sseSubscriber = createRedisClient('flowdesk-sse-sub');
 
 export async function connectRedis(): Promise<void> {
   await Promise.all([redis.ping(), redisSubscriber.ping()]);
@@ -55,6 +87,11 @@ export async function connectRedis(): Promise<void> {
 }
 
 export async function disconnectRedis(): Promise<void> {
-  await Promise.all([redis.quit(), redisSubscriber.quit()]);
+  await Promise.all([
+    redis.quit(),
+    redisSubscriber.quit(),
+    sseSubscriber.quit().catch(() => undefined),
+    rateLimitRedis.quit().catch(() => undefined),
+  ]);
   logger.info('Redis clients disconnected');
 }

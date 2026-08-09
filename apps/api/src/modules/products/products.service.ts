@@ -1,5 +1,6 @@
-import { NotFoundError } from '../../utils/errors.js';
+import { NotFoundError, PlanLimitError } from '../../utils/errors.js';
 import { emitStockAlert } from '../../services/sse/sse.events.js';
+import { checkProductLimit } from '../../services/plan/plan.service.js';
 import type { CreateProductInput, UpdateProductInput, StockAdjustmentInput, ListProductsQueryInput } from './products.schema.js';
 import * as repository from './products.repository.js';
 
@@ -7,6 +8,15 @@ export async function createProduct(
   data: CreateProductInput,
   businessId: string,
 ): Promise<repository.ProductWithStock> {
+  const current = await repository.countProducts(businessId);
+  const limit = await checkProductLimit(businessId, current);
+
+  if (!limit.allowed) {
+    throw new PlanLimitError(
+      `Your plan allows ${limit.limit} products. Upgrade to add more.`,
+    );
+  }
+
   return repository.createProduct(data, businessId);
 }
 

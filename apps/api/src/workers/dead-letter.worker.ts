@@ -48,7 +48,7 @@ export async function moveToDeadLetter(
         error: error.message,
         failedAt: new Date().toISOString(),
       },
-      originalJobId ? { jobId: `dlq:${sourceQueue}:${originalJobId}` } : undefined,
+      originalJobId ? { jobId: `dlq-${sourceQueue}-${originalJobId}` } : undefined,
     );
   } catch (enqueueError: unknown) {
     logger.error(

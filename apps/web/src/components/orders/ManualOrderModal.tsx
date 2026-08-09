@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Plus, Trash2, ShoppingBag, Search } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogTrigger,
   DialogContent,
   DialogHeader,
+  DialogBody,
+  DialogFooter,
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/Dialog';
@@ -12,7 +14,22 @@ import type { CreateOrderInput } from '@/types/order';
 import { useCreateOrder } from '@/hooks/useOrders';
 import { useProducts } from '@/hooks/useProducts';
 import { useCustomers } from '@/hooks/useCustomers';
-import { formatCurrency } from '@/lib/utils';
+import { Button } from '@/components/ui/Button';
+import { formatCurrency, cn } from '@/lib/utils';
+
+/**
+ * Manual order entry, for a walk-in or a phone call.
+ *
+ * Two behavioural fixes came out of the redesign, not just visual ones:
+ *
+ *   1. The customer picker was unreachable. `isNewCustomer` was derived as
+ *      `!customerId`, so the form opened in "new customer" mode and the only
+ *      button offered set `customerId` back to `''` — meaning the search box
+ *      for existing customers could never be shown. It is now an explicit mode.
+ *   2. The submit button sat at the bottom of a scrolling dialog. It is now
+ *      pinned, with the running total beside it, so the person entering a
+ *      six-line order can always see what they are about to charge.
+ */
 
 interface OrderItemRow {
   id: string;
@@ -23,6 +40,7 @@ interface OrderItemRow {
   isFreeText: boolean;
 }
 
+/** Accepts 024…, +233 24…, or 23324… and returns the wire format. */
 function normalizeGhanaPhone(raw: string): string {
   const digits = raw.replace(/\D/g, '');
   if (digits.startsWith('0')) return `233${digits.slice(1)}`;
@@ -33,6 +51,8 @@ function normalizeGhanaPhone(raw: string): string {
 export default function ManualOrderModal(): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const createOrder = useCreateOrder();
+
+  const [mode, setMode] = useState<'existing' | 'new'>('existing');
   const [customerId, setCustomerId] = useState('');
   const [newCustomerPhone, setNewCustomerPhone] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
@@ -50,20 +70,14 @@ export default function ManualOrderModal(): React.JSX.Element {
     [products],
   );
 
-  const addItem = (isFreeText = false): void => {
+  function addItem(isFreeText = false): void {
     setItems((prev) => [
       ...prev,
-      {
-        id: crypto.randomUUID(),
-        description: '',
-        quantity: 1,
-        unitPrice: 0,
-        isFreeText,
-      },
+      { id: crypto.randomUUID(), description: '', quantity: 1, unitPrice: 0, isFreeText },
     ]);
-  };
+  }
 
-  const updateItem = (id: string, patch: Partial<OrderItemRow>): void => {
+  function updateItem(id: string, patch: Partial<OrderItemRow>): void {
     setItems((prev) =>
       prev.map((item) => {
         if (item.id !== id) return item;
@@ -78,36 +92,32 @@ export default function ManualOrderModal(): React.JSX.Element {
         return updated;
       }),
     );
-  };
+  }
 
-  const removeItem = (id: string): void => {
+  function removeItem(id: string): void {
     setItems((prev) => prev.filter((i) => i.id !== id));
-  };
+  }
 
-  const reset = (): void => {
+  function reset(): void {
     setItems([]);
+    setMode('existing');
     setCustomerId('');
     setNewCustomerPhone('');
     setNewCustomerName('');
     setCustomerSearch('');
     setNotes('');
-  };
+  }
 
-  const handleSubmit = (): void => {
-    if (!customerId && !newCustomerPhone) return;
-
+  function handleSubmit(): void {
     const data: CreateOrderInput = {
-      rawMessage: notes || 'Manual order',
+      rawMessage: notes || 'Entered by hand',
       items: items.map((i) => {
-        const base = {
-          description: i.description,
-          quantity: i.quantity,
-          unitPrice: i.unitPrice,
-        };
+        const base = { description: i.description, quantity: i.quantity, unitPrice: i.unitPrice };
         return i.productId ? { ...base, productId: i.productId } : base;
       }),
     };
-    if (customerId) {
+
+    if (mode === 'existing' && customerId) {
       data.customerId = customerId;
     } else {
       data.customerPhone = normalizeGhanaPhone(newCustomerPhone);
@@ -121,218 +131,240 @@ export default function ManualOrderModal(): React.JSX.Element {
         reset();
       },
     });
-  };
+  }
 
-  const isNewCustomer = !customerId;
-  const canSubmit =
-    items.length > 0 &&
-    !createOrder.isPending &&
-    (!!customerId || newCustomerPhone.replace(/\D/g, '').length >= 9);
+  const hasCustomer =
+    mode === 'existing' ? !!customerId : newCustomerPhone.replace(/\D/g, '').length >= 9;
+  const hasCompleteItems = items.length > 0 && items.every((i) => i.description.trim().length > 0);
+  const canSubmit = hasCustomer && hasCompleteItems;
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) reset();
+      }}
+    >
       <DialogTrigger asChild>
-        <button className="inline-flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[var(--color-primary-light)]">
-          <Plus className="h-4 w-4" />
-          New Order
-       </button>
-     </DialogTrigger>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Create Manual Order</DialogTitle>
-          <DialogDescription>Walk-in or phone order entry</DialogDescription>
-       </DialogHeader>
+        <Button size="sm" leadingIcon={<Plus className="h-4 w-4" strokeWidth={2} />}>
+          New order
+        </Button>
+      </DialogTrigger>
 
-        <div className="space-y-4">
-          {/* Customer */}
-          <div className="space-y-2">
-            <label className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-              Customer
-           </label>
-            {isNewCustomer ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setCustomerId('')}
-                  className="inline-flex items-center rounded-[var(--radius-sm)] bg-[var(--color-primary-muted)] px-2 py-1 text-[11px] font-medium text-[var(--color-primary-light)]"
-                >
-                  New customer
-               </button>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <input
-                    type="tel"
-                    value={newCustomerPhone}
-                    onChange={(e) => setNewCustomerPhone(e.target.value)}
-                    placeholder="Phone (233XXXXXXXXX)"
-                    className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    value={newCustomerName}
-                    onChange={(e) => setNewCustomerName(e.target.value)}
-                    placeholder="Name (optional)"
-                    className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                  />
-               </div>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-muted)]" />
-                    <input
-                      type="text"
-                      value={customerSearch}
-                      onChange={(e) => setCustomerSearch(e.target.value)}
-                      placeholder="Search by name or phone..."
-                      className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] pl-8 pr-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                    />
-                 </div>
+      <DialogContent className="max-w-2xl p-0">
+        <DialogHeader>
+          <DialogTitle>New order</DialogTitle>
+          <DialogDescription>
+            For a customer who walked in or called instead of messaging.
+          </DialogDescription>
+        </DialogHeader>
+
+        <DialogBody className="space-y-6">
+          {/* ── Who ── */}
+          <section>
+            <div className="mb-2.5 flex items-center justify-between gap-3">
+              <h3 className="fd-label">Customer</h3>
+
+              {/* A two-state switch, so both branches are actually reachable. */}
+              <div
+                role="radiogroup"
+                aria-label="Customer type"
+                className="flex rounded-md border border-border p-0.5"
+              >
+                {(['existing', 'new'] as const).map((option) => (
                   <button
+                    key={option}
                     type="button"
-                    onClick={() => setCustomerId('')}
-                    className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+                    role="radio"
+                    aria-checked={mode === option}
+                    onClick={() => setMode(option)}
+                    className={cn(
+                      'rounded-xs px-2.5 py-1 text-xs font-medium transition-colors duration-fast ease-out',
+                      mode === option
+                        ? 'bg-primary-muted text-primary'
+                        : 'text-text-secondary hover:text-text-primary',
+                    )}
                   >
-                    New
-                 </button>
-               </div>
+                    {option === 'existing' ? 'Existing' : 'New'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {mode === 'new' ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  value={newCustomerPhone}
+                  onChange={(e) => setNewCustomerPhone(e.target.value)}
+                  aria-label="Customer phone number"
+                  placeholder="024 418 7702"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+                <input
+                  type="text"
+                  value={newCustomerName}
+                  onChange={(e) => setNewCustomerName(e.target.value)}
+                  aria-label="Customer name, optional"
+                  placeholder="Name, if you know it"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+              </div>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  type="search"
+                  value={customerSearch}
+                  onChange={(e) => setCustomerSearch(e.target.value)}
+                  aria-label="Search customers by name or number"
+                  placeholder="Search name or number"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
                 <select
                   value={customerId}
                   onChange={(e) => setCustomerId(e.target.value)}
-                  className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
+                  aria-label="Choose a customer"
+                  className="fd-input fd-select fd-input-compact h-11 py-0 sm:h-10"
                 >
-                  <option value="">Pick a customer</option>
+                  <option value="">Choose a customer</option>
                   {customers.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name || c.waNumber} — {c.waNumber}
-                   </option>
+                      {c.name ? `${c.name} — ${c.waNumber}` : c.waNumber}
+                    </option>
                   ))}
-               </select>
-              </>
+                </select>
+              </div>
             )}
-         </div>
+          </section>
 
-          {/* Items */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-                Items
-             </label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => addItem(false)}
-                  className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
-                >
-                  <Plus className="h-3 w-3" /> Catalog
-               </button>
-                <button
-                  onClick={() => addItem(true)}
-                  className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
-                >
-                  <Plus className="h-3 w-3" /> Free text
-               </button>
-             </div>
-           </div>
+          {/* ── What ── */}
+          <section>
+            <div className="mb-2.5 flex items-center justify-between gap-3">
+              <h3 className="fd-label">Items</h3>
+              <div className="flex gap-1.5">
+                <Button size="sm" variant="secondary" onClick={() => addItem(false)}>
+                  From catalogue
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => addItem(true)}>
+                  Type it out
+                </Button>
+              </div>
+            </div>
 
-            <div className="space-y-2">
-              {items.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-2"
-                >
-                  {item.isFreeText ? (
+            {items.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border px-4 py-7 text-center text-sm text-text-muted">
+                No items yet. Add one from your catalogue, or type it out if it is not listed.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {items.map((item, index) => (
+                  <li key={item.id} className="flex flex-wrap items-center gap-2">
+                    <span className="fd-figure w-4 shrink-0 text-xs text-text-muted">{index + 1}</span>
+
+                    {item.isFreeText ? (
+                      <input
+                        type="text"
+                        value={item.description}
+                        onChange={(e) => updateItem(item.id, { description: e.target.value })}
+                        aria-label={`Item ${index + 1} description`}
+                        placeholder="What did they buy?"
+                        className="fd-input fd-input-compact h-11 min-w-0 flex-1 basis-[calc(100%-1.5rem)] py-0 sm:h-10 sm:basis-auto"
+                      />
+                    ) : (
+                      <select
+                        value={item.productId ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          updateItem(item.id, v ? { productId: v } : {});
+                        }}
+                        aria-label={`Item ${index + 1} product`}
+                        className="fd-input fd-select fd-input-compact h-11 min-w-0 flex-1 basis-[calc(100%-1.5rem)] py-0 sm:h-10 sm:basis-auto"
+                      >
+                        <option value="">Choose a product</option>
+                        {activeProducts.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} — {formatCurrency(Number(p.price))}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
                     <input
-                      type="text"
-                      value={item.description}
-                      onChange={(e) => updateItem(item.id, { description: e.target.value })}
-                      placeholder="Item description"
-                      className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
+                      type="number"
+                      inputMode="decimal"
+                      min={0.1}
+                      step={0.1}
+                      value={item.quantity}
+                      onChange={(e) =>
+                        updateItem(item.id, { quantity: Number.parseFloat(e.target.value) || 0 })
+                      }
+                      aria-label={`Item ${index + 1} quantity`}
+                      className="fd-input fd-input-compact h-11 w-[62px] shrink-0 px-1.5 py-0 text-center sm:h-10 sm:w-[64px] sm:px-2"
                     />
-                  ) : (
-                    <select
-                      value={item.productId ?? ''}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        const patch: Partial<OrderItemRow> = v ? { productId: v } : {};
-                        updateItem(item.id, patch);
-                      }}
-                      className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
-                    >
-                      <option value="">Select product</option>
-                      {activeProducts.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} — {formatCurrency(Number(p.price))}
-                       </option>
-                      ))}
-                   </select>
-                  )}
-                  <input
-                    type="number"
-                    min={0.1}
-                    step={0.1}
-                    value={item.quantity}
-                    onChange={(e) => updateItem(item.id, { quantity: Number.parseFloat(e.target.value) || 0 })}
-                    placeholder="Qty"
-                    className="w-16 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm text-[var(--color-text-primary)] text-center focus:border-[var(--color-primary)] focus:outline-none"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={item.unitPrice}
-                    onChange={(e) => updateItem(item.id, { unitPrice: Number.parseFloat(e.target.value) || 0 })}
-                    placeholder="Price"
-                    className="w-20 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
-                  />
-                  <button
-                    onClick={() => removeItem(item.id)}
-                    className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-text-muted)] hover:text-[var(--color-danger)]"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                 </button>
-               </div>
-              ))}
-              {items.length === 0 && (
-                <p className="rounded-[var(--radius-sm)] border border-dashed border-[var(--color-border)] py-6 text-center text-xs text-[var(--color-text-muted)]">
-                  No items yet. Use Catalog or Free text to add the first line.
-               </p>
-              )}
-           </div>
-         </div>
 
-          {/* Notes */}
-          <div className="space-y-2">
-            <label className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-              Notes
-           </label>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step={0.01}
+                      value={item.unitPrice}
+                      onChange={(e) =>
+                        updateItem(item.id, { unitPrice: Number.parseFloat(e.target.value) || 0 })
+                      }
+                      aria-label={`Item ${index + 1} unit price in cedis`}
+                      className="fd-input fd-input-compact h-11 w-[84px] shrink-0 px-1.5 py-0 text-right sm:h-10 sm:w-[88px] sm:px-2"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => removeItem(item.id)}
+                      aria-label={`Remove item ${index + 1}`}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-10 sm:w-9"
+                    >
+                      <Trash2 className="h-4 w-4" strokeWidth={1.75} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* ── Anything else ── */}
+          <section>
+            <h3 className="fd-label mb-2.5">Note</h3>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={2}
-              placeholder="Optional order notes..."
-              className="w-full resize-none rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
+              aria-label="Note about this order, optional"
+              placeholder="Delivery instructions, or anything you want on the record."
+              className="fd-input fd-input-compact resize-none"
             />
-         </div>
+          </section>
 
-          {/* Total */}
-          <div className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-4 py-3">
-            <span className="text-sm font-medium text-[var(--color-text-secondary)]">Total</span>
-            <span className="font-mono text-lg font-semibold text-[var(--color-text-primary)]">
+          {createOrder.isError && (
+            <p role="alert" className="text-sm font-medium text-danger">
+              {(createOrder.error as Error).message}
+            </p>
+          )}
+        </DialogBody>
+
+        {/* The running total lives with the button that commits it. */}
+        <DialogFooter className="justify-between">
+          <span className="flex items-baseline gap-2">
+            <span className="fd-label">Total</span>
+            <span className="fd-figure text-lg font-semibold text-text-primary">
               {formatCurrency(total)}
-           </span>
-         </div>
+            </span>
+          </span>
 
-          {/* Submit */}
-          <button
-            onClick={handleSubmit}
-            disabled={!canSubmit}
-            className="flex w-full items-center justify-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--color-primary-light)] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <ShoppingBag className="h-4 w-4" />
-            {createOrder.isPending ? 'Creating...' : 'Create Order'}
-         </button>
-       </div>
-     </DialogContent>
-   </Dialog>
+          <Button onClick={handleSubmit} disabled={!canSubmit} isLoading={createOrder.isPending}>
+            Create order
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

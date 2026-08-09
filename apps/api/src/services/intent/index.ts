@@ -24,8 +24,23 @@ function toClassificationResult(
   };
 }
 
-export async function classifyMessage(text: string): Promise<ClassificationResult> {
-  const ruleResult = classifyIntent(text);
+export interface ClassifyOptions {
+  /**
+   * The business's own product names and aliases.
+   *
+   * Lets a message that names a real product be recognised as an order even
+   * without an ordering phrase — "5 malta" is an order at a shop that sells
+   * Malta, and noise anywhere else.
+   */
+  catalogTerms?: string[];
+}
+
+export async function classifyMessage(
+  text: string,
+  businessId: string,
+  options: ClassifyOptions = {},
+): Promise<ClassificationResult> {
+  const ruleResult = classifyIntent(text, options.catalogTerms ?? []);
 
   if (!HAIKU_FALLBACK_ENABLED) {
     return toClassificationResult(ruleResult, ClassificationSource.RULE_ENGINE);
@@ -35,7 +50,7 @@ export async function classifyMessage(text: string): Promise<ClassificationResul
     return toClassificationResult(ruleResult, ClassificationSource.RULE_ENGINE);
   }
 
-  const aiResult = await aiClassifier.classify(text);
+  const aiResult = await aiClassifier.classify(text, businessId);
 
   if (aiResult.intent === ruleResult.intent) {
     const mergedConfidence = Math.max(ruleResult.confidence, aiResult.confidence);

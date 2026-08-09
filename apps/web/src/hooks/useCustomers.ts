@@ -1,23 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
 
-const API_BASE = '/api/v1';
 
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('accessToken');
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error ?? `HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  return data.data as T;
-}
 
 export interface Customer {
   id: string;
@@ -50,7 +35,7 @@ export interface CustomerProfile extends Customer {
   }>;
 }
 
-export function useCustomers(search?: string, tag?: string, hasBalance?: boolean) {
+export function useCustomers(search?: string, tag?: string, hasBalance?: boolean): UseQueryResult<Customer[], Error> {
   const params = new URLSearchParams();
   if (search) params.set('search', search);
   if (tag) params.set('tag', tag);
@@ -58,25 +43,25 @@ export function useCustomers(search?: string, tag?: string, hasBalance?: boolean
   const query = params.toString() ? `?${params.toString()}` : '';
   return useQuery({
     queryKey: ['customers', search, tag, hasBalance],
-    queryFn: () => fetchJson<Customer[]>(`/customers${query}`),
+    queryFn: () => apiFetch<Customer[]>(`/customers${query}`),
     staleTime: 30_000,
   });
 }
 
-export function useCustomerDetail(customerId: string | null) {
+export function useCustomerDetail(customerId: string | null): UseQueryResult<CustomerProfile, Error> {
   return useQuery({
     queryKey: ['customers', 'detail', customerId],
-    queryFn: () => fetchJson<CustomerProfile>(`/customers/${customerId}`),
+    queryFn: () => apiFetch<CustomerProfile>(`/customers/${customerId}`),
     enabled: !!customerId,
     staleTime: 30_000,
   });
 }
 
-export function useUpdateCustomer() {
+export function useUpdateCustomer(): UseMutationResult<Customer, Error, { id: string; data: Partial<Customer> }> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Customer> }) =>
-      fetchJson<Customer>(`/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+      apiFetch<Customer>(`/customers/${id}`, { method: 'PATCH', body: data }),
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ['customers'] });
       qc.invalidateQueries({ queryKey: ['customers', 'detail', id] });

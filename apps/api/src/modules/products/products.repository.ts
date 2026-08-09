@@ -35,6 +35,11 @@ export async function createProduct(
   return product as ProductWithStock;
 }
 
+/** Active product count, used for plan-limit checks. */
+export async function countProducts(businessId: string): Promise<number> {
+  return prisma.product.count({ where: { businessId, deletedAt: null } });
+}
+
 export async function findProductById(id: string, businessId: string): Promise<ProductWithStock | null> {
   const product = await prisma.product.findFirst({
     where: { id, businessId, deletedAt: null },
@@ -49,8 +54,9 @@ export async function listProducts(
   const where: Prisma.ProductWhereInput = { businessId, deletedAt: null };
   if (filters.active !== undefined) where.active = filters.active;
   if (filters.lowStock) {
-    where.stockQuantity = { lte: new Prisma.Decimal(0) };
-    where.reorderThreshold = { gt: new Prisma.Decimal(0) };
+    // Same column-to-column rule as getLowStockProducts, resolved to ids first
+    // so the rest of the filters still apply through the normal query builder.
+    where.id = { in: await lowStockProductIds(businessId) };
   }
   if (filters.search) {
     where.OR = [
@@ -111,9 +117,12 @@ export async function adjustStock(
     });
     if (!current) throw new Error('Product not found');
 
-    const newQuantity = data.type === 'RESTOCK'
-      ? new Prisma.Decimal(current.stockQuantity.toString()).add(new Prisma.Decimal(data.quantity))
-      : new Prisma.Decimal(current.stockQuantity.toString()).add(new Prisma.Decimal(data.quantity));
+    // RESTOCK is validated positive; ADJUSTMENT carries a signed delta. Both
+    // are therefore applied by addition — a downward correction arrives as a
+    // negative quantity.
+    const newQuantity = new Prisma.Decimal(current.stockQuantity.toString()).add(
+      new Prisma.Decimal(data.quantity),
+    );
 
     const product = await tx.product.update({
       where: { id, businessId },
@@ -173,7 +182,8 @@ export interface StockDeductionAlert {
 export async function deductStockForOrderItems(
   orderId: string,
   businessId: string,
-  confirmedBy: string,
+  /** Staff id, or null when the owner confirmed it. `StockMovement.staffId` is nullable. */
+  confirmedBy: string | null,
   items: Array<{ productId: string | null; quantity: number | Prisma.Decimal; matched: boolean }>,
   tx?: Prisma.TransactionClient,
 ): Promise<StockDeductionAlert[]> {
@@ -225,16 +235,37 @@ export async function deductStockForOrderItems(
   return alerts;
 }
 
+/**
+ * Products at or below their reorder threshold.
+ *
+ * "Low stock" is a comparison between two columns, which Prisma's filter API
+ * cannot express — the previous implementation approximated it as
+ * `stockQuantity <= 0` and therefore never warned the owner until stock had
+ * already run out. Raw SQL is used so the real condition is evaluated.
+ */
 export async function getLowStockProducts(businessId: string): Promise<ProductWithStock[]> {
-  const products = await prisma.product.findMany({
-    where: {
-      businessId,
-      deletedAt: null,
-      active: true,
-      stockQuantity: { lte: new Prisma.Decimal(0) },
-      reorderThreshold: { gt: new Prisma.Decimal(0) },
-    },
-    orderBy: { stockQuantity: 'asc' },
-  });
-  return products as ProductWithStock[];
+  return prisma.$queryRaw<ProductWithStock[]>`
+    SELECT *
+    FROM "products"
+    WHERE "businessId" = ${businessId}
+      AND "deletedAt" IS NULL
+      AND "active" = true
+      AND "reorderThreshold" > 0
+      AND "stockQuantity" <= "reorderThreshold"
+    ORDER BY ("stockQuantity" - "reorderThreshold") ASC
+  `;
+}
+
+/** Ids of low-stock products, used to apply the same rule inside a filtered list. */
+async function lowStockProductIds(businessId: string): Promise<string[]> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "products"
+    WHERE "businessId" = ${businessId}
+      AND "deletedAt" IS NULL
+      AND "reorderThreshold" > 0
+      AND "stockQuantity" <= "reorderThreshold"
+  `;
+
+  return rows.map((row) => row.id);
 }

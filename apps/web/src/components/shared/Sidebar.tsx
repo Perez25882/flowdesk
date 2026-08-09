@@ -9,12 +9,16 @@ import {
   MessageSquare,
   UserCog,
   Settings2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  LogOut,
   type LucideIcon,
 } from 'lucide-react';
-import { getNavItemsForRole, type NavItem } from '@/config/navigation';
-import { getUserRole } from '@/hooks/useAuth';
+import { getGroupedNavItems, type NavItem } from '@/config/navigation';
+import { getUserRole, useLogout } from '@/hooks/useAuth';
 import { useBadges } from '@/hooks/useBadges';
 import { useBusiness } from '@/hooks/useBusiness';
+import { cn } from '@/lib/utils';
 
 const iconMap: Record<string, LucideIcon> = {
   LayoutDashboard,
@@ -29,6 +33,10 @@ const iconMap: Record<string, LucideIcon> = {
 
 interface SidebarProps {
   collapsed: boolean;
+  onToggleCollapse?: () => void;
+  /** Set when rendered inside the mobile sheet, where collapsing makes no sense. */
+  variant?: 'rail' | 'sheet';
+  onNavigate?: () => void;
 }
 
 function getInitials(name: string): string {
@@ -38,34 +46,52 @@ function getInitials(name: string): string {
   return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
 }
 
-function BusinessProfile(): React.JSX.Element {
+/**
+ * Business identity sits at the top, not the bottom.
+ *
+ * Staff accounts can belong to more than one business, and getting that wrong
+ * means recording a payment against the wrong shop. Which business you are
+ * looking at is the first question the interface should answer.
+ */
+function BusinessIdentity({ collapsed }: { collapsed: boolean }): React.JSX.Element {
   const { data: business, isLoading } = useBusiness();
+  const name = business?.name ?? '';
   const initials = business ? getInitials(business.name) : 'FD';
   const planLabel = business?.plan
     ? business.plan.charAt(0) + business.plan.slice(1).toLowerCase()
-    : '—';
-  const phone = business?.phone ?? '';
-  const name = business?.name ?? '';
+    : null;
 
   return (
-    <div className="border-t border-[var(--color-border)] p-4">
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-primary)] text-sm font-semibold text-white">
-          {isLoading ? '…' : initials}
-       </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-[var(--color-text-primary)]">
-            {isLoading ? 'Loading…' : name || 'Your business'}
-         </p>
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center rounded-[var(--radius-sm)] bg-[var(--color-primary-muted)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--color-primary-light)]">
-              {planLabel}
-           </span>
-         </div>
-       </div>
-     </div>
-      <p className="mt-2 truncate text-xs text-[var(--color-text-muted)]">{phone}</p>
-   </div>
+    <div
+      className={cn(
+        'flex h-16 shrink-0 items-center gap-2.5 border-b border-border px-3',
+        collapsed && 'justify-center px-0',
+      )}
+    >
+      {/* A squircle rather than a circle. Circles read as people; this is an
+          organisation. */}
+      <span
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-xs font-semibold tracking-tight text-primary-contrast"
+        aria-hidden="true"
+      >
+        {isLoading ? '' : initials}
+      </span>
+
+      {!collapsed && (
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="truncate text-sm font-semibold text-text-primary">
+            {isLoading ? (
+              <span className="fd-skeleton inline-block h-3 w-24 align-middle" />
+            ) : (
+              name || 'Your business'
+            )}
+          </span>
+          <span className="truncate text-2xs text-text-muted">
+            {planLabel ? `${planLabel} plan` : 'Flowdesk'}
+          </span>
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -86,83 +112,182 @@ function SidebarItem({
 
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`group relative flex w-full items-center gap-3 rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium transition-colors ${
+      aria-current={isActive ? 'page' : undefined}
+      title={collapsed ? item.label : undefined}
+      className={cn(
+        'group relative flex w-full items-center gap-2.5 rounded-md py-2 text-sm',
+        'transition-colors duration-fast ease-out',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-surface',
+        collapsed ? 'justify-center px-0' : 'px-2.5',
         isActive
-          ? 'bg-[var(--color-primary-muted)] text-[var(--color-primary-light)]'
-          : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]'
-      } ${collapsed ? 'justify-center' : ''}`}
+          ? 'bg-primary-muted font-semibold text-primary'
+          : 'font-medium text-text-secondary [@media(hover:hover)and(pointer:fine)]:hover:bg-surface-hover [@media(hover:hover)and(pointer:fine)]:hover:text-text-primary',
+      )}
     >
+      {/* The active marker is a rule flush to the rail edge, the way a tab
+          index sticks out of a ledger. */}
       {isActive && (
-        <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-[var(--color-primary)]" />
+        <span
+          aria-hidden="true"
+          className="absolute -left-3 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r-full bg-primary"
+        />
       )}
-      <Icon className="h-[18px] w-[18px] shrink-0" />
-      {!collapsed && (
-        <>
-          <span className="truncate">{item.label}</span>
-          {badgeCount > 0 && (
-            <span className="ml-auto inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--color-danger)] px-1.5 text-[11px] font-semibold text-white">
-              {badgeCount}
-           </span>
-          )}
-        </>
+
+      <Icon
+        className="h-[17px] w-[17px] shrink-0"
+        strokeWidth={isActive ? 2.1 : 1.75}
+        aria-hidden="true"
+      />
+
+      {!collapsed && <span className="truncate">{item.label}</span>}
+
+      {badgeCount > 0 &&
+        (collapsed ? (
+          <span
+            className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-danger"
+            aria-hidden="true"
+          />
+        ) : (
+          <span className="fd-figure ml-auto shrink-0 rounded-sm bg-danger-muted px-1.5 py-px text-2xs font-semibold text-danger">
+            {badgeCount > 99 ? '99+' : badgeCount}
+          </span>
+        ))}
+
+      {badgeCount > 0 && (
+        <span className="sr-only">{`, ${badgeCount} needing attention`}</span>
       )}
-   </button>
+    </button>
   );
 }
 
-export default function Sidebar({ collapsed }: SidebarProps): React.JSX.Element {
+export default function Sidebar({
+  collapsed,
+  onToggleCollapse,
+  variant = 'rail',
+  onNavigate,
+}: SidebarProps): React.JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
   const role = getUserRole();
-  const visibleNavItems = getNavItemsForRole(role);
+  const groups = getGroupedNavItems(role);
   const { data: badges } = useBadges();
+  const logout = useLogout();
+
+  const isSheet = variant === 'sheet';
+  const isCollapsed = isSheet ? false : collapsed;
 
   // Map each nav badge key to the count returned by the backend.
-  // Memoize so SidebarItem doesn't re-render on unrelated query updates.
-  const badgeByItem = useMemo(() => {
+  const badgeByPath = useMemo(() => {
     const map: Record<string, number> = {};
-    for (const item of visibleNavItems) {
-      if (!item.badge) continue;
-      if (item.badge === 'pendingOrders') map[item.path] = badges?.pendingOrders ?? 0;
-      if (item.badge === 'reviewMessages') map[item.path] = badges?.reviewMessages ?? 0;
+    for (const group of groups) {
+      for (const item of group.items) {
+        if (item.badge === 'pendingOrders') map[item.path] = badges?.pendingOrders ?? 0;
+        if (item.badge === 'reviewMessages') map[item.path] = badges?.reviewMessages ?? 0;
+      }
     }
     return map;
-  }, [visibleNavItems, badges]);
+  }, [groups, badges]);
+
+  function go(path: string): void {
+    navigate(path);
+    onNavigate?.();
+  }
+
+  function handleLogout(): void {
+    logout.mutate(undefined, {
+      onSettled: () => navigate('/login', { replace: true }),
+    });
+  }
 
   return (
     <aside
-      className={`hidden md:flex flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] transition-[width] duration-[var(--transition-base)] ${
-        collapsed ? 'w-[60px]' : 'w-[240px]'
-      }`}
+      aria-label="Main"
+      className={cn(
+        'flex flex-col border-r border-border bg-surface',
+        'transition-[width] duration-base ease-out',
+        isSheet ? 'h-full w-full border-r-0' : 'hidden md:flex',
+        !isSheet && (isCollapsed ? 'w-[64px]' : 'w-[228px]'),
+      )}
     >
-      <div className="flex h-14 items-center border-b border-[var(--color-border)] px-4">
-        <div className="flex items-center gap-2">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-primary)]">
-            <span className="text-xs font-bold text-white">FD</span>
-         </div>
-          {!collapsed && (
-            <span className="text-base font-semibold tracking-tight text-[var(--color-text-primary)]">
-              Flowdesk
-           </span>
-          )}
-       </div>
-     </div>
+      <BusinessIdentity collapsed={isCollapsed} />
 
-      <nav className="flex-1 space-y-0.5 p-2 overflow-y-auto">
-        {visibleNavItems.map((item) => (
-          <SidebarItem
-            key={item.path}
-            item={item}
-            isActive={location.pathname.startsWith(item.path) && item.path !== '/dashboard' || location.pathname === item.path}
-            collapsed={collapsed}
-            onClick={() => navigate(item.path)}
-            badgeCount={badgeByItem[item.path] ?? 0}
-          />
+      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+        {groups.map((group, groupIndex) => (
+          <div key={group.id} className={cn(groupIndex > 0 && 'mt-5')}>
+            {/* Group labels disappear when collapsed; a rule stands in for
+                them so the grouping survives the narrow rail. */}
+            {isCollapsed ? (
+              groupIndex > 0 && <div className="mx-2 mb-2 h-px bg-border-subtle" aria-hidden="true" />
+            ) : (
+              <h2 className="fd-label mb-1.5 px-2.5">{group.label}</h2>
+            )}
+
+            <div className="space-y-px">
+              {group.items.map((item) => (
+                <SidebarItem
+                  key={item.path}
+                  item={item}
+                  isActive={
+                    location.pathname === item.path ||
+                    location.pathname.startsWith(`${item.path}/`)
+                  }
+                  collapsed={isCollapsed}
+                  onClick={() => go(item.path)}
+                  badgeCount={badgeByPath[item.path] ?? 0}
+                />
+              ))}
+            </div>
+          </div>
         ))}
-     </nav>
+      </nav>
 
-      {!collapsed && <BusinessProfile />}
-   </aside>
+      <div
+        className={cn(
+          'shrink-0 space-y-px border-t border-border p-3',
+          isCollapsed && 'px-2',
+        )}
+      >
+        <button
+          type="button"
+          onClick={handleLogout}
+          disabled={logout.isPending}
+          title={isCollapsed ? 'Sign out' : undefined}
+          className={cn(
+            'flex w-full items-center gap-2.5 rounded-md py-2 text-sm font-medium text-text-secondary',
+            'transition-colors duration-fast ease-out disabled:opacity-50',
+            '[@media(hover:hover)and(pointer:fine)]:hover:bg-surface-hover [@media(hover:hover)and(pointer:fine)]:hover:text-text-primary',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+            isCollapsed ? 'justify-center px-0' : 'px-2.5',
+          )}
+        >
+          <LogOut className="h-[17px] w-[17px] shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          {!isCollapsed && <span>Sign out</span>}
+        </button>
+
+        {!isSheet && onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className={cn(
+              'flex w-full items-center gap-2.5 rounded-md py-2 text-sm font-medium text-text-muted',
+              'transition-colors duration-fast ease-out',
+              '[@media(hover:hover)and(pointer:fine)]:hover:bg-surface-hover [@media(hover:hover)and(pointer:fine)]:hover:text-text-primary',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              isCollapsed ? 'justify-center px-0' : 'px-2.5',
+            )}
+          >
+            {isCollapsed ? (
+              <PanelLeftOpen className="h-[17px] w-[17px] shrink-0" strokeWidth={1.75} aria-hidden="true" />
+            ) : (
+              <PanelLeftClose className="h-[17px] w-[17px] shrink-0" strokeWidth={1.75} aria-hidden="true" />
+            )}
+            {!isCollapsed && <span>Collapse</span>}
+          </button>
+        )}
+      </div>
+    </aside>
   );
 }

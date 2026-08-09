@@ -1,3 +1,4 @@
+import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -6,11 +7,12 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { Prisma } from '@prisma/client';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyReply } from 'fastify';
+import type { RawBodyPluginOptions } from 'fastify-raw-body';
 import { ZodError } from 'zod';
-import { env } from './config/env.js';
+import { allowedOrigins, env, trustProxyValue } from './config/env.js';
 import { logger } from './config/logger.js';
 import { prisma } from './config/database.js';
-import { redis } from './config/redis.js';
+import { redis, rateLimitRedis } from './config/redis.js';
 import { isAppError } from './utils/errors.js';
 import type { ApiError } from './utils/response.js';
 import { requireAuth } from './middleware/auth.middleware.js';
@@ -119,39 +121,141 @@ async function registerSwagger(app: FastifyInstance): Promise<void> {
 export async function createApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger as unknown as FastifyBaseLogger,
-    trustProxy: true,
+    // Configurable, and OFF by default. Blanket `trustProxy: true` made
+    // `request.ip` derive from a client-supplied X-Forwarded-For header, so the
+    // rate limiter — and the credential brute-force limiter keyed on it — could
+    // be reset at will by rotating the header. Set TRUST_PROXY to the real hop
+    // count in front of the deployed API.
+    trustProxy: trustProxyValue(),
+    pluginTimeout: 60_000,
   });
+
+  // CORS: allow the configured frontend origin(s). Previously production used
+  // `origin: false`, which rejects every cross-origin request — the deployed
+  // web app could not call its own API.
+  const origins = allowedOrigins();
 
   await app.register(cors, {
-    origin: env.NODE_ENV === 'production' ? false : true,
+    origin: env.NODE_ENV === 'production' ? origins : true,
     credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   });
 
-  await app.register(helmet);
+  await app.register(helmet, {
+    // The API serves JSON, not documents; the frontend is a separate origin
+    // with its own policy. Disabled here to avoid blocking Swagger UI in dev.
+    contentSecurityPolicy: env.NODE_ENV === 'production',
+    crossOriginEmbedderPolicy: false,
+  });
 
   // Rate limiting: 100 req/min per IP for anonymous traffic, 1000 req/min per
-  // authenticated business (keyed by the bearer token so each business/session
-  // gets its own bucket). The auth token is opaque here — we only use it as a
-  // stable key, not for trust decisions.
-  // NOTE: uses the default in-memory store (correct for a single instance).
-  // For multi-instance horizontal scaling, back this with the shared Redis.
+  // authenticated business. Anonymous traffic is keyed on IP; authenticated
+  // traffic on the business id extracted from the token, so one tenant cannot
+  // exhaust another's budget and rotating a token does not reset the limit.
+  //
+  // Backed by Redis so the limit is shared across API instances — an in-memory
+  // store silently multiplies the effective limit by the number of replicas.
   await app.register(rateLimit, {
-    max: (request) => (request.headers.authorization ? 1000 : 100),
+    max: (request) => (request.user ? 1000 : 100),
     timeWindow: '1 minute',
-    keyGenerator: (request) => request.headers.authorization ?? request.ip,
+    redis: rateLimitRedis,
+    nameSpace: 'flowdesk:ratelimit:',
+    keyGenerator: (request) => request.user?.businessId ?? request.ip,
+    // Fail open on a Redis outage rather than locking every user out.
+    skipOnError: true,
   });
+
+  // Parses the httpOnly refresh-token cookie. Unsigned: the value is already a
+  // signed JWT that the server verifies, so a second signature adds nothing.
+  await app.register(cookie);
 
   await app.register(sensible);
   await registerSwagger(app);
 
+  // MUST be installed before the route plugins are registered. Fastify copies
+  // the current error handler into each encapsulated child context as it boots,
+  // so a handler set afterwards never reaches them — every route below would
+  // fall back to Fastify's default error shape instead of the API envelope.
+  app.setErrorHandler((error, request, reply) => {
+    if (isAppError(error)) {
+      return sendError(reply, error.statusCode, error.message, error.code);
+    }
+
+    if (error instanceof ZodError) {
+      return sendError(reply, 400, formatZodError(error), 'VALIDATION_ERROR');
+    }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      const mapped = mapPrismaError(error);
+      return sendError(reply, mapped.statusCode, mapped.message, mapped.code);
+    }
+
+    // Fastify's own errors (rate limit, payload size, malformed JSON) already
+    // carry a sensible status; preserve it but return the standard envelope.
+    const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500;
+
+    // The body-parser's error text (e.g. "Expected property name ... at
+    // position 36") is a raw V8 JSON message that leaked through here instead of
+    // a route's own generic catch, because Fastify's content-type parser runs
+    // before the handler. Match it however it is shaped — a Fastify FST_ERR_CTP
+    // code, a raw SyntaxError, or a 400 whose message mentions JSON — and return
+    // a generic message.
+    const isBodyParseError =
+      (typeof error.code === 'string' && error.code.startsWith('FST_ERR_CTP')) ||
+      error instanceof SyntaxError ||
+      (statusCode === 400 && /json/i.test(error.message));
+
+    if (isBodyParseError) {
+      return sendError(reply, statusCode < 500 ? statusCode : 400, 'Invalid request body', 'BAD_REQUEST');
+    }
+
+    if (statusCode < 500) {
+      return sendError(reply, statusCode, error.message, error.code ?? 'BAD_REQUEST');
+    }
+
+    request.log.error({ err: error }, 'Unhandled application error');
+
+    // Internal failures must not leak stack traces or driver messages.
+    return sendError(reply, 500, 'Internal server error', 'INTERNAL_SERVER_ERROR');
+  });
+
   app.get('/health', async () => getHealth());
 
   await app.register(async (apiApp: FastifyInstance) => {
+    // Raw request bytes, for webhook signature verification.
+    //
+    // Registered HERE rather than inside the Meta webhook plugin. Fastify
+    // encapsulation confines a plugin to the context it is registered in, so a
+    // registration inside one route file never reaches its siblings — which is
+    // why the Paystack handler had no `rawBody` and fell back to re-serialising
+    // the parsed object. An HMAC over `JSON.stringify(body)` only matches by
+    // luck: key order, escaped unicode and number formatting all differ from
+    // the bytes that were actually signed.
+    //
+    // `global: false` keeps the buffer off every other route; the two webhook
+    // routes opt in with `config: { rawBody: true }`.
+    await apiApp.register(import('fastify-raw-body'), {
+      field: 'rawBody',
+      global: false,
+      encoding: false,
+      runFirst: true,
+    } as RawBodyPluginOptions);
+
+    // ── Public surface ────────────────────────────────────────────────────
+    // Everything reachable without a token. Anything added here is internet
+    // facing, so it must authenticate or authorise for itself.
     await apiApp.register((await import('./modules/webhook/webhook.route.js')).default);
     await apiApp.register((await import('./modules/auth/auth.route.js')).default);
     await apiApp.register((await import('./modules/sse/sse.route.js')).default);
-
     await apiApp.register((await import('./modules/billing/billing.route.js')).default);
+
+    // Staff sign-in and invite acceptance: the routes through which a staff
+    // member obtains a token, so they cannot require one.
+    await apiApp.register((await import('./modules/staff/staff.route.js')).staffPublicRoutes);
+
+    // WhatsApp routes authenticate per-route; /whatsapp/config is public so the
+    // settings page can read the Embedded Signup configuration.
+    await apiApp.register((await import('./modules/whatsapp/whatsapp.route.js')).default);
 
     await apiApp.register(async (protectedApp: FastifyInstance) => {
       protectedApp.addHook('preHandler', requireAuth);
@@ -162,32 +266,15 @@ export async function createApp(): Promise<FastifyInstance> {
       await protectedApp.register((await import('./modules/customers/customers.route.js')).default);
       await protectedApp.register((await import('./modules/messages/messages.route.js')).default);
       await protectedApp.register((await import('./modules/settings/settings.route.js')).default);
-      await protectedApp.register((await import('./modules/whatsapp/whatsapp.route.js')).default);
       await protectedApp.register((await import('./modules/staff/staff.route.js')).default);
       await protectedApp.register((await import('./modules/dashboard/dashboard.route.js')).default);
       await protectedApp.register((await import('./modules/billing/billingCheckout.route.js')).default);
     });
   }, { prefix: '/api/v1' });
 
-  app.setErrorHandler((error, _request, reply) => {
-    const r = reply;
-    if (isAppError(error)) {
-      return sendError(r, error.statusCode, error.message, error.code);
-    }
-
-    if (error instanceof ZodError) {
-      return sendError(r, 400, formatZodError(error), 'VALIDATION_ERROR');
-    }
-
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      const mappedError = mapPrismaError(error);
-      return sendError(r, mappedError.statusCode, mappedError.message, mappedError.code);
-    }
-
-    app.log.error({ error }, 'Unhandled application error');
-
-    return sendError(r, 500, 'Internal server error', 'INTERNAL_SERVER_ERROR');
-  });
+  app.setNotFoundHandler((_request, reply) =>
+    sendError(reply, 404, 'Route not found', 'NOT_FOUND'),
+  );
 
   return app;
 }

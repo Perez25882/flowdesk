@@ -1,24 +1,39 @@
-import {
-  ShoppingCart,
-  Clock,
-  TrendingUp,
-  Package,
-  MessageSquareWarning,
-  Users,
-  AlertTriangle,
-  MessageSquare,
-} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { AlertTriangle, MessageSquare, Package, Users } from 'lucide-react';
 import { useOrdersByStatus, useOrderStats } from '@/hooks/useOrders';
 import { useCustomers } from '@/hooks/useCustomers';
 import { usePayments } from '@/hooks/usePayments';
 import { useMessages } from '@/hooks/useMessages';
 import { useLowStockProducts } from '@/hooks/useProducts';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
-import StatCard from '@/components/shared/StatCard';
+import PageHeader from '@/components/shared/PageHeader';
+import { Metric, MetricStrip } from '@/components/shared/MetricStrip';
+import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
+import { SkeletonRows } from '@/components/ui/Skeleton';
+import { Button } from '@/components/ui/Button';
 import EmptyState from '@/components/shared/EmptyState';
 import { formatCurrency, timeAgo } from '@/lib/utils';
 
+/**
+ * The morning screen.
+ *
+ * The previous version laid this out as four identical metric cards, then a
+ * 2+1 grid, then a 1+1 grid — nine bordered boxes of equal visual weight. The
+ * effect was that nothing on the page claimed to matter more than anything
+ * else, which is the opposite of what this screen is for.
+ *
+ * The order here is the order of a shop owner's attention at 6am:
+ *
+ *   1. The figures. What did last night earn, and what is still open.
+ *   2. Orders waiting. The one list that is actually work, given the width.
+ *   3. Money owed. The one list that is actually risk.
+ *   4. Exceptions — flagged messages, low stock — below the fold, because
+ *      they are usually empty and an empty panel should not occupy prime
+ *      space every single day.
+ */
 export default function DashboardPage(): React.JSX.Element {
+  const navigate = useNavigate();
+
   const { data: pendingOrders, isLoading: pendingLoading } = useOrdersByStatus('PENDING');
   const { data: stats } = useOrderStats('today');
   const { data: customers } = useCustomers(undefined, undefined, true);
@@ -32,163 +47,220 @@ export default function DashboardPage(): React.JSX.Element {
   const pendingValue = pendingOrders?.reduce((sum, o) => sum + (o.totalAmount ?? 0), 0) ?? 0;
   const revenue = stats?.totalRevenue ?? 0;
   const reviewCount = unverifiedPayments?.length ?? 0;
+
   const topDebtors = [...(customers ?? [])]
     .filter((c) => (c.outstandingBalance ?? 0) > 0)
     .sort((a, b) => (b.outstandingBalance ?? 0) - (a.outstandingBalance ?? 0))
-    .slice(0, 5);
+    .slice(0, 6);
+
+  const owedTotal = topDebtors.reduce((sum, c) => sum + (c.outstandingBalance ?? 0), 0);
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Stats Row */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Today's Orders"
-          value={stats?.totalOrders ?? 0}
-          subtext="Total processed"
-          icon={ShoppingCart}
-          variant="default"
-        />
-        <StatCard
-          label="Pending"
-          value={pendingCount}
-          subtext={formatCurrency(pendingValue)}
-          icon={Clock}
-          variant="warning"
-        />
-        <StatCard
-          label="Revenue"
+    <div className="flex flex-col gap-5">
+      <PageHeader
+        title="Today"
+        description="Overnight, and what is still open."
+        actions={
+          <Button variant="secondary" size="sm" onClick={() => navigate('/orders')}>
+            Open the board
+          </Button>
+        }
+      />
+
+      {/* Revenue leads. It is the number the owner opened the app for, so it
+          gets the wider column and the larger figure. */}
+      <MetricStrip>
+        <Metric
+          label="Revenue today"
           value={formatCurrency(revenue)}
-          subtext="Today"
-          icon={TrendingUp}
-          variant="success"
+          detail={stats?.totalOrders ? `across ${stats.totalOrders} orders` : 'no orders yet'}
+          emphasis
         />
-        <StatCard
-          label="Payments to Review"
+        <Metric
+          label="Awaiting confirmation"
+          value={pendingCount}
+          detail={pendingCount > 0 ? `worth ${formatCurrency(pendingValue)}` : 'nothing waiting'}
+          tone={pendingCount > 0 ? 'warning' : 'default'}
+        />
+        <Metric
+          label="Payments to verify"
           value={reviewCount}
-          subtext="Unverified"
-          icon={MessageSquareWarning}
-          variant="danger"
+          detail={reviewCount > 0 ? 'not yet matched' : 'all matched'}
+          tone={reviewCount > 0 ? 'danger' : 'default'}
         />
-     </div>
+        <Metric
+          label="Money owed to you"
+          value={formatCurrency(owedTotal)}
+          detail={
+            topDebtors.length > 0
+              ? `${topDebtors.length} customer${topDebtors.length === 1 ? '' : 's'}`
+              : 'nobody owes you'
+          }
+          tone={owedTotal > 0 ? 'warning' : 'default'}
+        />
+      </MetricStrip>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Live Order Feed */}
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 lg:col-span-2">
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            <Package className="h-4 w-4" /> Live Orders
-         </h3>
-          {pendingLoading && (
-            <div className="space-y-2">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-12 animate-pulse rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)]" />
-              ))}
-           </div>
-          )}
-          {!pendingLoading && (!pendingOrders || pendingOrders.length === 0) && (
-            <EmptyState icon={Package} title="No pending orders" description="New orders will appear here in real time." />
-          )}
-          {!pendingLoading && pendingOrders && pendingOrders.length > 0 && (
-            <div className="space-y-2">
-              {pendingOrders.slice(0, 10).map((order) => (
-                <div
-                  key={order.id}
-                  className="flex items-center justify-between rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface-elevated)] px-3 py-2.5"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-xs font-semibold text-[var(--color-primary-light)]">
+      {/* Two columns, deliberately unequal. The order queue is work in
+          progress and needs room for a reference, a name and a figure; the
+          debtor list is three short fields. Giving them equal width would
+          leave one cramped and the other padded. */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
+        <Panel>
+          <PanelHead
+            title="Waiting on you"
+            meta={pendingCount > 0 ? `${pendingCount} order${pendingCount === 1 ? '' : 's'}` : undefined}
+            action={
+              <Button variant="link" className="text-sm" onClick={() => navigate('/orders')}>
+                All orders
+              </Button>
+            }
+          />
+
+          {pendingLoading ? (
+            <SkeletonRows count={5} />
+          ) : !pendingOrders || pendingOrders.length === 0 ? (
+            <EmptyState
+              icon={Package}
+              title="Nothing waiting"
+              description="Every order is confirmed."
+            />
+          ) : (
+            <RowList>
+              {pendingOrders.slice(0, 8).map((order) => (
+                <Row key={order.id} onClick={() => navigate('/orders')}>
+                  <span className="flex min-w-0 items-baseline gap-3">
+                    <span className="fd-figure shrink-0 text-xs font-semibold text-primary">
                       {order.referenceNumber}
-                   </span>
-                    <span className="text-sm text-[var(--color-text-primary)]">
+                    </span>
+                    <span className="truncate text-sm text-text-primary">
                       {order.customer.name ?? order.customer.waNumber}
-                   </span>
-                 </div>
-                  <div className="flex items-center gap-3">
-                    <span className="font-mono text-sm text-[var(--color-text-secondary)]">
+                    </span>
+                  </span>
+
+                  <span className="flex shrink-0 items-baseline gap-4">
+                    <span className="text-xs text-text-muted">{timeAgo(order.createdAt)}</span>
+                    <span className="fd-figure text-sm font-semibold text-text-primary">
                       {formatCurrency(order.totalAmount)}
-                   </span>
-                    <span className="text-xs text-[var(--color-text-muted)]">{timeAgo(order.createdAt)}</span>
-                 </div>
-               </div>
+                    </span>
+                  </span>
+                </Row>
               ))}
-           </div>
+            </RowList>
           )}
-       </div>
+        </Panel>
 
-        {/* Outstanding Balances */}
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            <Users className="h-4 w-4" /> Outstanding Balances
-         </h3>
-          {topDebtors.length === 0 && (
-            <EmptyState icon={Users} title="All caught up" description="No customers owe money right now." />
-          )}
-          {topDebtors.length > 0 && (
-            <div className="space-y-2">
+        <Panel>
+          <PanelHead
+            title="Owed to you"
+            meta={owedTotal > 0 ? formatCurrency(owedTotal) : undefined}
+            action={
+              <Button variant="link" className="text-sm" onClick={() => navigate('/customers')}>
+                Customers
+              </Button>
+            }
+          />
+
+          {topDebtors.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title="All settled"
+              description="Nobody owes you."
+            />
+          ) : (
+            <RowList>
               {topDebtors.map((customer) => (
-                <div
-                  key={customer.id}
-                  className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2"
-                >
-                  <span className="text-sm text-[var(--color-text-primary)]">
+                <Row key={customer.id} onClick={() => navigate(`/customers/${customer.id}`)}>
+                  <span className="truncate text-sm text-text-primary">
                     {customer.name ?? customer.waNumber}
-                 </span>
-                  <span className="font-mono text-sm font-semibold text-[var(--color-danger)]">
+                  </span>
+                  <span className="fd-figure shrink-0 text-sm font-semibold text-danger">
                     {formatCurrency(customer.outstandingBalance)}
-                 </span>
-               </div>
+                  </span>
+                </Row>
               ))}
-           </div>
+            </RowList>
           )}
-       </div>
-     </div>
+        </Panel>
+      </div>
 
-      {/* Alerts Row */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Messages Requiring Review */}
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            <MessageSquare className="h-4 w-4" /> Messages to Review
-         </h3>
-          {(!reviewMessages || reviewMessages.length === 0) && (
-            <EmptyState icon={MessageSquare} title="No flagged messages" description="Messages requiring review will appear here." />
-          )}
-          {reviewMessages && reviewMessages.length > 0 && (
-            <div className="space-y-2">
+      {/* Exceptions. Both of these are empty on a good day, which is why they
+          sit here rather than above: a dashboard whose top half is usually two
+          "all clear" panels has taught the owner to ignore its top half. */}
+      <div className="grid gap-5 md:grid-cols-2">
+        <Panel>
+          <PanelHead
+            title="Needs your eyes"
+            meta={reviewMessages?.length ? `${reviewMessages.length}` : undefined}
+            action={
+              reviewMessages && reviewMessages.length > 0 ? (
+                <Button variant="link" className="text-sm" onClick={() => navigate('/messages')}>
+                  Review
+                </Button>
+              ) : undefined
+            }
+          />
+
+          {!reviewMessages || reviewMessages.length === 0 ? (
+            <EmptyState
+              icon={MessageSquare}
+              title="All clear"
+              description="Flowdesk understood everything."
+            />
+          ) : (
+            <RowList>
               {reviewMessages.slice(0, 5).map((msg) => (
-                <div key={msg.id} className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2">
-                  <div>
-                    <span className="text-sm text-[var(--color-text-primary)]">{msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown'}</span>
-                    <p className="text-xs text-[var(--color-text-muted)]">{msg.body ?? '(no text)'}</p>
-                 </div>
-                  <span className="rounded-[var(--radius-sm)] bg-[var(--color-warning-muted)] px-1.5 py-0.5 text-[10px] text-[var(--color-warning)]">{msg.intent}</span>
-               </div>
+                <Row key={msg.id} onClick={() => navigate('/messages')} className="items-start">
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="truncate text-sm font-medium text-text-primary">
+                      {msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown number'}
+                    </span>
+                    <span className="line-clamp-1 text-xs text-text-secondary">
+                      {msg.body ?? 'No text in this message'}
+                    </span>
+                  </span>
+                  <span className="shrink-0 rounded-sm border border-warning-border bg-warning-muted px-1.5 py-[3px] text-2xs font-semibold uppercase tracking-wide text-warning">
+                    {msg.intent}
+                  </span>
+                </Row>
               ))}
-           </div>
+            </RowList>
           )}
-       </div>
+        </Panel>
 
-        {/* Stock Alerts */}
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            <AlertTriangle className="h-4 w-4" /> Low Stock Alerts
-         </h3>
-          {(!lowStockProducts || lowStockProducts.length === 0) && (
-            <EmptyState icon={Package} title="Stock levels healthy" description="All products are above their reorder thresholds." />
-          )}
-          {lowStockProducts && lowStockProducts.length > 0 && (
-            <div className="space-y-2">
+        <Panel>
+          <PanelHead
+            title="Running low"
+            meta={lowStockProducts?.length ? `${lowStockProducts.length}` : undefined}
+            action={
+              lowStockProducts && lowStockProducts.length > 0 ? (
+                <Button variant="link" className="text-sm" onClick={() => navigate('/products')}>
+                  Products
+                </Button>
+              ) : undefined
+            }
+          />
+
+          {!lowStockProducts || lowStockProducts.length === 0 ? (
+            <EmptyState
+              icon={AlertTriangle}
+              title="Stock is healthy"
+              description="Everything is above its reorder level."
+            />
+          ) : (
+            <RowList>
               {lowStockProducts.slice(0, 5).map((product) => (
-                <div key={product.id} className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2">
-                  <span className="text-sm text-[var(--color-text-primary)]">{product.name}</span>
-                  <span className="font-mono text-sm text-[var(--color-warning)]">
-                    {product.stockQuantity} / {product.reorderThreshold}
-                 </span>
-               </div>
+                <Row key={product.id} onClick={() => navigate('/products')}>
+                  <span className="truncate text-sm text-text-primary">{product.name}</span>
+                  <span className="fd-figure shrink-0 text-sm text-text-secondary">
+                    <span className="font-semibold text-warning">{product.stockQuantity}</span>
+                    <span className="text-text-muted"> / {product.reorderThreshold}</span>
+                  </span>
+                </Row>
               ))}
-           </div>
+            </RowList>
           )}
-       </div>
-     </div>
-   </div>
+        </Panel>
+      </div>
+    </div>
   );
 }

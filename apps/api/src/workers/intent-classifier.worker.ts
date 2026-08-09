@@ -1,22 +1,20 @@
 import { Worker } from 'bullmq';
 import { IntentType, type ClassificationSource } from '@flowdesk/shared';
-import type { Prisma } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
+import { emitMessageFlagged } from '../services/sse/sse.events.js';
 import { classifyMessage } from '../services/intent/index.js';
-import { sendWhatsAppMessage } from '../services/whatsapp/outbound.js';
 import {
-  renderTemplate,
-  humanizeStatus,
-  getCustomerFirstName,
-  shouldSendAutoReply,
-  getTemplateKeyForOrderStatus,
-  isTemplateEnabled,
-} from '../services/templates/template-engine.js';
+  notifyIntentReply,
+  notifyOrderStatus,
+  notifyOrderStatusCheck,
+  notifyUnknownOrderReference,
+} from '../services/notifications/customer-notifications.js';
+import type { TemplateKey } from '../services/templates/template-engine.js';
 import { createOrderFromMessage } from '../modules/orders/orders.service.js';
 import { findOrderByReference } from '../modules/orders/orders.repository.js';
-import type { ParsedIncomingMessage } from '../modules/webhook/webhook.types.js';
+import { findActiveCatalogProducts } from '../modules/products/products.repository.js';
 import {
   INTENT_CLASSIFICATION_QUEUE_NAME,
 } from './message-processor.worker.js';
@@ -42,51 +40,24 @@ function requiresReviewByIntent(
   return false;
 }
 
-async function fetchBusinessWithTemplates(businessId: string): Promise<{
-  id: string;
-  name: string;
-  replyTemplates: Prisma.JsonValue;
-  notifyOnNewOrder: boolean;
-  notifyOnPayment: boolean;
-  notifyOnLowStock: boolean;
-}> {
-  const business = await prisma.business.findUnique({
-    where: { id: businessId },
-    select: {
-      id: true,
-      name: true,
-      replyTemplates: true,
-      notifyOnNewOrder: true,
-      notifyOnPayment: true,
-      notifyOnLowStock: true,
-    },
-  });
-
-  if (!business) {
-    throw new Error(`Business not found: ${businessId}`);
-  }
-
-  return business;
-}
-
-async function fetchMessageWithCustomer(messageId: string): Promise<{
+interface ClassifiedMessage {
   id: string;
   body: string | null;
   businessId: string;
   customerId: string | null;
-  customer: { id: string; waNumber: string; name: string | null; lastInteractionAt: Date | null; blacklisted: boolean } | null;
-}> {
+  customer: { id: string; waNumber: string; name: string | null; blacklisted: boolean } | null;
+}
+
+async function fetchMessageWithCustomer(messageId: string): Promise<ClassifiedMessage> {
   const message = await prisma.message.findUnique({
     where: { id: messageId },
-    include: {
+    select: {
+      id: true,
+      body: true,
+      businessId: true,
+      customerId: true,
       customer: {
-        select: {
-          id: true,
-          waNumber: true,
-          name: true,
-          lastInteractionAt: true,
-          blacklisted: true,
-        },
+        select: { id: true, waNumber: true, name: true, blacklisted: true },
       },
     },
   });
@@ -98,125 +69,104 @@ async function fetchMessageWithCustomer(messageId: string): Promise<{
   return message;
 }
 
-async function handleOrderIntent(
-  message: { id: string; body: string | null; businessId: string; customerId: string | null; customer: { id: string; waNumber: string; name: string | null; lastInteractionAt: Date | null } | null },
-  business: { id: string; name: string; replyTemplates: Prisma.JsonValue },
-): Promise<void> {
+/**
+ * Turns an ORDER-intent message into an order record. The customer confirmation
+ * is sent by `notifyOrderStatus` here — `createOrderFromMessage` deliberately
+ * does not reply, so exactly one confirmation goes out per order.
+ */
+async function handleOrderIntent(message: ClassifiedMessage): Promise<void> {
   if (!message.customerId || !message.customer) {
     logger.warn({ messageId: message.id }, 'Cannot create order: missing customer');
     return;
   }
 
-  const parsedMessage: ParsedIncomingMessage = {
-    businessPhoneNumberId: '',
-    displayPhoneNumber: '',
-    waMessageId: '',
-    from: message.customer.waNumber,
-    profileName: message.customer.name ?? undefined,
-    timestamp: new Date(),
-    type: 'TEXT',
-    body: message.body ?? undefined,
-    rawPayload: {
-      from: message.customer?.waNumber ?? '',
-      id: '',
-      timestamp: String(Date.now()),
-      type: 'text',
-      text: { body: message.body ?? '' },
-    },
-  };
-
   try {
-    const order = await createOrderFromMessage(parsedMessage, business.id, message.customerId);
+    const order = await createOrderFromMessage(
+      message.body ?? '',
+      message.businessId,
+      message.customerId,
+    );
 
-    const templateKey = getTemplateKeyForOrderStatus('PENDING');
-    if (templateKey && isTemplateEnabled(undefined, templateKey)) {
-      const { withinWindow } = shouldSendAutoReply(message.customer.lastInteractionAt);
-      if (withinWindow) {
-        const text = renderTemplate(business.replyTemplates as Record<string, unknown> | undefined, templateKey, {
-          name: getCustomerFirstName(message.customer.name),
-          ref: order.referenceNumber,
-          business: business.name,
-        });
-        await sendWhatsAppMessage(message.customer.waNumber, text, business.id);
-      }
-    }
+    await prisma.message.update({
+      where: { id: message.id },
+      data: { relatedOrderId: order.id },
+    });
+
+    await notifyOrderStatus(order.id, 'PENDING');
   } catch (error: unknown) {
     logger.error({ error, messageId: message.id }, 'Failed to create order from message');
   }
 }
 
-async function handleStatusCheckIntent(
-  message: { id: string; body: string | null; businessId: string; customer: { id: string; waNumber: string; name: string | null; lastInteractionAt: Date | null } | null },
-  business: { id: string; name: string; replyTemplates: Prisma.JsonValue },
-): Promise<void> {
+/** Answers "where is my order?" when the message carries a reference number. */
+async function handleStatusCheckIntent(message: ClassifiedMessage): Promise<void> {
   if (!message.customer) return;
 
-  const body = message.body ?? '';
-  const refMatch = body.match(/\bFD-\d{3,}\b/);
-  const referenceNumber = refMatch ? refMatch[0] : null;
+  const refMatch = (message.body ?? '').match(/\bFD-[A-Z0-9]{3,}\b/i);
 
-  if (!referenceNumber) {
-    logger.info({ messageId: message.id }, 'STATUS_CHECK intent detected but no reference found in message');
+  if (!refMatch) {
+    logger.info(
+      { messageId: message.id },
+      'STATUS_CHECK intent detected but no reference found in message',
+    );
     return;
   }
 
-  const order = await findOrderByReference(referenceNumber, business.id);
+  const reference = refMatch[0].toUpperCase();
+  const order = await findOrderByReference(reference, message.businessId);
 
   if (!order) {
-    const text = `We couldn't find order ${referenceNumber}. Please check the reference number or contact us. — ${business.name}`;
-    await sendWhatsAppMessage(message.customer.waNumber, text, business.id);
+    await notifyUnknownOrderReference(message.businessId, message.customer.id, reference);
     return;
   }
 
-  const templateKey = 'status_check_response';
-  if (isTemplateEnabled(undefined, templateKey)) {
-    const { withinWindow } = shouldSendAutoReply(message.customer.lastInteractionAt);
-    if (withinWindow) {
-      const details = order.assignedTo
-        ? `Assigned to ${order.assignedTo.name} for delivery/pickup.`
-        : '';
-      const text = renderTemplate(business.replyTemplates as Record<string, unknown> | undefined, templateKey, {
-        name: getCustomerFirstName(message.customer.name),
-        ref: order.referenceNumber,
-        business: business.name,
-        status: humanizeStatus(order.status),
-        details,
-      });
-      await sendWhatsAppMessage(message.customer.waNumber, text, business.id);
-    }
-  }
+  await prisma.message.update({
+    where: { id: message.id },
+    data: { relatedOrderId: order.id },
+  });
+
+  await notifyOrderStatusCheck(order.id);
 }
 
-async function handleGreetingIntent(
-  message: { id: string; businessId: string; customer: { id: string; waNumber: string; name: string | null; lastInteractionAt: Date | null } | null },
-  business: { id: string; name: string; replyTemplates: Prisma.JsonValue },
+/** Sends the configured courtesy reply for a non-order intent. */
+async function handleAutoReplyIntent(
+  message: ClassifiedMessage,
+  templateKey: TemplateKey,
 ): Promise<void> {
   if (!message.customer) return;
-
-  const templateKey = 'greeting';
-  if (isTemplateEnabled(undefined, templateKey)) {
-    const { withinWindow } = shouldSendAutoReply(message.customer.lastInteractionAt);
-    if (withinWindow) {
-      const text = renderTemplate(business.replyTemplates as Record<string, unknown> | undefined, templateKey, {
-        name: getCustomerFirstName(message.customer.name),
-        business: business.name,
-      });
-      await sendWhatsAppMessage(message.customer.waNumber, text, business.id);
-    }
-  }
+  await notifyIntentReply(message.businessId, message.customer.id, templateKey);
 }
+
+const INTENT_TEMPLATE: Partial<Record<IntentType, TemplateKey>> = {
+  [IntentType.GREETING]: 'greeting',
+  [IntentType.PAYMENT]: 'payment',
+  [IntentType.INQUIRY]: 'inquiry',
+  [IntentType.COMPLAINT]: 'complaint',
+};
 
 async function processIntentClassification(jobData: IntentClassificationJobData): Promise<void> {
   const message = await fetchMessageWithCustomer(jobData.messageId);
-  const business = await fetchBusinessWithTemplates(jobData.businessId);
 
+  // A message with no text (media, sticker) still has to be marked processed,
+  // otherwise it sits in the queue view as "pending" forever.
   if (!message.body) {
-    logger.info({ messageId: jobData.messageId }, 'Skipping intent classification: message has no body');
+    await prisma.message.update({
+      where: { id: jobData.messageId },
+      data: { processed: true, processedAt: new Date() },
+    });
+    logger.info(
+      { messageId: jobData.messageId },
+      'Message has no text body — marked processed without classification',
+    );
     return;
   }
 
-  const result = await classifyMessage(message.body);
+  // The classifier is given this tenant's catalog only — never another's — so
+  // product evidence stays scoped to the business the message was sent to.
+  const catalog = await findActiveCatalogProducts(jobData.businessId);
+  const catalogTerms = catalog.flatMap((product) => [product.name, ...product.aliases]);
 
+  const result = await classifyMessage(message.body, message.businessId, { catalogTerms });
   const needsReview = requiresReviewByIntent(result.intent, result.confidence);
 
   await prisma.message.update({
@@ -231,6 +181,14 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
     },
   });
 
+  if (needsReview) {
+    emitMessageFlagged(jobData.businessId, {
+      messageId: jobData.messageId,
+      requiresReview: true,
+      intent: result.intent,
+    });
+  }
+
   logger.info(
     {
       messageId: jobData.messageId,
@@ -242,29 +200,28 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
     'Message intent classified',
   );
 
+  // Blacklist is enforced again inside the notification layer, but short-
+  // circuiting here also avoids creating orders for muted contacts.
   if (message.customer?.blacklisted) {
-    logger.info({ messageId: jobData.messageId, customerId: message.customer.id }, 'Skipping auto-reply: customer is blacklisted');
+    logger.info(
+      { messageId: jobData.messageId, customerId: message.customer.id },
+      'Skipping intent side effects: customer is blacklisted',
+    );
     return;
   }
 
-  switch (result.intent) {
-    case IntentType.ORDER:
-      await handleOrderIntent(message, business);
-      break;
-    case IntentType.STATUS_CHECK:
-      await handleStatusCheckIntent(message, business);
-      break;
-    case IntentType.GREETING:
-      await handleGreetingIntent(message, business);
-      break;
-    case IntentType.PAYMENT:
-    case IntentType.INQUIRY:
-    case IntentType.COMPLAINT:
-    case IntentType.OTHER:
-    case IntentType.UNCLASSIFIED:
-    default:
-      break;
+  if (result.intent === IntentType.ORDER) {
+    await handleOrderIntent(message);
+    return;
   }
+
+  if (result.intent === IntentType.STATUS_CHECK) {
+    await handleStatusCheckIntent(message);
+    return;
+  }
+
+  const templateKey = INTENT_TEMPLATE[result.intent] ?? 'fallback';
+  await handleAutoReplyIntent(message, templateKey);
 }
 
 export const intentClassifierWorker = new Worker<IntentClassificationJobData>(

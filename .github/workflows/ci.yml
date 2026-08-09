@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9.12.0'
+
+jobs:
+  # Static checks need no services, so they fail fast and cheaply.
+  static:
+    name: Types, lint, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The Prisma client is generated code that types depend on, so it must
+      # exist before any typecheck runs.
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  # The end-to-end suite exercises the real pipeline, so it needs real
+  # Postgres and Redis rather than mocks.
+  integration:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flowdesk
+          POSTGRES_PASSWORD: flowdesk
+          POSTGRES_DB: flowdesk
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U flowdesk"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: development
+      PORT: '3000'
+      DATABASE_URL: postgresql://flowdesk:flowdesk@localhost:5432/flowdesk?schema=public
+      REDIS_URL: redis://localhost:6379
+      FRONTEND_URL: http://localhost:5173
+      LOG_LEVEL: warn
+      # Test-only values. Real secrets are never needed: every integration is
+      # optional in development and the app disables what is not configured.
+      JWT_SECRET: ci-jwt-secret-value-that-is-long-enough-for-validation
+      JWT_REFRESH_SECRET: ci-refresh-secret-value-that-is-long-enough-here
+      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      META_VERIFY_TOKEN: ci-verify-token
+      META_WEBHOOK_SECRET: ci-webhook-secret-long-enough-for-validation-ok
+      META_APP_SECRET: ci-webhook-secret-long-enough-for-validation-ok
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations
+        run: pnpm db:migrate
+
+      - name: Start API
+        run: |
+          pnpm --filter @flowdesk/api exec tsx src/server.ts &
+          echo $! > /tmp/api.pid
+
+      - name: Wait for the API to become healthy
+        run: |
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:3000/health | grep -q '"status":"ok"'; then
+              echo "API is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become healthy in time"
+          exit 1
+
+      - name: End-to-end suite
+        run: pnpm smoke
+
+      - name: Stop API
+        if: always()
+        run: kill "$(cat /tmp/api.pid)" 2>/dev/null || true

@@ -1,6 +1,63 @@
 import { prisma } from '../../config/database.js';
 import { Prisma } from '@prisma/client';
+import { NotFoundError } from '../../utils/errors.js';
 import type { UpdateCustomerInput, ListCustomersQueryInput } from './customers.schema.js';
+
+/**
+ * Order statuses that represent a real financial obligation. A PENDING order is
+ * not yet owed — the owner has not accepted it — and a CANCELLED one never was.
+ */
+const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'FULFILLED'] as const;
+
+/**
+ * Recomputes a customer's denormalised totals from the underlying orders and
+ * payments, and writes them back.
+ *
+ * These columns are a materialised cache, never an accumulator. Incrementing
+ * them in place is what allowed balances to drift permanently negative: a
+ * deleted or re-verified payment had no compensating adjustment. Recomputing
+ * from source makes every write self-healing and idempotent.
+ *
+ * Call this after ANY change to an order's status or a payment's verification.
+ */
+export async function recalculateCustomerTotals(
+  customerId: string,
+  tx?: Prisma.TransactionClient,
+): Promise<void> {
+  const db = tx ?? prisma;
+
+  const [billable, payments, orderCount, firstOrder] = await Promise.all([
+    db.order.aggregate({
+      where: { customerId, deletedAt: null, status: { in: [...BILLABLE_STATUSES] } },
+      _sum: { totalAmount: true },
+    }),
+    db.payment.aggregate({
+      where: { customerId, verified: true },
+      _sum: { amount: true },
+    }),
+    db.order.count({ where: { customerId, deletedAt: null } }),
+    db.order.findFirst({
+      where: { customerId, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true },
+    }),
+  ]);
+
+  const owed = billable._sum.totalAmount ?? new Prisma.Decimal(0);
+  const paid = payments._sum.amount ?? new Prisma.Decimal(0);
+
+  await db.customer.update({
+    where: { id: customerId },
+    data: {
+      // Negative balances (customer in credit) are preserved rather than
+      // clamped — an overpayment is real information the owner needs.
+      outstandingBalance: owed.sub(paid),
+      totalSpend: paid,
+      totalOrders: orderCount,
+      firstOrderAt: firstOrder?.createdAt ?? null,
+    },
+  });
+}
 
 export interface CustomerWithStats {
   id: string;
@@ -73,12 +130,17 @@ export async function getCustomerWithHistory(
   const customer = await prisma.customer.findFirst({
     where: { id, businessId },
     include: {
+      // Nested reads are scoped to this business too, as defence in depth: even
+      // if a foreign order ever referenced this customer, it would not surface
+      // on the customer's own history screen.
       orders: {
+        where: { businessId },
         orderBy: { createdAt: 'desc' },
         take: 20,
         select: { id: true, referenceNumber: true, status: true, totalAmount: true, createdAt: true },
       },
       payments: {
+        where: { businessId },
         orderBy: { createdAt: 'desc' },
         take: 20,
         select: { id: true, amount: true, method: true, verified: true, createdAt: true },
@@ -86,7 +148,9 @@ export async function getCustomerWithHistory(
     },
   });
 
-  if (!customer) throw new Error('Customer not found');
+  // NotFoundError so the global handler returns 404 — a bare Error fell through
+  // to a 500 for any id belonging to another tenant.
+  if (!customer) throw new NotFoundError('Customer not found');
 
   return {
     customer: customer as CustomerWithStats,

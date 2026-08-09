@@ -1,22 +1,41 @@
 import { AlertTriangle } from 'lucide-react';
 import type { OrderWithRelations } from '@/types/order';
 import { formatCurrency, timeAgo, getInitials } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 
 interface OrderCardProps {
   order: OrderWithRelations;
   onClick: (order: OrderWithRelations) => void;
+  /** On the board the column already states the status, so the tag is dropped. */
+  showStatus?: boolean;
 }
 
-const statusBadgeMap: Record<string, { bg: string; text: string }> = {
-  PENDING: { bg: 'bg-[var(--color-warning-muted)]', text: 'text-[var(--color-warning)]' },
-  CONFIRMED: { bg: 'bg-[var(--color-info-muted)]', text: 'text-[var(--color-info)]' },
-  PROCESSING: { bg: 'bg-[var(--color-primary-muted)]', text: 'text-[var(--color-primary-light)]' },
-  FULFILLED: { bg: 'bg-[var(--color-success-muted)]', text: 'text-[var(--color-success)]' },
-  CANCELLED: { bg: 'bg-[var(--color-danger-muted)]', text: 'text-[var(--color-danger)]' },
+const STATUS_LABEL: Record<string, string> = {
+  PENDING: 'Pending',
+  CONFIRMED: 'Confirmed',
+  PROCESSING: 'Processing',
+  FULFILLED: 'Fulfilled',
+  CANCELLED: 'Cancelled',
 };
 
-export default function OrderCard({ order, onClick }: OrderCardProps): React.JSX.Element {
-  const badge = statusBadgeMap[order.status] ?? { bg: 'bg-[var(--color-warning-muted)]', text: 'text-[var(--color-warning)]' };
+/**
+ * A single order, as it appears on the board and in the mobile list.
+ *
+ * The old card repeated the status as a coloured tag in the corner while
+ * sitting inside a column headed by that same status, and set the reference
+ * number in the brand colour at the same size as the customer's name — so the
+ * loudest thing on the card was an internal identifier.
+ *
+ * Now the money is the largest element, the customer is second, and the
+ * reference is quiet metadata. The only thing allowed to interrupt that is a
+ * customer who already owes money, because taking a new order from someone
+ * with an unpaid balance is a decision, not a formality.
+ */
+export default function OrderCard({
+  order,
+  onClick,
+  showStatus = false,
+}: OrderCardProps): React.JSX.Element {
   const items = order.items ?? [];
   const topItems = items.slice(0, 2);
   const remaining = items.length - topItems.length;
@@ -25,63 +44,73 @@ export default function OrderCard({ order, onClick }: OrderCardProps): React.JSX
 
   return (
     <button
+      type="button"
       onClick={() => onClick(order)}
-      className="flex w-full flex-col gap-2.5 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-3 text-left transition-all hover:border-[var(--color-primary-border)] hover:shadow-md hover:shadow-black/20"
+      className={cn(
+        'flex w-full flex-col gap-2.5 rounded-md border border-border bg-surface p-3 text-left',
+        'transition-[border-color,box-shadow] duration-fast ease-out',
+        '[@media(hover:hover)and(pointer:fine)]:hover:border-border-strong',
+        '[@media(hover:hover)and(pointer:fine)]:hover:shadow-sm',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+      )}
     >
-      <div className="flex items-start justify-between">
-        <span className="font-mono text-sm font-semibold text-[var(--color-primary-light)]">
-          {order.referenceNumber}
-        </span>
-        <span className="text-xs text-[var(--color-text-muted)]">
-          {timeAgo(order.createdAt)}
-        </span>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="fd-figure truncate text-2xs text-text-muted">{order.referenceNumber}</span>
+        <span className="shrink-0 text-2xs text-text-muted">{timeAgo(order.createdAt)}</span>
       </div>
 
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-[var(--color-text-primary)]">
-          {order.customer.name ?? 'Unknown'}
+        <span className="truncate text-sm font-semibold text-text-primary">
+          {order.customer.name ?? 'Unknown customer'}
         </span>
-        <span className="text-xs text-[var(--color-text-muted)]">
+        <span className="fd-figure truncate text-2xs text-text-muted">
           {order.customer.waNumber}
         </span>
       </div>
 
-      <div className="flex flex-col gap-0.5">
-        {topItems.map((item) => (
-          <span key={item.id} className="truncate text-xs text-[var(--color-text-secondary)]">
-            {item.description} × {item.quantity}
-          </span>
-        ))}
-        {remaining > 0 && (
-          <span className="text-xs text-[var(--color-text-muted)]">
-            and {remaining} more
-          </span>
-        )}
-      </div>
-
-      <div className="flex items-center justify-between pt-1">
-        <div className="flex items-center gap-2">
-          {order.assignedTo && (
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--color-primary-muted)] text-[10px] font-semibold text-[var(--color-primary-light)]">
-              {getInitials(order.assignedTo.name)}
-            </div>
+      {topItems.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {topItems.map((item) => (
+            <li key={item.id} className="truncate text-xs text-text-secondary">
+              <span className="fd-figure text-text-muted">{item.quantity}×</span> {item.description}
+            </li>
+          ))}
+          {remaining > 0 && (
+            <li className="text-xs text-text-muted">
+              and {remaining} more item{remaining === 1 ? '' : 's'}
+            </li>
           )}
-          {hasOutstanding && (
-            <span className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-danger-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-danger)]">
-              <AlertTriangle className="h-3 w-3" />
-              owes {formatCurrency(outstanding)}
+        </ul>
+      )}
+
+      {hasOutstanding && (
+        <p className="flex items-center gap-1.5 rounded-sm bg-danger-muted px-1.5 py-1 text-2xs font-medium text-danger">
+          <AlertTriangle className="h-3 w-3 shrink-0" strokeWidth={2} aria-hidden="true" />
+          Owes {formatCurrency(outstanding)} already
+        </p>
+      )}
+
+      <div className="flex items-end justify-between gap-2 border-t border-border-subtle pt-2.5">
+        <span className="fd-figure text-base font-semibold leading-none text-text-primary">
+          {formatCurrency(order.totalAmount)}
+        </span>
+
+        <span className="flex shrink-0 items-center gap-2">
+          {showStatus && (
+            <span className="text-2xs font-medium text-text-muted">
+              {STATUS_LABEL[order.status] ?? order.status}
             </span>
           )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-sm font-semibold text-[var(--color-text-primary)]">
-            {formatCurrency(order.totalAmount)}
-          </span>
-          <span className={`inline-flex rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badge.bg} ${badge.text}`}>
-            {order.status}
-          </span>
-        </div>
+          {order.assignedTo && (
+            <span
+              className="flex h-5 w-5 items-center justify-center rounded-sm bg-surface-sunken text-[10px] font-semibold text-text-secondary"
+              title={`Assigned to ${order.assignedTo.name}`}
+            >
+              {getInitials(order.assignedTo.name)}
+              <span className="sr-only">Assigned to {order.assignedTo.name}</span>
+            </span>
+          )}
+        </span>
       </div>
     </button>
   );

@@ -1,16 +1,39 @@
-import { useParams } from 'react-router-dom';
-import { ArrowLeft, Phone, ShoppingCart, CreditCard, Tag, Edit2, Save } from 'lucide-react';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, ExternalLink, Phone } from 'lucide-react';
 import { useCustomerDetail, useUpdateCustomer } from '@/hooks/useCustomers';
 import EmptyState from '@/components/shared/EmptyState';
+import { Metric, MetricStrip } from '@/components/shared/MetricStrip';
+import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { Button } from '@/components/ui/Button';
+import { Badge, OrderStatusBadge } from '@/components/ui/Badge';
 import { formatCurrency, timeAgo } from '@/lib/utils';
 
+const METHOD_LABEL: Record<string, string> = {
+  MOMO_MTN: 'MTN MoMo',
+  MOMO_VODAFONE: 'Telecel Cash',
+  MOMO_AIRTELTIGO: 'AirtelTigo Money',
+  CASH: 'Cash',
+  BANK_TRANSFER: 'Bank transfer',
+  OTHER: 'Other',
+};
+
+/**
+ * One customer's record.
+ *
+ * The edit affordance used to be a button that silently switched between
+ * "Edit" and "Save" — pressing it while editing committed the changes with no
+ * way to abandon them, and there was no indication anything was in flight.
+ * Editing is now an explicit mode with Save and Cancel, and Save reports both
+ * its progress and its failures.
+ */
 export default function CustomerProfilePage(): React.JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data, isLoading } = useCustomerDetail(id ?? null);
   const updateCustomer = useUpdateCustomer();
+
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
   const [notes, setNotes] = useState('');
@@ -18,133 +41,257 @@ export default function CustomerProfilePage(): React.JSX.Element {
 
   if (isLoading) {
     return (
-      <div className="space-y-4">
-        <div className="h-32 animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />
-        <div className="h-64 animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />
+      <div className="flex flex-col gap-5">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-64 w-full" />
       </div>
     );
   }
 
   if (!data) {
-    return <EmptyState icon={Phone} title="Customer not found" description="The customer you're looking for doesn't exist." />;
+    return (
+      <Panel>
+        <EmptyState
+          icon={Phone}
+          variant="page"
+          title="Customer not found"
+          description="This record may have been removed."
+          action={{ label: 'Back to customers', onClick: () => navigate('/customers') }}
+        />
+      </Panel>
+    );
   }
 
   const customer = data;
+  const owes = customer.outstandingBalance ?? 0;
+  const whatsappLink = `https://wa.me/${customer.waNumber.replace(/[^\d]/g, '')}`;
 
-  const handleSave = () => {
+  function beginEdit(): void {
+    setName(customer.name ?? '');
+    setNotes(customer.notes ?? '');
+    setTagsInput(customer.tags.join(', '));
+    setEditing(true);
+  }
+
+  function handleSave(): void {
     updateCustomer.mutate(
       {
         id: customer.id,
         data: {
-          name: name || customer.name || null,
-          notes: notes || customer.notes || null,
-          tags: tagsInput ? tagsInput.split(',').map((t) => t.trim()) : customer.tags,
+          name: name.trim() || null,
+          notes: notes.trim() || null,
+          tags: tagsInput
+            ? tagsInput
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean)
+            : [],
         },
       },
       { onSuccess: () => setEditing(false) },
     );
-  };
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      <button onClick={() => navigate('/customers')} className="flex items-center gap-1 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]">
-        <ArrowLeft className="h-4 w-4" /> Back to customers
+    <div className="flex flex-col gap-5">
+      {/* Every detail view needs a way back. Without it the only exit is the
+          browser button, which on an installed PWA does not exist. */}
+      <button
+        type="button"
+        onClick={() => navigate('/customers')}
+        className="-ml-1 inline-flex w-fit items-center gap-1.5 rounded-sm px-1 py-0.5 text-sm text-text-secondary transition-colors duration-fast ease-out hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <ArrowLeft className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+        All customers
       </button>
 
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">{customer.name ?? 'Unknown'}</h1>
-            <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{customer.waNumber}</p>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-extrabold tracking-tighter text-text-primary">
+              {customer.name ?? 'Unnamed customer'}
+            </h1>
+            {customer.vip && <Badge tone="warning">VIP</Badge>}
+            {customer.blacklisted && <Badge tone="danger">Blocked</Badge>}
           </div>
-          <button
-            onClick={() => {
-              if (editing) handleSave();
-              else {
-                setName(customer.name ?? '');
-                setNotes(customer.notes ?? '');
-                setTagsInput(customer.tags.join(', '));
-                setEditing(true);
-              }
-            }}
-            className="flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
+
+          <a
+            href={whatsappLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="fd-figure mt-1 inline-flex items-center gap-1.5 text-sm text-text-secondary underline decoration-border-strong underline-offset-[3px] hover:text-text-primary"
           >
-            {editing ? <><Save className="h-4 w-4" /> Save</> : <><Edit2 className="h-4 w-4" /> Edit</>}
-          </button>
+            {customer.waNumber}
+            <ExternalLink className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
+            <span className="sr-only">Open this conversation in WhatsApp</span>
+          </a>
         </div>
 
-        {editing ? (
-          <div className="mt-4 space-y-3">
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <input value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} placeholder="Tags (comma separated)" className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes" className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" rows={3} />
-          </div>
-        ) : (
-          <div className="mt-4 flex flex-wrap gap-2">
-            {customer.tags.map((t) => (
-              <span key={t} className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-2 py-1 text-xs text-[var(--color-text-muted)]">
-                <Tag className="h-3 w-3" /> {t}
-              </span>
-            ))}
-            {customer.notes && <p className="w-full text-sm text-[var(--color-text-muted)]">{customer.notes}</p>}
-          </div>
+        {!editing && (
+          <Button size="sm" variant="secondary" onClick={beginEdit} className="shrink-0">
+            Edit details
+          </Button>
         )}
+      </header>
 
-        <div className="mt-4 grid grid-cols-3 gap-4">
-          <div className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">Total Orders</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--color-text-primary)]">{customer.totalOrders}</p>
-          </div>
-          <div className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">Total Spend</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--color-text-primary)]">{formatCurrency(customer.totalSpend)}</p>
-          </div>
-          <div className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">Outstanding</p>
-            <p className={`mt-1 text-lg font-semibold ${(customer.outstandingBalance ?? 0) > 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-success)]'}`}>
-              {formatCurrency(customer.outstandingBalance)}
-            </p>
-          </div>
-        </div>
-      </div>
+      <MetricStrip className="md:grid-cols-3">
+        <Metric label="Orders" value={customer.totalOrders} />
+        <Metric label="Spent with you" value={formatCurrency(customer.totalSpend)} emphasis />
+        <Metric
+          label={owes > 0 ? 'Still owes' : 'Balance'}
+          value={owes > 0 ? formatCurrency(owes) : 'Settled'}
+          tone={owes > 0 ? 'danger' : 'success'}
+        />
+      </MetricStrip>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-            <ShoppingCart className="h-4 w-4" /> Order History
-          </h3>
-          {data.orders.length === 0 && <p className="text-sm text-[var(--color-text-muted)]">No orders yet.</p>}
-          <div className="space-y-2">
-            {data.orders.map((order) => (
-              <div key={order.id} className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2">
-                <div>
-                  <span className="font-mono text-xs font-semibold text-[var(--color-primary-light)]">{order.referenceNumber}</span>
-                  <span className="ml-2 text-xs text-[var(--color-text-muted)]">{order.status}</span>
+      {editing ? (
+        <Panel>
+          <PanelHead title="Edit details" />
+          <div className="flex flex-col gap-4 p-4">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-text-primary">Name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="What do you call them?"
+                className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-text-primary">Tags</span>
+              <input
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+                placeholder="wholesale, pays late, Kumasi"
+                className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+              />
+              <span className="text-xs text-text-muted">
+                Separate with commas.
+              </span>
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-text-primary">Notes</span>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={3}
+                placeholder="Anything worth remembering."
+                className="fd-input fd-input-compact resize-y"
+              />
+            </label>
+
+            {updateCustomer.isError && (
+              <p role="alert" className="text-sm font-medium text-danger">
+                {(updateCustomer.error as Error).message}
+              </p>
+            )}
+
+            <div className="flex items-center gap-2">
+              <Button onClick={handleSave} isLoading={updateCustomer.isPending}>
+                Save changes
+              </Button>
+              <Button variant="ghost" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </Panel>
+      ) : (
+        (customer.tags.length > 0 || customer.notes) && (
+          <Panel>
+            <div className="flex flex-col gap-3 p-4">
+              {customer.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {customer.tags.map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-sm bg-surface-sunken px-2 py-0.5 text-xs text-text-secondary"
+                    >
+                      {t}
+                    </span>
+                  ))}
                 </div>
-                <span className="font-mono text-sm text-[var(--color-text-secondary)]">{formatCurrency(order.totalAmount)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+              )}
+              {customer.notes && (
+                <p className="max-w-prose text-sm leading-relaxed text-text-secondary">
+                  {customer.notes}
+                </p>
+              )}
+            </div>
+          </Panel>
+        )
+      )}
 
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-            <CreditCard className="h-4 w-4" /> Payment History
-          </h3>
-          {data.payments.length === 0 && <p className="text-sm text-[var(--color-text-muted)]">No payments yet.</p>}
-          <div className="space-y-2">
-            {data.payments.map((payment) => (
-              <div key={payment.id} className="flex items-center justify-between rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-3 py-2">
-                <div>
-                  <span className="text-sm text-[var(--color-text-primary)]">{formatCurrency(payment.amount)}</span>
-                  <span className="ml-2 text-xs text-[var(--color-text-muted)]">{payment.method}</span>
-                  {payment.verified && <span className="ml-2 text-[10px] text-[var(--color-success)]">Verified</span>}
-                </div>
-                <span className="text-xs text-[var(--color-text-muted)]">{timeAgo(payment.createdAt)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Panel>
+          <PanelHead
+            title="Orders"
+            meta={data.orders.length > 0 ? `${data.orders.length}` : undefined}
+          />
+
+          {data.orders.length === 0 ? (
+            <EmptyState
+              title="No orders yet"
+              description="Nothing ordered yet."
+            />
+          ) : (
+            <RowList>
+              {data.orders.map((order) => (
+                <Row key={order.id} onClick={() => navigate('/orders')}>
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <span className="fd-figure shrink-0 text-xs text-text-muted">
+                      {order.referenceNumber}
+                    </span>
+                    <OrderStatusBadge status={order.status} />
+                  </span>
+                  <span className="fd-figure shrink-0 text-sm font-semibold text-text-primary">
+                    {formatCurrency(order.totalAmount)}
+                  </span>
+                </Row>
+              ))}
+            </RowList>
+          )}
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            title="Payments"
+            meta={data.payments.length > 0 ? `${data.payments.length}` : undefined}
+          />
+
+          {data.payments.length === 0 ? (
+            <EmptyState
+              title="Nothing paid yet"
+              description="Nothing paid yet."
+            />
+          ) : (
+            <RowList>
+              {data.payments.map((payment) => (
+                <Row key={payment.id}>
+                  <span className="flex min-w-0 flex-col gap-0.5">
+                    <span className="fd-figure text-sm font-semibold text-text-primary">
+                      {formatCurrency(payment.amount)}
+                    </span>
+                    <span className="truncate text-xs text-text-muted">
+                      {METHOD_LABEL[payment.method] ?? payment.method} ·{' '}
+                      {timeAgo(payment.createdAt)}
+                    </span>
+                  </span>
+
+                  {payment.verified ? (
+                    <Badge tone="success">Verified</Badge>
+                  ) : (
+                    <Badge tone="warning">Unverified</Badge>
+                  )}
+                </Row>
+              ))}
+            </RowList>
+          )}
+        </Panel>
       </div>
     </div>
   );

@@ -7,6 +7,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Vite/Vitest temp config artifacts
+*.timestamp-*.mjs
+
 # Turborepo
 .turbo/
 
@@ -29,6 +32,19 @@ docs/
 .devin/
 LAUNCH-GUIDE.md
 STARTUP-GUIDE.md
+SETUP.md
+
+# Local agent tooling (skills, agents, config) — not part of the product
+.claude/
+
+# Local debugging scratch scripts.
+# Ad-hoc one-off scripts kept at the api root while chasing a bug. They connect
+# to a live database and some hold real tokens, so they must never be committed.
+# Anything worth keeping belongs in apps/api/scripts/ with a package.json entry.
+apps/api/check-*.ts
+apps/api/simulate-webhook.ts
+apps/api/test-db.ts
+apps/api/update-business-token.ts
 
 # Prisma
 apps/api/prisma/*.db

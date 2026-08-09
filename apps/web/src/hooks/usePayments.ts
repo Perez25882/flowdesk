@@ -1,23 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
 
-const API_BASE = '/api/v1';
 
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('accessToken');
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error ?? `HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  return data.data as T;
-}
 
 export interface Payment {
   id: string;
@@ -41,23 +26,23 @@ export interface CreatePaymentInput {
   notes?: string;
 }
 
-export function usePayments(verified?: boolean, hasScreenshot?: boolean) {
+export function usePayments(verified?: boolean, hasScreenshot?: boolean): UseQueryResult<Payment[], Error> {
   const params = new URLSearchParams();
   if (verified !== undefined) params.set('verified', String(verified));
   if (hasScreenshot) params.set('hasScreenshot', 'true');
   const query = params.toString() ? `?${params.toString()}` : '';
   return useQuery({
     queryKey: ['payments', verified, hasScreenshot],
-    queryFn: () => fetchJson<Payment[]>(`/payments${query}`),
+    queryFn: () => apiFetch<Payment[]>(`/payments${query}`),
     staleTime: 30_000,
   });
 }
 
-export function useCreatePayment() {
+export function useCreatePayment(): UseMutationResult<Payment, Error, CreatePaymentInput> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: CreatePaymentInput) =>
-      fetchJson<Payment>('/payments', { method: 'POST', body: JSON.stringify(data) }),
+      apiFetch<Payment>('/payments', { method: 'POST', body: data }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payments'] });
       qc.invalidateQueries({ queryKey: ['orders'] });
@@ -66,11 +51,11 @@ export function useCreatePayment() {
   });
 }
 
-export function useVerifyPayment() {
+export function useVerifyPayment(): UseMutationResult<Payment, Error, string> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      fetchJson<Payment>(`/payments/${id}/verify`, { method: 'PATCH' }),
+      apiFetch<Payment>(`/payments/${id}/verify`, { method: 'PATCH' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payments'] });
       qc.invalidateQueries({ queryKey: ['orders'] });
@@ -79,11 +64,11 @@ export function useVerifyPayment() {
   });
 }
 
-export function useDeletePayment() {
+export function useDeletePayment(): UseMutationResult<void, Error, string> {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      fetchJson<void>(`/payments/${id}`, { method: 'DELETE' }),
+      apiFetch<void>(`/payments/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payments'] });
       qc.invalidateQueries({ queryKey: ['orders'] });
@@ -100,10 +85,10 @@ export interface RevenueStats {
   byMethod: Record<string, number>;
 }
 
-export function useRevenueStats() {
+export function useRevenueStats(): UseQueryResult<RevenueStats, Error> {
   return useQuery({
     queryKey: ['payments', 'stats'],
-    queryFn: () => fetchJson<RevenueStats>('/payments/stats'),
+    queryFn: () => apiFetch<RevenueStats>('/payments/stats'),
     staleTime: 60_000,
   });
 }

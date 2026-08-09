@@ -20,6 +20,12 @@ export interface PhoneNumberInfo {
  * Login) for a short-lived access token. The app secret stays server-side.
  */
 export async function exchangeCodeForToken(code: string): Promise<string> {
+  if (!env.META_APP_ID || !env.META_APP_SECRET) {
+    throw new ExternalServiceError(
+      'WhatsApp signup is not configured on this server (META_APP_ID / META_APP_SECRET missing)',
+    );
+  }
+
   const url = new URL(`${GRAPH_BASE}/${env.META_API_VERSION}/oauth/access_token`);
   url.searchParams.set('client_id', env.META_APP_ID);
   url.searchParams.set('client_secret', env.META_APP_SECRET);
@@ -95,6 +101,46 @@ export async function fetchPhoneNumberInfo(
     displayPhoneNumber: data.display_phone_number ?? null,
     verifiedName: data.verified_name ?? null,
   };
+}
+
+/**
+ * Discovers the WhatsApp Business Account IDs the access token is scoped to
+ * by calling the debug_token endpoint. These IDs are needed to subscribe the
+ * app to each WABA so webhooks are delivered.
+ */
+export async function fetchWabaIdsFromToken(accessToken: string): Promise<string[]> {
+  try {
+    const url = new URL(`${GRAPH_BASE}/${env.META_API_VERSION}/debug_token`);
+    url.searchParams.set('input_token', accessToken);
+    url.searchParams.set('access_token', `${env.META_APP_ID}|${env.META_APP_SECRET}`);
+
+    const response = await fetch(url.toString(), { method: 'GET' });
+    if (!response.ok) {
+      const body = await response.text().catch(() => 'unknown');
+      logger.warn({ status: response.status, body }, 'debug_token request failed');
+      return [];
+    }
+
+    const data = (await response.json()) as {
+      data?: {
+        granular_scopes?: Array<{ scope: string; target_ids?: string[] }>;
+      };
+    };
+
+    const targetIds = new Set<string>();
+    for (const scope of data.data?.granular_scopes ?? []) {
+      if (scope.scope === 'whatsapp_business_management' || scope.scope === 'whatsapp_business_messaging') {
+        for (const id of scope.target_ids ?? []) {
+          targetIds.add(id);
+        }
+      }
+    }
+
+    return Array.from(targetIds);
+  } catch (error: unknown) {
+    logger.warn({ error }, 'Failed to fetch WABA ids from token');
+    return [];
+  }
 }
 
 /**

@@ -9,6 +9,8 @@ export interface CreateOrderItemInput {
   description: string;
   quantity: number;
   unitPrice: number;
+  /** Matcher score, persisted so low-confidence lines can be reviewed. */
+  matchConfidence?: number;
 }
 
 export interface CreateOrderInput {
@@ -165,6 +167,7 @@ export async function createOrder(
           unitPrice: new Prisma.Decimal(item.unitPrice),
           subtotal: new Prisma.Decimal(item.quantity * item.unitPrice),
           matched: !!item.productId,
+          matchConfidence: item.matchConfidence ?? null,
         })),
       },
       statusHistory: {
@@ -322,6 +325,20 @@ export async function assignOrderToStaff(
   staffId: string,
   businessId: string,
 ): Promise<OrderWithRelations> {
+  // The staff member must belong to THIS business. The order update below is
+  // scoped by businessId, but `assignedStaffId` was trusted verbatim — so one
+  // tenant could pin another tenant's employee onto its own order, breaking the
+  // foreign key's tenant boundary and exposing that employee to order data
+  // through any assignment-scoped read.
+  const staff = await prisma.staff.findFirst({
+    where: { id: staffId, businessId, active: true },
+    select: { id: true },
+  });
+
+  if (!staff) {
+    throw new NotFoundError('Staff member not found');
+  }
+
   const order = await prisma.order.update({
     where: { id: orderId, businessId, deletedAt: null },
     data: {
@@ -348,60 +365,79 @@ function padReference(num: number): string {
 
 const REDIS_REF_KEY_PREFIX = 'flowdesk:order-ref:';
 
-async function getNextReferenceFromRedis(businessId: string): Promise<number | null> {
-  try {
-    const nextNum = await redis.incr(`${REDIS_REF_KEY_PREFIX}${businessId}`);
-    return nextNum;
-  } catch (error: unknown) {
-    logger.warn({ error, businessId }, 'Redis INCR failed for order reference, falling back to DB');
-    return null;
-  }
-}
-
-async function getNextReferenceFromDb(
+/**
+ * Highest reference number already issued to this business, used to seed the
+ * Redis counter. Ordering lexically would rank FD-9 above FD-10, so the
+ * comparison is done on the parsed numeric suffix.
+ */
+async function highestReferenceNumber(
   businessId: string,
   tx?: PrismaTransaction,
 ): Promise<number> {
   const db = tx ?? prisma;
 
-  const latestOrder = await db.order.findFirst({
-    where: {
-      businessId,
-      deletedAt: null,
-    },
-    orderBy: {
-      referenceNumber: 'desc',
-    },
-    select: {
-      referenceNumber: true,
-    },
+  const orders = await db.order.findMany({
+    where: { businessId, referenceNumber: { startsWith: REFERENCE_PREFIX } },
+    select: { referenceNumber: true },
+    orderBy: { createdAt: 'desc' },
+    take: 500,
   });
 
-  let nextNum = 1;
+  let highest = 0;
 
-  if (latestOrder?.referenceNumber && latestOrder.referenceNumber.startsWith(REFERENCE_PREFIX)) {
-    const numericPart = latestOrder.referenceNumber.slice(REFERENCE_PREFIX.length);
-    const parsed = Number.parseInt(numericPart, 10);
-    if (!Number.isNaN(parsed)) {
-      nextNum = parsed + 1;
+  for (const order of orders) {
+    const parsed = Number.parseInt(order.referenceNumber.slice(REFERENCE_PREFIX.length), 10);
+    if (!Number.isNaN(parsed) && parsed > highest) {
+      highest = parsed;
     }
   }
 
-  return nextNum;
+  return highest;
 }
 
+/**
+ * Non-sequential fallback used only when Redis is unreachable. Base36 timestamp
+ * plus random suffix — unique, sortable by time, and visibly distinct from the
+ * normal sequence so support can tell the two apart.
+ */
+function fallbackReference(): string {
+  const timestamp = Date.now().toString(36).toUpperCase().padStart(8, '0');
+  const noise = Math.floor(Math.random() * 36 ** 3)
+    .toString(36)
+    .toUpperCase()
+    .padStart(3, '0');
+  return `${REFERENCE_PREFIX}${timestamp}${noise}`;
+}
+
+/**
+ * Allocates the next per-business reference.
+ *
+ * The counter lives in Redis (atomic INCR) but is seeded from the database the
+ * first time a business is seen, so a flushed cache resumes the sequence
+ * instead of restarting at 1 and colliding with existing orders.
+ */
 export async function generateOrderReference(
   businessId: string,
   tx?: PrismaTransaction,
 ): Promise<string> {
-  const redisNum = await getNextReferenceFromRedis(businessId);
+  const key = `${REDIS_REF_KEY_PREFIX}${businessId}`;
 
-  if (redisNum !== null) {
-    return padReference(redisNum);
+  try {
+    // SET NX: whichever concurrent caller seeds first wins; the rest no-op and
+    // then INCR from that shared baseline.
+    if ((await redis.exists(key)) === 0) {
+      const highest = await highestReferenceNumber(businessId, tx);
+      await redis.set(key, String(highest), 'NX');
+    }
+
+    return padReference(await redis.incr(key));
+  } catch (error: unknown) {
+    logger.warn(
+      { error, businessId },
+      'Redis unavailable for order reference — using timestamp fallback',
+    );
+    return fallbackReference();
   }
-
-  const dbNum = await getNextReferenceFromDb(businessId, tx);
-  return padReference(dbNum);
 }
 
 export async function findOrdersByStatus(

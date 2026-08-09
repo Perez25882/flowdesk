@@ -3,15 +3,21 @@ import { connectDatabase, disconnectDatabase } from './config/database.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
+import { syncAccessTokenFromEnv } from './services/whatsapp/sync-token.js';
+import { startSSEFanout, stopSSEFanout } from './services/sse/sse.manager.js';
 import { messageProcessorWorker } from './workers/message-processor.worker.js';
 import { intentClassifierWorker } from './workers/intent-classifier.worker.js';
+import { outboundWorker } from './workers/outbound.worker.js';
 import { deadLetterWorker } from './workers/dead-letter.worker.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
 async function drainQueues(): Promise<void> {
+  // Closed in pipeline order so in-flight work can finish downstream rather
+  // than being orphaned mid-way.
   await messageProcessorWorker.close();
   await intentClassifierWorker.close();
+  await outboundWorker.close();
   await deadLetterWorker.close();
   logger.info('Queue drain completed');
 }
@@ -21,6 +27,14 @@ async function startServer(): Promise<void> {
 
   await connectDatabase();
   await connectRedis();
+
+  // Must run before traffic is accepted: a dashboard connecting to this
+  // instance would otherwise miss events raised on any other instance.
+  await startSSEFanout();
+
+  await syncAccessTokenFromEnv().catch((error: unknown) => {
+    logger.error({ error }, 'Failed to sync WhatsApp access token from environment');
+  });
 
   let isShuttingDown = false;
 
@@ -40,6 +54,7 @@ async function startServer(): Promise<void> {
     try {
       await app.close();
       await drainQueues();
+      await stopSSEFanout();
       await disconnectRedis();
       await disconnectDatabase();
       clearTimeout(shutdownTimeout);

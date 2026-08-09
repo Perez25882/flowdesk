@@ -10,13 +10,24 @@
   },
   "scripts": {
     "dev": "turbo run dev",
+    "dev:api": "pnpm --filter @flowdesk/api dev",
+    "dev:web": "pnpm --filter @flowdesk/web dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "clean": "turbo run clean && rimraf node_modules .turbo",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate deploy --schema prisma/schema.prisma",
+    "db:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:studio": "prisma studio --schema prisma/schema.prisma",
+    "smoke": "node apps/api/scripts/smoke-test.mjs",
+    "simulate": "pnpm --filter @flowdesk/api exec tsx scripts/simulate-incoming.ts",
+    "tunnel": "node apps/api/scripts/tunnel.mjs",
+    "whatsapp:setup": "node apps/api/scripts/whatsapp-setup.mjs",
+    "verify": "pnpm typecheck && pnpm test && pnpm smoke"
   },
   "devDependencies": {
     "@prisma/client": "^5.22.0",

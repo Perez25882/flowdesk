@@ -12,10 +12,16 @@ export const PaymentMethodSchema = z.enum([
 export const CreatePaymentSchema = z.object({
   customerId: z.string().min(1),
   orderId: z.string().optional(),
-  amount: z.coerce.number().positive(),
+  // Bounded to keep a mistyped amount from corrupting a customer's balance.
+  amount: z.coerce.number().positive().max(10_000_000),
   method: PaymentMethodSchema,
-  reference: z.string().optional(),
-  notes: z.string().optional(),
+  reference: z.string().max(200).optional(),
+  notes: z.string().max(2000).optional(),
+  /**
+   * Owner-logged payments are money already received, so they count immediately.
+   * The screenshot review flow passes `false` to stage a payment for approval.
+   */
+  verified: z.boolean().default(true),
 });
 
 export const VerifyPaymentSchema = z.object({

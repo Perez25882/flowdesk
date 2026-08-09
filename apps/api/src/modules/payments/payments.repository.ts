@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database.js';
 import { Prisma } from '@prisma/client';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
+import { recalculateCustomerTotals } from '../customers/customers.repository.js';
 
 export interface PaymentWithCustomer {
   id: string;
@@ -21,22 +22,37 @@ export async function createPayment(
   businessId: string,
   loggedById: string | null,
 ): Promise<PaymentWithCustomer> {
-  const payment = await prisma.payment.create({
-    data: {
-      businessId,
-      customerId: data.customerId,
-      orderId: data.orderId ?? null,
-      amount: new Prisma.Decimal(data.amount),
-      method: data.method,
-      reference: data.reference ?? null,
-      notes: data.notes ?? null,
-      loggedById,
-    },
-    include: {
-      customer: { select: { id: true, name: true, waNumber: true } },
-    },
+  return prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.create({
+      data: {
+        businessId,
+        customerId: data.customerId,
+        orderId: data.orderId ?? null,
+        amount: new Prisma.Decimal(data.amount),
+        method: data.method,
+        reference: data.reference ?? null,
+        notes: data.notes ?? null,
+        loggedById,
+        verified: data.verified,
+        verifiedBy: data.verified ? loggedById : null,
+        verifiedAt: data.verified ? new Date() : null,
+      },
+      include: {
+        customer: { select: { id: true, name: true, waNumber: true } },
+        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
+      },
+    });
+
+    // Only a verified payment moves money, so totals are refreshed only then.
+    if (data.verified) {
+      if (payment.orderId) {
+        await recalculateOrderPaid(payment.orderId, tx);
+      }
+      await recalculateCustomerTotals(payment.customerId, tx);
+    }
+
+    return payment as unknown as PaymentWithCustomer;
   });
-  return payment as PaymentWithCustomer;
 }
 
 export async function findPaymentById(id: string, businessId: string): Promise<PaymentWithCustomer | null> {
@@ -78,19 +94,26 @@ export async function listPayments(
   return payments as PaymentWithCustomer[];
 }
 
-export async function verifyPayment(
-  id: string,
-  businessId: string,
-  verifiedBy: string,
-): Promise<PaymentWithCustomer> {
-  const payment = await prisma.payment.update({
-    where: { id, businessId },
-    data: { verified: true, verifiedBy, verifiedAt: new Date() },
-    include: {
-      customer: { select: { id: true, name: true, waNumber: true } },
-    },
+/**
+ * Recomputes an order's `amountPaid` from its verified payments.
+ *
+ * Like the customer totals, this is a materialised value rather than an
+ * accumulator, so verifying, un-verifying or deleting a payment always lands on
+ * the correct figure instead of drifting.
+ */
+async function recalculateOrderPaid(
+  orderId: string,
+  tx: Prisma.TransactionClient,
+): Promise<void> {
+  const paid = await tx.payment.aggregate({
+    where: { orderId, verified: true },
+    _sum: { amount: true },
   });
-  return payment as PaymentWithCustomer;
+
+  await tx.order.update({
+    where: { id: orderId },
+    data: { amountPaid: paid._sum.amount ?? new Prisma.Decimal(0) },
+  });
 }
 
 export async function verifyPaymentWithSideEffects(
@@ -108,21 +131,10 @@ export async function verifyPaymentWithSideEffects(
     });
 
     if (updated.orderId) {
-      await tx.order.update({
-        where: { id: updated.orderId },
-        data: {
-          amountPaid: { increment: updated.amount },
-        },
-      });
+      await recalculateOrderPaid(updated.orderId, tx);
     }
 
-    await tx.customer.update({
-      where: { id: updated.customerId },
-      data: {
-        totalSpend: { increment: updated.amount },
-        outstandingBalance: { decrement: updated.amount },
-      },
-    });
+    await recalculateCustomerTotals(updated.customerId, tx);
 
     return updated;
   });
@@ -130,9 +142,28 @@ export async function verifyPaymentWithSideEffects(
   return verified as unknown as PaymentWithCustomer;
 }
 
+/**
+ * Deletes a payment and repairs every total it contributed to.
+ *
+ * Previously this removed the row without reversing its effects, permanently
+ * corrupting the customer's balance and the order's paid amount.
+ */
 export async function deletePayment(id: string, businessId: string): Promise<void> {
-  await prisma.payment.deleteMany({
-    where: { id, businessId },
+  await prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.findFirst({
+      where: { id, businessId },
+      select: { id: true, customerId: true, orderId: true },
+    });
+
+    if (!payment) return;
+
+    await tx.payment.delete({ where: { id: payment.id } });
+
+    if (payment.orderId) {
+      await recalculateOrderPaid(payment.orderId, tx);
+    }
+
+    await recalculateCustomerTotals(payment.customerId, tx);
   });
 }
 

@@ -8,7 +8,11 @@ export type TemplateKey =
   | 'order_cancelled'
   | 'payment_received'
   | 'status_check_response'
-  | 'greeting';
+  | 'greeting'
+  | 'inquiry'
+  | 'payment'
+  | 'complaint'
+  | 'fallback';
 
 interface TemplateVariables {
   name?: string;
@@ -37,19 +41,74 @@ const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
     'Your order {ref} is currently: {status}. {details} — {business}',
   greeting:
     'Hello {name}! Welcome to {business}. How can we help you today?',
+  inquiry:
+    'Hi {name}! Thanks for your question. Please share more details and we’ll get back to you right away. — {business}',
+  payment:
+    'Hi {name}! We received your payment message. Please share the order reference or amount and we’ll confirm. — {business}',
+  complaint:
+    'Hi {name}! We’re sorry for the inconvenience. Please share more details and we’ll look into it immediately. — {business}',
+  fallback:
+    'Hi {name}! We received your message. Our team will review it and get back to you shortly. — {business}',
 };
 
-function resolveTemplate(
-  templates: Record<string, unknown> | null | undefined,
-  key: TemplateKey,
-): string {
-  if (templates && typeof templates === 'object' && key in templates) {
-    const value = templates[key];
-    if (typeof value === 'string' && value.trim().length > 0) {
-      return value;
+/**
+ * Per-business auto-reply configuration, persisted on `Business.replyTemplates`.
+ *
+ * `overrides` replaces the default wording for a key; `disabled` switches that
+ * auto-reply off entirely. Both are keyed by {@link TemplateKey} — the single
+ * canonical key set for the whole system.
+ */
+export interface ReplyTemplateConfig {
+  overrides: Partial<Record<TemplateKey, string>>;
+  disabled: TemplateKey[];
+}
+
+const EMPTY_CONFIG: ReplyTemplateConfig = { overrides: {}, disabled: [] };
+
+function isTemplateKey(value: unknown): value is TemplateKey {
+  return typeof value === 'string' && (TEMPLATE_KEYS as string[]).includes(value);
+}
+
+/**
+ * Normalises whatever is stored in the `replyTemplates` JSON column.
+ *
+ * Accepts both the structured shape and the older flat `{ key: text }` form so
+ * existing rows keep working. Unknown keys are ignored rather than rejected —
+ * a stale key must not break the reply pipeline for every other template.
+ */
+export function parseTemplateConfig(value: unknown): ReplyTemplateConfig {
+  if (value === null || value === undefined || typeof value !== 'object') {
+    return EMPTY_CONFIG;
+  }
+
+  const record = value as Record<string, unknown>;
+  const overrides: Partial<Record<TemplateKey, string>> = {};
+  const disabled: TemplateKey[] = [];
+
+  const rawOverrides =
+    'overrides' in record && typeof record.overrides === 'object' && record.overrides !== null
+      ? (record.overrides as Record<string, unknown>)
+      : record;
+
+  for (const [key, text] of Object.entries(rawOverrides)) {
+    if (isTemplateKey(key) && typeof text === 'string' && text.trim().length > 0) {
+      overrides[key] = text;
     }
   }
-  return DEFAULT_TEMPLATES[key];
+
+  if (Array.isArray(record.disabled)) {
+    for (const key of record.disabled) {
+      if (isTemplateKey(key)) {
+        disabled.push(key);
+      }
+    }
+  }
+
+  return { overrides, disabled };
+}
+
+function resolveTemplate(config: ReplyTemplateConfig, key: TemplateKey): string {
+  return config.overrides[key] ?? DEFAULT_TEMPLATES[key];
 }
 
 function interpolate(template: string, variables: TemplateVariables): string {
@@ -73,12 +132,11 @@ function interpolate(template: string, variables: TemplateVariables): string {
 }
 
 export function renderTemplate(
-  customTemplates: Record<string, unknown> | null | undefined,
+  config: ReplyTemplateConfig,
   key: TemplateKey,
   variables: TemplateVariables,
 ): string {
-  const template = resolveTemplate(customTemplates, key);
-  return interpolate(template, variables);
+  return interpolate(resolveTemplate(config, key), variables);
 }
 
 export function humanizeStatus(status: OrderStatus | string): string {
@@ -111,7 +169,7 @@ export function shouldSendAutoReply(
   lastInteractionAt: Date | null | undefined,
 ): { withinWindow: boolean } {
   if (!lastInteractionAt) {
-    return { withinWindow: false };
+    return { withinWindow: true };
   }
 
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -135,14 +193,8 @@ export function getTemplateKeyForOrderStatus(status: OrderStatus): TemplateKey |
   }
 }
 
-export function isTemplateEnabled(
-  disabledTemplates: string[] | undefined,
-  key: TemplateKey,
-): boolean {
-  if (!disabledTemplates || disabledTemplates.length === 0) {
-    return true;
-  }
-  return !disabledTemplates.includes(key);
+export function isTemplateEnabled(config: ReplyTemplateConfig, key: TemplateKey): boolean {
+  return !config.disabled.includes(key);
 }
 
 export const TEMPLATE_KEYS: TemplateKey[] = [
@@ -154,6 +206,10 @@ export const TEMPLATE_KEYS: TemplateKey[] = [
   'payment_received',
   'status_check_response',
   'greeting',
+  'inquiry',
+  'payment',
+  'complaint',
+  'fallback',
 ];
 
 export const TEMPLATE_LABELS: Record<TemplateKey, string> = {
@@ -165,6 +221,10 @@ export const TEMPLATE_LABELS: Record<TemplateKey, string> = {
   payment_received: 'Payment Received',
   status_check_response: 'Status Check Response',
   greeting: 'Greeting',
+  inquiry: 'Inquiry',
+  payment: 'Payment',
+  complaint: 'Complaint',
+  fallback: 'Fallback',
 };
 
 export const TEMPLATE_DESCRIPTIONS: Record<TemplateKey, string> = {
@@ -176,6 +236,10 @@ export const TEMPLATE_DESCRIPTIONS: Record<TemplateKey, string> = {
   payment_received: 'Sent when a payment is verified',
   status_check_response: 'Sent when a customer asks about an existing order',
   greeting: 'Sent when a customer sends a greeting message',
+  inquiry: 'Sent when a customer asks a general question',
+  payment: 'Sent when a customer sends a payment-related message',
+  complaint: 'Sent when a customer sends a complaint',
+  fallback: 'Sent when a message does not match any other intent',
 };
 
 export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
@@ -187,4 +251,8 @@ export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
   payment_received: ['name', 'ref', 'business', 'amount'],
   status_check_response: ['name', 'ref', 'business', 'status', 'details'],
   greeting: ['name', 'business'],
+  inquiry: ['name', 'business'],
+  payment: ['name', 'business'],
+  complaint: ['name', 'business'],
+  fallback: ['name', 'business'],
 };

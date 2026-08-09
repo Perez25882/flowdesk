@@ -1,151 +1,214 @@
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
+import { hasCapability, type Capability, type StaffRole } from '@flowdesk/shared';
+import {
+  apiFetch,
+  clearTokens,
+  decodeToken,
+  getAccessToken,
+  isAuthenticated as hasToken,
+  storeTokens,
+} from '@/lib/api';
+import { disconnect as disconnectRealtime, reconnect as reconnectRealtime } from '@/hooks/useSSE';
 
-const API_BASE = '/api/v1';
-
-async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('accessToken');
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(err.error ?? `HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  return data.data as T;
-}
-
-export interface MetaAuthTokens {
+export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
 }
 
-export interface MetaSignupPayload {
-  code: string;
-  phoneNumberId: string;
-  wabaId?: string;
+export interface AuthenticatedBusiness {
+  id: string;
+  name: string;
+  ownerName: string;
+  email: string | null;
+  plan: string;
+  trialEndsAt: string | null;
+  waConnected: boolean;
 }
 
-export function useMetaSignup(): UseMutationResult<MetaAuthTokens, Error, MetaSignupPayload, unknown> {
-  const qc = useQueryClient();
-  return useMutation<MetaAuthTokens, Error, MetaSignupPayload, unknown>({
-    mutationFn: (payload: MetaSignupPayload) =>
-      fetchJson<MetaAuthTokens>('/auth/meta/signup', {
+export interface AuthResult extends AuthTokens {
+  business: AuthenticatedBusiness;
+}
+
+export interface RegisterPayload {
+  businessName: string;
+  ownerName: string;
+  email: string;
+  password: string;
+  phone?: string;
+}
+
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface StaffLoginPayload {
+  phone: string;
+  password: string;
+}
+
+function useAuthMutation<TPayload>(
+  path: string,
+): UseMutationResult<AuthResult, Error, TPayload, unknown> {
+  const queryClient = useQueryClient();
+
+  return useMutation<AuthResult, Error, TPayload, unknown>({
+    mutationFn: (payload: TPayload) =>
+      apiFetch<AuthResult>(path, { method: 'POST', body: payload, anonymous: true }),
+    onSuccess: (data) => {
+      storeTokens(data);
+      // Drop any cache belonging to a previously signed-in account.
+      queryClient.clear();
+      // Open a stream for the new session. Signing in is a client-side
+      // navigation, so any socket from a previous account on this device is
+      // still open and authenticated as that account until it is replaced.
+      reconnectRealtime();
+    },
+  });
+}
+
+export function useRegister(): UseMutationResult<AuthResult, Error, RegisterPayload, unknown> {
+  return useAuthMutation<RegisterPayload>('/auth/register');
+}
+
+export function useLogin(): UseMutationResult<AuthResult, Error, LoginPayload, unknown> {
+  return useAuthMutation<LoginPayload>('/auth/login');
+}
+
+export function useStaffLogin(): UseMutationResult<AuthResult, Error, StaffLoginPayload, unknown> {
+  return useAuthMutation<StaffLoginPayload>('/staff/login');
+}
+
+export function useForgotPassword(): UseMutationResult<
+  { message: string; resetToken?: string },
+  Error,
+  { email: string },
+  unknown
+> {
+  return useMutation({
+    mutationFn: (payload: { email: string }) =>
+      apiFetch<{ message: string; resetToken?: string }>('/auth/forgot-password', {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: payload,
+        anonymous: true,
       }),
-    onSuccess: (data) => {
-      localStorage.setItem('accessToken', data.accessToken);
-      localStorage.setItem('refreshToken', data.refreshToken);
-      qc.invalidateQueries({ queryKey: ['auth'] });
-    },
   });
 }
 
-export function useMetaLogin(): UseMutationResult<MetaAuthTokens, Error, string, unknown> {
-  const qc = useQueryClient();
-  return useMutation<MetaAuthTokens, Error, string, unknown>({
-    mutationFn: (code: string) =>
-      fetchJson<MetaAuthTokens>('/auth/meta/login', {
+export function useResetPassword(): UseMutationResult<
+  { message: string },
+  Error,
+  { token: string; password: string },
+  unknown
+> {
+  return useMutation({
+    mutationFn: (payload: { token: string; password: string }) =>
+      apiFetch<{ message: string }>('/auth/reset-password', {
         method: 'POST',
-        body: JSON.stringify({ code }),
+        body: payload,
+        anonymous: true,
       }),
-    onSuccess: (data) => {
-      localStorage.setItem('accessToken', data.accessToken);
-      localStorage.setItem('refreshToken', data.refreshToken);
-      qc.invalidateQueries({ queryKey: ['auth'] });
-    },
   });
 }
 
-export function useRefreshToken(): UseMutationResult<{ accessToken: string; refreshToken: string }, Error, void, unknown> {
-  return useMutation<{ accessToken: string; refreshToken: string }, Error, void, unknown>({
-    mutationFn: () => {
-      const refreshToken = localStorage.getItem('refreshToken');
-      return fetchJson<{ accessToken: string; refreshToken: string }>('/auth/refresh', {
+export function useAcceptStaffInvite(): UseMutationResult<
+  unknown,
+  Error,
+  { token: string; password: string },
+  unknown
+> {
+  return useMutation({
+    mutationFn: (payload: { token: string; password: string }) =>
+      apiFetch('/staff/accept', { method: 'POST', body: payload, anonymous: true }),
+  });
+}
+
+export function useChangePassword(): UseMutationResult<
+  { message: string },
+  Error,
+  { currentPassword: string; newPassword: string },
+  unknown
+> {
+  return useMutation({
+    mutationFn: (payload: { currentPassword: string; newPassword: string }) =>
+      apiFetch<{ message: string }>('/auth/change-password', { method: 'POST', body: payload }),
+  });
+}
+
+export function useLogout(): UseMutationResult<void, Error, void, unknown> {
+  const queryClient = useQueryClient();
+
+  return useMutation<void, Error, void, unknown>({
+    mutationFn: async () => {
+      // The refresh token travels in the httpOnly cookie, so nothing is sent
+      // in the body. A failed sign-out on the server must not trap the user in
+      // the app, hence the catch.
+      await apiFetch('/auth/logout', {
         method: 'POST',
-        body: JSON.stringify({ refreshToken }),
-      });
+        body: {},
+        anonymous: true,
+      }).catch(() => undefined);
     },
-    onSuccess: (data) => {
-      localStorage.setItem('accessToken', data.accessToken);
-      localStorage.setItem('refreshToken', data.refreshToken);
-    },
-  });
-}
-
-export function useLogout(): UseMutationResult<{ message: string }, Error, void, unknown> {
-  const qc = useQueryClient();
-  return useMutation<{ message: string }, Error, void, unknown>({
-    mutationFn: () => fetchJson<{ message: string }>('/auth/logout', { method: 'POST' }),
-    onSuccess: () => {
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
-      qc.clear();
+    onSettled: () => {
+      // Close the stream before the token goes: it outlives this component
+      // otherwise, holding the signed-out account's credentials open.
+      disconnectRealtime();
+      clearTokens();
+      queryClient.clear();
     },
   });
 }
 
-export function getAccessToken(): string | null {
-  return localStorage.getItem('accessToken');
-}
+export { getAccessToken, decodeToken };
 
 export function isAuthenticated(): boolean {
-  return !!getAccessToken();
-}
-
-interface DecodedToken {
-  businessId: string;
-  staffId?: string;
-  role?: string;
-  plan?: string;
-  exp?: number;
-}
-
-export function decodeToken(): DecodedToken | null {
-  const token = getAccessToken();
-  if (!token) return null;
-  try {
-    const payload = token.split('.')[1];
-    if (!payload) return null;
-    const decoded = JSON.parse(atob(payload)) as DecodedToken;
-    return decoded;
-  } catch {
-    return null;
-  }
+  return hasToken();
 }
 
 export function getUserRole(): string | null {
   return decodeToken()?.role ?? null;
 }
 
+/** The owner is the account holder — staff tokens carry a staffId, owners do not. */
 export function isOwner(): boolean {
-  const decoded = decodeToken();
-  return decoded !== null && !decoded.staffId;
-}
-
-export function isDeliveryStaff(): boolean {
-  return getUserRole() === 'DELIVERY';
-}
-
-export function isOperationsStaff(): boolean {
-  return getUserRole() === 'OPERATIONS';
+  const claims = decodeToken();
+  return claims !== null && !claims.staffId;
 }
 
 export function isManager(): boolean {
   return getUserRole() === 'MANAGER';
 }
 
+export function isOperationsStaff(): boolean {
+  return getUserRole() === 'OPERATIONS';
+}
+
+export function isDeliveryStaff(): boolean {
+  return getUserRole() === 'DELIVERY';
+}
+
+/**
+ * Whether the signed-in caller holds a capability.
+ *
+ * Reads the same matrix the API enforces (`@flowdesk/shared`), so a control is
+ * hidden exactly when the endpoint behind it would return 403. This is a
+ * rendering decision only — the server check is the real one.
+ */
+export function can(capability: Capability): boolean {
+  if (isOwner()) return true;
+  return hasCapability((getUserRole() as StaffRole | null) ?? undefined, capability);
+}
+
+/** Financial figures are visible to the owner and managers only. */
 export function canAccessRevenue(): boolean {
-  const role = getUserRole();
-  return role === 'MANAGER' || isOwner();
+  return can('revenue.read');
 }
 
 export function canAccessStaffManagement(): boolean {
-  const role = getUserRole();
-  return role === 'MANAGER' || isOwner();
+  return can('staff.manage');
+}
+
+/** Billing and plan changes are the account holder's alone. */
+export function canAccessBilling(): boolean {
+  return isOwner();
 }

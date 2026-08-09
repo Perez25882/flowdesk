@@ -321,10 +321,85 @@ function applyAmbiguityPenalty(scores: IntentScore[]): IntentScore[] {
   return scores;
 }
 
-export function classifyIntent(text: string): IntentClassification {
+/** Weight added when the message names a product this business actually sells. */
+const CATALOG_MENTION_WEIGHT = 0.3;
+/** Additional weight when that product is paired with a quantity. */
+const CATALOG_QUANTITY_WEIGHT = 0.5;
+
+const BARE_QUANTITY = /\b(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten|twelve|dozen)\b/;
+
+/**
+ * Escapes a catalog term for use in a regular expression, so a product name
+ * containing punctuation ("Milo 3-in-1") cannot corrupt the pattern.
+ */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Scores how strongly the message points at the business's own catalog.
+ *
+ * Word boundaries matter: without them "water" would match "waterfall" and a
+ * holiday anecdote would become an order.
+ */
+function scoreCatalogEvidence(normalized: string, catalogTerms: string[]): number {
+  if (catalogTerms.length === 0) return 0;
+
+  const mentioned = catalogTerms.some((term) => {
+    const trimmed = term.trim();
+    if (trimmed.length < 3) return false;
+    return new RegExp(`\\b${escapeRegExp(trimmed.toLowerCase())}\\b`).test(normalized);
+  });
+
+  if (!mentioned) return 0;
+
+  return BARE_QUANTITY.test(normalized)
+    ? CATALOG_MENTION_WEIGHT + CATALOG_QUANTITY_WEIGHT
+    : CATALOG_MENTION_WEIGHT;
+}
+
+/**
+ * A competing intent scoring at least this much means the message already
+ * states its purpose explicitly, and catalog evidence must not override it.
+ */
+const COMPETING_INTENT_THRESHOLD = 0.4;
+
+/**
+ * Classifies a message, optionally using the business's product names as
+ * evidence.
+ *
+ * Catalog evidence resolves messages that state no intent at all ("5 malta") —
+ * it is a tie-breaker, not an override. When any other intent has already
+ * matched explicit patterns, the boost is withheld entirely, so "I just paid
+ * 500 for the rice" stays a payment notice rather than becoming a new order for
+ * 500 bags.
+ */
+export function classifyIntent(text: string, catalogTerms: string[] = []): IntentClassification {
   const normalized = normalizeText(text);
 
-  const scores = INTENT_RULES.map((rules) => scoreIntent(normalized, rules));
+  const baseScores = INTENT_RULES.map((rules) => scoreIntent(normalized, rules));
+
+  const strongestCompetingScore = baseScores
+    .filter((score) => score.intent !== IntentType.ORDER)
+    .reduce((max, score) => Math.max(max, score.score), 0);
+
+  const catalogEvidence =
+    strongestCompetingScore >= COMPETING_INTENT_THRESHOLD
+      ? 0
+      : scoreCatalogEvidence(normalized, catalogTerms);
+
+  const scores = baseScores.map((score) => {
+    if (score.intent !== IntentType.ORDER || catalogEvidence === 0) {
+      return score;
+    }
+
+    return {
+      ...score,
+      score: Math.min(1, score.score + catalogEvidence),
+      matchedPatterns: [...score.matchedPatterns, 'catalog:product-mention'],
+    };
+  });
+
   const penalizedScores = applyAmbiguityPenalty(scores);
 
   const best = penalizedScores.reduce((max, current) =>

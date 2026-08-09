@@ -1,36 +1,22 @@
+import type {
+  MessageFlaggedPayload,
+  OrderCreatedPayload,
+  OrderUpdatedPayload,
+  PaymentConfirmedPayload,
+  StockAlertPayload,
+} from '@flowdesk/shared';
 import { SSEManager } from './sse.manager.js';
 
-export interface OrderCreatedPayload {
-  orderId: string;
-  referenceNumber: string;
-  customerName: string | null;
-  totalAmount: number;
-}
-
-export interface OrderUpdatedPayload {
-  orderId: string;
-  status: string;
-  previousStatus: string;
-}
-
-export interface MessageFlaggedPayload {
-  messageId: string;
-  requiresReview: boolean;
-  intent: string;
-}
-
-export interface StockAlertPayload {
-  productId: string;
-  productName: string;
-  currentStock: number;
-  threshold: number;
-}
-
-export interface PaymentConfirmedPayload {
-  paymentId: string;
-  orderId: string;
-  amount: number;
-}
+// The payload shapes live in `@flowdesk/shared` so the dashboard consumes the
+// same declarations the API emits. Re-exported here so existing importers do
+// not all have to change their import path.
+export type {
+  MessageFlaggedPayload,
+  OrderCreatedPayload,
+  OrderUpdatedPayload,
+  PaymentConfirmedPayload,
+  StockAlertPayload,
+};
 
 export function emitOrderCreated(businessId: string, payload: OrderCreatedPayload): void {
   SSEManager.getInstance().broadcast(businessId, {

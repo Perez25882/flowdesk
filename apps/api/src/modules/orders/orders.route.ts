@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { assignedStaffScope, requireCapability } from '../../middleware/role.middleware.js';
 import { success, created, paginated } from '../../utils/response.js';
-import { NotFoundError } from '../../utils/errors.js';
+import { ForbiddenError, NotFoundError } from '../../utils/errors.js';
 import type { PaginationMeta } from '../../utils/response.js';
 import {
   listOrders,
@@ -25,15 +26,22 @@ import {
 } from './orders.schema.js';
 
 export default async function orderRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/orders', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    '/orders',
+    { preHandler: requireCapability('orders.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const query = ListOrdersQuerySchema.parse(request.query);
     const businessId = request.business!.id;
+
+    // A rider sees only their own deliveries. Their own staff id overrides any
+    // `staffId` in the query, so passing someone else's does not widen the view.
+    const scopedStaffId = assignedStaffScope(request);
 
     const filters = {
       status: query.status,
       dateFrom: query.dateFrom ? new Date(query.dateFrom) : undefined,
       dateTo: query.dateTo ? new Date(query.dateTo) : undefined,
-      staffId: query.staffId,
+      staffId: scopedStaffId ?? query.staffId,
       search: query.search,
     };
 
@@ -49,10 +57,14 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       totalPages,
     };
 
-    return paginated(reply, orders, meta);
-  });
+      return paginated(reply, orders, meta);
+    },
+  );
 
-  app.get('/orders/stats', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    '/orders/stats',
+    { preHandler: requireCapability('orders.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const query = OrderStatsQuerySchema.parse(request.query);
     const businessId = request.business!.id;
 
@@ -77,36 +89,76 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       };
     }
 
-    const stats = await getOrderStats(businessId, dateRange);
-    return success(reply, stats);
-  });
+      const stats = await getOrderStats(businessId, dateRange);
+      return success(reply, stats);
+    },
+  );
 
-  app.get('/orders/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { id } = request.params as { id: string };
-    const businessId = request.business!.id;
+  app.get(
+    '/orders/:id',
+    { preHandler: requireCapability('orders.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const businessId = request.business!.id;
 
-    const order = await findOrderById(id, businessId);
+      const order = await findOrderById(id, businessId);
 
-    if (!order) {
-      throw new NotFoundError('Order not found');
-    }
+      if (!order) {
+        throw new NotFoundError('Order not found');
+      }
 
-    return success(reply, order);
-  });
+      // Riders may only open their own deliveries. Reported as 404 rather than
+      // 403 so the endpoint does not confirm that an order id exists.
+      const scopedStaffId = assignedStaffScope(request);
 
-  app.post('/orders', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = CreateOrderSchema.parse(request.body);
-    const businessId = request.business!.id;
+      if (scopedStaffId && order.assignedStaffId !== scopedStaffId) {
+        throw new NotFoundError('Order not found');
+      }
 
-    const order = await createManualOrder(body, businessId);
-    return created(reply, order);
-  });
+      return success(reply, order);
+    },
+  );
 
-  app.patch('/orders/:id/status', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post(
+    '/orders',
+    { preHandler: requireCapability('orders.create') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = CreateOrderSchema.parse(request.body);
+      const businessId = request.business!.id;
+
+      const order = await createManualOrder(body, businessId);
+      return created(reply, order);
+    },
+  );
+
+  app.patch(
+    '/orders/:id/status',
+    { preHandler: requireCapability('orders.transition') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const body = UpdateOrderStatusSchema.parse(request.body);
     const businessId = request.business!.id;
-    const changedBy = request.user?.staffId ?? 'system';
+    // Null for the owner: there is no staff row for the account holder, and the
+    // audit/assignment columns are real foreign keys.
+    const changedBy = request.user?.staffId ?? null;
+
+    // A rider can only move an order that is actually theirs.
+    const scopedStaffId = assignedStaffScope(request);
+
+    if (scopedStaffId) {
+      const existing = await findOrderById(id, businessId);
+
+      if (!existing || existing.assignedStaffId !== scopedStaffId) {
+        throw new NotFoundError('Order not found');
+      }
+
+      // Riders complete deliveries. Confirming and cancelling are commercial
+      // decisions that stay with the shop.
+      if (body.status !== 'FULFILLED') {
+        throw new ForbiddenError('You can only mark your deliveries as fulfilled');
+      }
+    }
+
     let order;
 
     switch (body.status) {
@@ -120,21 +172,27 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
         order = await fulfillOrder(id, businessId, changedBy);
         break;
       case 'CANCELLED':
-        order = await cancelOrder(id, businessId, body.note ?? 'Cancelled via API', changedBy);
+        // The schema guarantees a note is present for this status.
+        order = await cancelOrder(id, businessId, body.note!, changedBy);
         break;
       default:
         return reply.status(400).send({ success: false, error: 'Invalid status transition', code: 'INVALID_STATUS' });
     }
 
-    return success(reply, order);
-  });
+      return success(reply, order);
+    },
+  );
 
-  app.patch('/orders/:id/assign', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { id } = request.params as { id: string };
-    const body = AssignOrderSchema.parse(request.body);
-    const businessId = request.business!.id;
+  app.patch(
+    '/orders/:id/assign',
+    { preHandler: requireCapability('orders.assign') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = AssignOrderSchema.parse(request.body);
+      const businessId = request.business!.id;
 
-    const order = await assignOrderToStaff(id, body.staffId, businessId);
-    return success(reply, order);
-  });
+      const order = await assignOrderToStaff(id, body.staffId, businessId);
+      return success(reply, order);
+    },
+  );
 }

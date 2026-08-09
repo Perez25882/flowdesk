@@ -75,9 +75,13 @@ function optionalStringUpdate(value: string | undefined): string | undefined {
   return value;
 }
 
-function buildCustomerCreate(jobData: MessageJobData, waNumber: string): Prisma.CustomerUncheckedCreateInput {
+function buildCustomerCreate(
+  jobData: MessageJobData,
+  waNumber: string,
+  businessId: string,
+): Prisma.CustomerUncheckedCreateInput {
   const create: Prisma.CustomerUncheckedCreateInput = {
-    businessId: jobData.businessId,
+    businessId,
     waNumber,
     lastInteractionAt: jobData.message.timestamp,
   };
@@ -95,15 +99,40 @@ function buildCustomerUpdate(jobData: MessageJobData): Prisma.CustomerUpdateInpu
   return update;
 }
 
+/**
+ * Resolves the tenant that owns the receiving WhatsApp number. Returns null for
+ * an unknown number — Meta can deliver for a number that was disconnected, and
+ * that must not be treated as a processing failure worth retrying.
+ */
+async function resolveBusinessId(phoneNumberId: string): Promise<string | null> {
+  const business = await prisma.business.findFirst({
+    where: { waPhoneNumberId: phoneNumberId, active: true, deletedAt: null },
+    select: { id: true },
+  });
+
+  return business?.id ?? null;
+}
+
 async function processMessage(jobData: MessageJobData): Promise<void> {
+  const businessId = await resolveBusinessId(jobData.businessPhoneNumberId);
+
+  if (!businessId) {
+    logger.warn(
+      { phoneNumberId: jobData.businessPhoneNumberId, waMessageId: jobData.waMessageId },
+      'Inbound message for an unknown or inactive business — discarding',
+    );
+    return;
+  }
+
   const normalizedPhone = normalizeGhanaPhone(jobData.message.from);
   const rawPayload = toInputJson(jobData.message.rawPayload);
 
   const messageCreate: Prisma.MessageUncheckedCreateInput = {
-    businessId: jobData.businessId,
+    businessId,
     waMessageId: jobData.waMessageId,
     direction: MessageDirection.INBOUND,
     type: jobData.message.type,
+    createdAt: jobData.message.timestamp,
     rawPayload,
     processed: false,
   };
@@ -128,40 +157,27 @@ async function processMessage(jobData: MessageJobData): Promise<void> {
   const customer = await prisma.customer.upsert({
     where: {
       businessId_waNumber: {
-        businessId: jobData.businessId,
+        businessId,
         waNumber: normalizedPhone,
       },
     },
-    create: buildCustomerCreate(jobData, normalizedPhone),
+    create: buildCustomerCreate(jobData, normalizedPhone, businessId),
     update: buildCustomerUpdate(jobData),
   });
 
-  await prisma.$transaction([
-    prisma.message.update({
-      where: {
-        id: message.id,
-      },
-      data: {
-        customerId: customer.id,
-      },
-    }),
-    prisma.business.update({
-      where: {
-        id: jobData.businessId,
-      },
-      data: {
-        monthlyConvoCount: {
-          increment: 1,
-        },
-      },
-    }),
-  ]);
+  // Inbound messages are never counted against the plan: the allowance covers
+  // outbound conversations (what Meta bills for), and inbound must always be
+  // accepted regardless of plan state so no customer order is ever lost.
+  await prisma.message.update({
+    where: { id: message.id },
+    data: { customerId: customer.id },
+  });
 
   if (jobData.message.media?.id && jobData.message.type === MessageType.IMAGE) {
     try {
       const uploadResult = await downloadFromMetaAndUploadToS3(
         jobData.message.media.id,
-        jobData.businessId,
+        businessId,
         jobData.message.media.mimeType ?? 'image/jpeg',
       );
 
@@ -186,7 +202,7 @@ async function processMessage(jobData: MessageJobData): Promise<void> {
             },
           });
 
-          emitMessageFlagged(jobData.businessId, {
+          emitMessageFlagged(businessId, {
             messageId: message.id,
             requiresReview: true,
             intent: 'PAYMENT',
@@ -198,30 +214,22 @@ async function processMessage(jobData: MessageJobData): Promise<void> {
     }
   }
 
-  if (jobData.message.type === MessageType.TEXT || jobData.message.body) {
-    await intentClassificationQueue.add(
-      // @ts-expect-error BullMQ v5 type inference issue — NameType resolves incorrectly despite explicit generic
-      'classify-message-intent',
-      {
-        businessId: jobData.businessId,
-        messageId: message.id,
-        waMessageId: jobData.waMessageId,
-      },
-      {
-        jobId: `intent:${jobData.waMessageId}`,
-      },
-    );
-  }
-
-  const bodyLength = jobData.message.body?.length ?? 0;
-  const isAmbiguous = bodyLength < 3 || !jobData.message.body;
-  if (isAmbiguous && jobData.message.type === MessageType.TEXT) {
-    emitMessageFlagged(jobData.businessId, {
+  // Every message goes to the classifier, including media and stickers. The
+  // classifier marks body-less messages processed without classifying them —
+  // previously those were never enqueued at all and stayed "unprocessed"
+  // forever, permanently inflating the review queue.
+  await intentClassificationQueue.add(
+    // @ts-expect-error BullMQ v5 type inference issue — NameType resolves incorrectly despite explicit generic
+    'classify-message-intent',
+    {
+      businessId,
       messageId: message.id,
-      requiresReview: true,
-      intent: 'UNKNOWN',
-    });
-  }
+      waMessageId: jobData.waMessageId,
+    },
+    {
+      jobId: `intent-${jobData.waMessageId}`,
+    },
+  );
 }
 
 export const messageProcessorWorker = new Worker<MessageJobData>(
@@ -238,7 +246,7 @@ export const messageProcessorWorker = new Worker<MessageJobData>(
           extra: {
             jobId: job.id,
             waMessageId: job.data.waMessageId,
-            businessId: job.data.businessId,
+            phoneNumberId: job.data.businessPhoneNumberId,
           },
         });
       }
@@ -248,7 +256,7 @@ export const messageProcessorWorker = new Worker<MessageJobData>(
           error,
           jobId: job.id,
           waMessageId: job.data.waMessageId,
-          businessId: job.data.businessId,
+          phoneNumberId: job.data.businessPhoneNumberId,
         },
         'Message processor job failed',
       );

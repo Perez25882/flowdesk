@@ -28,10 +28,11 @@ const VALID_AI_INTENTS: readonly string[] = [
   IntentType.OTHER,
 ];
 
-function computeCacheKey(text: string): string {
+/** Scoped by business — see the equivalent note in `haiku-classifier.ts`. */
+function computeCacheKey(text: string, businessId: string): string {
   const normalized = text.trim().toLowerCase();
   const hash = crypto.createHash('sha256').update(normalized).digest('hex');
-  return `intent:nvidia:${hash.slice(0, 16)}`;
+  return `intent:nvidia:${businessId}:${hash.slice(0, 16)}`;
 }
 
 function truncateInput(text: string): string {
@@ -114,8 +115,8 @@ export class NvidiaClassifier implements AiClassifier {
     this.model = env.NVIDIA_MODEL;
   }
 
-  async classify(text: string): Promise<IntentClassification> {
-    const cacheKey = computeCacheKey(text);
+  async classify(text: string, businessId: string): Promise<IntentClassification> {
+    const cacheKey = computeCacheKey(text, businessId);
 
     try {
       const cached = await redis.get(cacheKey);

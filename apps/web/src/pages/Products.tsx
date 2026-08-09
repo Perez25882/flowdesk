@@ -1,37 +1,87 @@
 import { useState } from 'react';
-import { Search, Package, Plus, Minus, AlertTriangle } from 'lucide-react';
-import { useProducts, useCreateProduct, useUpdateProduct, useAdjustStock } from '@/hooks/useProducts';
+import { Minus, Package, Plus } from 'lucide-react';
+import {
+  useProducts,
+  useCreateProduct,
+  useUpdateProduct,
+  useAdjustStock,
+} from '@/hooks/useProducts';
 import EmptyState from '@/components/shared/EmptyState';
-import { formatCurrency } from '@/lib/utils';
+import PageHeader from '@/components/shared/PageHeader';
+import SearchInput from '@/components/ui/SearchInput';
+import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
+import { SkeletonRows } from '@/components/ui/Skeleton';
+import { Button } from '@/components/ui/Button';
+import { formatCurrency, cn } from '@/lib/utils';
 
+const EMPTY_FORM = {
+  name: '',
+  unit: '',
+  price: '',
+  stockQuantity: '',
+  reorderThreshold: '',
+  aliases: '',
+};
+
+/**
+ * The catalogue.
+ *
+ * Two changes worth naming. The stock +/- controls were unlabelled icon
+ * buttons, so a screen reader announced two identical "button"s next to a
+ * number; they now say what they change and by how much. And the aliases
+ * field, which is the thing that actually makes message matching work, was
+ * presented as an afterthought labelled "Aliases (comma separated)" — it now
+ * explains itself, because a shop owner has no reason to know what an alias is.
+ */
 export default function ProductsPage(): React.JSX.Element {
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', unit: '', price: '', stockQuantity: '', reorderThreshold: '', aliases: '' });
+  const [form, setForm] = useState(EMPTY_FORM);
 
   const { data: products, isLoading } = useProducts(search || undefined);
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
   const adjustStock = useAdjustStock();
 
-  const handleSubmit = () => {
+  const isSaving = createProduct.isPending || updateProduct.isPending;
+  const canSave = form.name.trim().length > 0 && form.price.trim().length > 0;
+
+  function closeForm(): void {
+    setShowForm(false);
+    setEditingId(null);
+    setForm(EMPTY_FORM);
+  }
+
+  function handleSubmit(): void {
     const data = {
-      name: form.name,
-      unit: form.unit,
+      name: form.name.trim(),
+      unit: form.unit.trim(),
       price: Number(form.price),
       stockQuantity: Number(form.stockQuantity) || 0,
       reorderThreshold: Number(form.reorderThreshold) || 0,
-      aliases: form.aliases.split(',').map((a) => a.trim()).filter(Boolean),
+      aliases: form.aliases
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean),
     };
-    if (editingId) {
-      updateProduct.mutate({ id: editingId, data }, { onSuccess: () => { setShowForm(false); setEditingId(null); } });
-    } else {
-      createProduct.mutate(data, { onSuccess: () => { setShowForm(false); setForm({ name: '', unit: '', price: '', stockQuantity: '', reorderThreshold: '', aliases: '' }); } });
-    }
-  };
 
-  const startEdit = (product: { id: string; name: string; unit: string; price: number; stockQuantity: number; reorderThreshold: number; aliases: string[] }) => {
+    if (editingId) {
+      updateProduct.mutate({ id: editingId, data }, { onSuccess: closeForm });
+    } else {
+      createProduct.mutate(data, { onSuccess: closeForm });
+    }
+  }
+
+  function startEdit(product: {
+    id: string;
+    name: string;
+    unit: string;
+    price: number;
+    stockQuantity: number;
+    reorderThreshold: number;
+    aliases: string[];
+  }): void {
     setForm({
       name: product.name,
       unit: product.unit,
@@ -42,80 +92,224 @@ export default function ProductsPage(): React.JSX.Element {
     });
     setEditingId(product.id);
     setShowForm(true);
-  };
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Products</h1>
-        <button
-          onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ name: '', unit: '', price: '', stockQuantity: '', reorderThreshold: '', aliases: '' }); }}
-          className="flex items-center gap-1 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)]"
-        >
-          <Plus className="h-4 w-4" /> {showForm ? 'Cancel' : 'Add Product'}
-        </button>
-      </div>
+    <div className="flex flex-col gap-5">
+      <PageHeader
+        title="Products"
+        description="What you sell, and how much is left."
+        actions={
+          <>
+            <SearchInput
+              label="Search products"
+              placeholder="Search products"
+              value={search}
+              onChange={setSearch}
+              className="w-full sm:w-56"
+            />
+            <Button
+              size="sm"
+              variant={showForm ? 'secondary' : 'primary'}
+              onClick={() => (showForm ? closeForm() : setShowForm(true))}
+              leadingIcon={showForm ? undefined : <Plus className="h-4 w-4" strokeWidth={2} />}
+            >
+              {showForm ? 'Cancel' : 'Add product'}
+            </Button>
+          </>
+        }
+      />
 
       {showForm && (
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Product name" className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="Unit (bag, piece, kg)" className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <input value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} placeholder="Price (GHS)" type="number" className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <input value={form.stockQuantity} onChange={(e) => setForm({ ...form, stockQuantity: e.target.value })} placeholder="Stock quantity" type="number" className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <input value={form.reorderThreshold} onChange={(e) => setForm({ ...form, reorderThreshold: e.target.value })} placeholder="Reorder threshold" type="number" className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
-            <input value={form.aliases} onChange={(e) => setForm({ ...form, aliases: e.target.value })} placeholder="Aliases (comma separated)" className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm" />
+        <Panel>
+          <PanelHead title={editingId ? 'Edit product' : 'New product'} />
+
+          <div className="p-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-text-primary">Name</span>
+                <input
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Jasmine rice"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-text-primary">Sold by</span>
+                <input
+                  value={form.unit}
+                  onChange={(e) => setForm({ ...form, unit: e.target.value })}
+                  placeholder="bag, crate, kg"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-text-primary">Price, in cedis</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.01}
+                  value={form.price}
+                  onChange={(e) => setForm({ ...form, price: e.target.value })}
+                  placeholder="92.00"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-text-primary">In stock now</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={form.stockQuantity}
+                  onChange={(e) => setForm({ ...form, stockQuantity: e.target.value })}
+                  placeholder="40"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-text-primary">Warn me below</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={form.reorderThreshold}
+                  onChange={(e) => setForm({ ...form, reorderThreshold: e.target.value })}
+                  placeholder="8"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5 lg:col-span-3">
+                <span className="text-sm font-medium text-text-primary">
+                  Other names customers use
+                </span>
+                <input
+                  value={form.aliases}
+                  onChange={(e) => setForm({ ...form, aliases: e.target.value })}
+                  placeholder="rice, jasmin, 5kg rice"
+                  className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                />
+                <span className="text-xs text-text-muted">
+                  Separate with commas. Lets Flowdesk match &ldquo;5kg rice&rdquo; to this product.
+                </span>
+              </label>
+            </div>
+
+            <div className="mt-5 flex items-center gap-2">
+              <Button onClick={handleSubmit} disabled={!canSave} isLoading={isSaving}>
+                {editingId ? 'Save changes' : 'Add product'}
+              </Button>
+              <Button variant="ghost" onClick={closeForm}>
+                Cancel
+              </Button>
+            </div>
           </div>
-          <button onClick={handleSubmit} className="mt-3 rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--color-primary-light)]">
-            {editingId ? 'Update Product' : 'Create Product'}
-          </button>
-        </div>
+        </Panel>
       )}
 
-      <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-muted)]" />
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search products..."
-          className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] py-2 pl-9 pr-4 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-        />
-      </div>
+      <Panel>
+        {isLoading && <SkeletonRows count={6} />}
 
-      {isLoading && <div className="h-32 animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />}
-      {!isLoading && (!products || products.length === 0) && <EmptyState icon={Package} title="No products yet" description="Add products to your catalog to enable order matching and inventory tracking." />}
+        {!isLoading && (!products || products.length === 0) && (
+          <EmptyState
+            icon={Package}
+            title={search ? 'No matches' : 'Nothing in the catalogue'}
+            description={
+              search
+                ? 'Nothing matched that.'
+                : 'Add what you sell so Flowdesk can spot it in messages.'
+            }
+            {...(search ? {} : { action: { label: 'Add your first product', onClick: () => setShowForm(true) } })}
+          />
+        )}
 
-      {!isLoading && products && products.length > 0 && (
-        <div className="space-y-2">
-          {products.map((product) => {
-            const isLow = product.reorderThreshold > 0 && product.stockQuantity <= product.reorderThreshold;
-            return (
-              <div key={product.id} className="flex items-center justify-between rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-[var(--color-text-primary)]">{product.name}</span>
-                    {isLow && <AlertTriangle className="h-4 w-4 text-[var(--color-warning)]" />}
-                  </div>
-                  <p className="text-xs text-[var(--color-text-muted)]">{product.unit} {formatCurrency(product.price)} {product.aliases.length > 0 && `(${product.aliases.slice(0, 3).join(', ')})`}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`font-mono text-sm ${isLow ? 'text-[var(--color-warning)]' : 'text-[var(--color-text-secondary)]'}`}>
-                    {product.stockQuantity} in stock
+        {!isLoading && products && products.length > 0 && (
+          <RowList>
+            {products.map((product) => {
+              const isLow =
+                product.reorderThreshold > 0 && product.stockQuantity <= product.reorderThreshold;
+
+              return (
+                <Row key={product.id} className="flex-wrap gap-y-2">
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-sm font-medium text-text-primary">
+                      {product.name}
+                    </span>
+                    <span className="text-xs text-text-muted">
+                      <span className="fd-figure">{formatCurrency(product.price)}</span>
+                      {product.unit ? ` per ${product.unit}` : ''}
+                      {product.aliases.length > 0 && ` · also called ${product.aliases.slice(0, 3).join(', ')}`}
+                    </span>
                   </span>
-                  <button onClick={() => adjustStock.mutate({ id: product.id, data: { quantity: 1, type: 'RESTOCK' } })} className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-1.5 hover:bg-[var(--color-surface-hover)]">
-                    <Plus className="h-3.5 w-3.5 text-[var(--color-text-secondary)]" />
-                  </button>
-                  <button onClick={() => adjustStock.mutate({ id: product.id, data: { quantity: -1, type: 'ADJUSTMENT' } })} className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-1.5 hover:bg-[var(--color-surface-hover)]">
-                    <Minus className="h-3.5 w-3.5 text-[var(--color-text-secondary)]" />
-                  </button>
-                  <button onClick={() => startEdit(product)} className="text-xs text-[var(--color-primary-light)] hover:underline">Edit</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+
+                  <span className="flex shrink-0 items-center gap-3">
+                    <span className="text-right">
+                      <span
+                        className={cn(
+                          'fd-figure block text-sm font-semibold',
+                          isLow ? 'text-warning' : 'text-text-primary',
+                        )}
+                      >
+                        {product.stockQuantity}
+                      </span>
+                      <span className="text-2xs text-text-muted">
+                        {isLow ? `low, warn at ${product.reorderThreshold}` : 'in stock'}
+                      </span>
+                    </span>
+
+                    <span className="flex items-center rounded-md border border-border">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          adjustStock.mutate({
+                            id: product.id,
+                            data: { quantity: -1, type: 'ADJUSTMENT' },
+                          })
+                        }
+                        disabled={product.stockQuantity <= 0}
+                        aria-label={`Remove one ${product.name} from stock`}
+                        className="flex h-11 w-11 items-center justify-center rounded-l-[5px] text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-hover hover:text-text-primary disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary sm:h-9 sm:w-9"
+                      >
+                        <Minus className="h-3.5 w-3.5" strokeWidth={2} />
+                      </button>
+                      <span className="h-11 w-px bg-border sm:h-9" aria-hidden="true" />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          adjustStock.mutate({
+                            id: product.id,
+                            data: { quantity: 1, type: 'RESTOCK' },
+                          })
+                        }
+                        aria-label={`Add one ${product.name} to stock`}
+                        className="flex h-11 w-11 items-center justify-center rounded-r-[5px] text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary sm:h-9 sm:w-9"
+                      >
+                        <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+                      </button>
+                    </span>
+
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => startEdit(product)}
+                      aria-label={`Edit ${product.name}`}
+                    >
+                      Edit
+                    </Button>
+                  </span>
+                </Row>
+              );
+            })}
+          </RowList>
+        )}
+      </Panel>
     </div>
   );
 }

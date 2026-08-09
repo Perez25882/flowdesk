@@ -29,10 +29,17 @@ const VALID_AI_INTENTS: readonly string[] = [
   IntentType.OTHER,
 ];
 
-function computeCacheKey(text: string): string {
+/**
+ * Cache key for a classification.
+ *
+ * Scoped by business: the classifier is prompted with the shop's own context,
+ * so an unscoped key let one business's reading of an ambiguous message decide
+ * which auto-reply template another business sent.
+ */
+function computeCacheKey(text: string, businessId: string): string {
   const normalized = text.trim().toLowerCase();
   const hash = crypto.createHash('sha256').update(normalized).digest('hex');
-  return `intent:${hash.slice(0, 16)}`;
+  return `intent:${businessId}:${hash.slice(0, 16)}`;
 }
 
 interface AnthropicResponse {
@@ -110,8 +117,17 @@ function createUnclassified(): IntentClassification {
 export class ClaudeHaikuClassifier implements AiClassifier {
   readonly name = 'ClaudeHaiku';
 
-  async classify(text: string): Promise<IntentClassification> {
-    const cacheKey = computeCacheKey(text);
+  async classify(text: string, businessId: string): Promise<IntentClassification> {
+    const apiKey = env.ANTHROPIC_API_KEY;
+
+    // No key configured: the rule engine's verdict stands and low-confidence
+    // messages land in the review queue rather than blocking the pipeline.
+    if (!apiKey) {
+      logger.debug('Anthropic API key not configured — skipping LLM classification fallback');
+      return createUnclassified();
+    }
+
+    const cacheKey = computeCacheKey(text, businessId);
 
     try {
       const cached = await redis.get(cacheKey);
@@ -136,7 +152,7 @@ export class ClaudeHaikuClassifier implements AiClassifier {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
+          'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({

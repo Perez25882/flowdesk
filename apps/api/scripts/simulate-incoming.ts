@@ -23,11 +23,12 @@ import { PrismaClient } from '@prisma/client';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const API_ENV_PATH = path.resolve(__dirname, '../../.env');
-config({ path: API_ENV_PATH });
-// Root .env may also be present; load it last but don't fail if missing.
-config({ path: path.join(REPO_ROOT, '.env'), override: false });
+// apps/api/scripts -> apps/api -> apps -> repo root
+const REPO_ROOT = path.resolve(__dirname, '../../..');
+// The root .env is the single source of truth; an apps/api/.env is only
+// honoured as a legacy override if someone still keeps one.
+config({ path: path.join(REPO_ROOT, '.env') });
+config({ path: path.resolve(__dirname, '../.env'), override: false });
 
 const API_URL = process.env.API_URL ?? 'http://localhost:3000';
 const WEBHOOK_PATH = '/api/v1/webhook';
@@ -101,23 +102,47 @@ Flags:
 `);
 }
 
+/**
+ * Works out which business the simulated message should be delivered to.
+ *
+ * Prefers an explicit override, then a business matching SEED_BUSINESS_PHONE,
+ * and otherwise falls back to whichever business has a WhatsApp number
+ * connected — so the script works straight after signing up in the UI, with no
+ * seed step.
+ */
 async function resolvePhoneNumberId(override?: string): Promise<string> {
   if (override) return override;
+
   if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL missing — set in apps/api/.env');
+    throw new Error('DATABASE_URL missing — set it in the root .env');
   }
+
   const prisma = new PrismaClient();
+
   try {
-    const business = await prisma.business.findFirst({
-      where: { phone: SEED_PHONE },
-      select: { waPhoneNumberId: true },
+    const seeded = await prisma.business.findFirst({
+      where: { phone: SEED_PHONE, waPhoneNumberId: { not: null } },
+      select: { name: true, waPhoneNumberId: true },
     });
-    if (!business?.waPhoneNumberId) {
-      throw new Error(
-        `No business found for phone ${SEED_PHONE}. Run \`pnpm seed\` first.`,
-      );
+
+    if (seeded?.waPhoneNumberId) return seeded.waPhoneNumberId;
+
+    const anyConnected = await prisma.business.findFirst({
+      where: { waPhoneNumberId: { not: null }, active: true, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: { name: true, waPhoneNumberId: true },
+    });
+
+    if (anyConnected?.waPhoneNumberId) {
+      console.log(`Delivering to "${anyConnected.name}"\n`);
+      return anyConnected.waPhoneNumberId;
     }
-    return business.waPhoneNumberId;
+
+    throw new Error(
+      'No business has a WhatsApp number connected.\n' +
+        'Register at http://localhost:5173 and connect a number in Settings,\n' +
+        'or pass --phone-number-id explicitly.',
+    );
   } finally {
     await prisma.$disconnect();
   }
@@ -202,7 +227,7 @@ async function signAndSend(payload: object, secret: string): Promise<{ status: n
 
 async function main(): Promise<void> {
   if (!WEBHOOK_SECRET) {
-    throw new Error('META_WEBHOOK_SECRET missing — set in apps/api/.env');
+    throw new Error('META_WEBHOOK_SECRET missing — set it in the root .env');
   }
 
   const args = parseArgs(process.argv.slice(2));

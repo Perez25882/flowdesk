@@ -1,11 +1,45 @@
 import { useState } from 'react';
-import { CreditCard, Check, Trash2, Image } from 'lucide-react';
-import { usePayments, useVerifyPayment, useDeletePayment, useRevenueStats } from '@/hooks/usePayments';
+import { Check, CreditCard, ImageIcon, Trash2 } from 'lucide-react';
+import {
+  usePayments,
+  useVerifyPayment,
+  useDeletePayment,
+  useRevenueStats,
+} from '@/hooks/usePayments';
 import EmptyState from '@/components/shared/EmptyState';
+import PageHeader from '@/components/shared/PageHeader';
+import { Metric, MetricStrip } from '@/components/shared/MetricStrip';
+import { Panel, Row, RowList } from '@/components/ui/Panel';
+import { SkeletonRows } from '@/components/ui/Skeleton';
+import { Tabs, type TabOption } from '@/components/ui/Tabs';
+import { Badge } from '@/components/ui/Badge';
+import { useTabParam } from '@/hooks/useTabParam';
 import { formatCurrency } from '@/lib/utils';
 
+type PaymentTab = 'all' | 'review';
+const PAYMENT_TABS = ['all', 'review'] as const;
+
+const METHOD_LABEL: Record<string, string> = {
+  MOMO_MTN: 'MTN MoMo',
+  MOMO_VODAFONE: 'Telecel Cash',
+  MOMO_AIRTELTIGO: 'AirtelTigo Money',
+  CASH: 'Cash',
+  BANK_TRANSFER: 'Bank transfer',
+  OTHER: 'Other',
+};
+
+/**
+ * The money.
+ *
+ * Deleting a payment used to be a single unlabelled red icon button sitting
+ * beside the verify button, with no confirmation — one mis-tap on a phone and
+ * a customer's record silently loses a payment. It now confirms first, and
+ * both actions state what they do.
+ */
 export default function PaymentsPage(): React.JSX.Element {
-  const [tab, setTab] = useState<'all' | 'review'>('all');
+  const [tab, setTab] = useTabParam<PaymentTab>('view', PAYMENT_TABS, 'all');
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
   const { data: allPayments, isLoading: allLoading } = usePayments();
   const { data: reviewPayments, isLoading: reviewLoading } = usePayments(false, true);
   const { data: stats } = useRevenueStats();
@@ -15,72 +49,138 @@ export default function PaymentsPage(): React.JSX.Element {
   const payments = tab === 'review' ? reviewPayments : allPayments;
   const isLoading = tab === 'review' ? reviewLoading : allLoading;
 
+  const tabOptions: readonly TabOption<PaymentTab>[] = [
+    { value: 'all', label: 'All payments' },
+    { value: 'review', label: 'Needs checking', count: reviewPayments?.length ?? 0 },
+  ];
+
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Payments</h1>
+    <div className="flex flex-col gap-5">
+      <PageHeader
+        title="Payments"
+        description="What came in, and what needs checking."
+      />
 
       {stats && (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">Today</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--color-text-primary)]">{formatCurrency(stats.today)}</p>
-          </div>
-          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">This Week</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--color-text-primary)]">{formatCurrency(stats.thisWeek)}</p>
-          </div>
-          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">This Month</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--color-text-primary)]">{formatCurrency(stats.thisMonth)}</p>
-          </div>
-          <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-center">
-            <p className="text-xs text-[var(--color-text-muted)]">Total</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--color-text-primary)]">{formatCurrency(stats.totalRevenue)}</p>
-          </div>
-        </div>
+        <MetricStrip>
+          <Metric label="Today" value={formatCurrency(stats.today)} emphasis />
+          <Metric label="This week" value={formatCurrency(stats.thisWeek)} />
+          <Metric label="This month" value={formatCurrency(stats.thisMonth)} />
+          <Metric label="All time" value={formatCurrency(stats.totalRevenue)} />
+        </MetricStrip>
       )}
 
-      <div className="flex gap-2">
-        <button onClick={() => setTab('all')} className={`rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium ${tab === 'all' ? 'bg-[var(--color-primary)] text-white' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)]'}`}>All Payments</button>
-        <button onClick={() => setTab('review')} className={`rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium ${tab === 'review' ? 'bg-[var(--color-primary)] text-white' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)]'}`}>
-          Screenshot Review {reviewPayments && reviewPayments.length > 0 ? `(${reviewPayments.length})` : ''}
-        </button>
+      <div>
+        <Tabs label="Filter payments" options={tabOptions} value={tab} onChange={setTab} />
+
+        <Panel className="mt-4">
+          {isLoading && <SkeletonRows count={6} />}
+
+          {!isLoading && (!payments || payments.length === 0) && (
+            <EmptyState
+              icon={CreditCard}
+              title={tab === 'review' ? 'Nothing to check' : 'No payments yet'}
+              description={
+                tab === 'review'
+                  ? 'Everything is matched and verified.'
+                  : 'Payments appear as you record them against orders.'
+              }
+            />
+          )}
+
+          {!isLoading && payments && payments.length > 0 && (
+            <RowList>
+              {payments.map((payment) => {
+                const isConfirming = confirmingId === payment.id;
+
+                return (
+                  <Row key={payment.id} className="flex-wrap gap-y-2">
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-text-primary">
+                          {payment.customer.name ?? payment.customer.waNumber}
+                        </span>
+                        {payment.verified ? (
+                          <Badge tone="success">Verified</Badge>
+                        ) : (
+                          <Badge tone="warning">Unverified</Badge>
+                        )}
+                        {payment.screenshotUrl && (
+                          <span
+                            className="flex items-center text-text-muted"
+                            title="Customer sent a screenshot"
+                          >
+                            <ImageIcon className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            <span className="sr-only">Has a screenshot attached</span>
+                          </span>
+                        )}
+                      </span>
+                      <span className="truncate text-xs text-text-muted">
+                        {METHOD_LABEL[payment.method] ?? payment.method}
+                        {payment.reference && ` · ${payment.reference}`}
+                      </span>
+                    </span>
+
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span className="fd-figure text-sm font-semibold text-text-primary">
+                        {formatCurrency(payment.amount)}
+                      </span>
+
+                      {isConfirming ? (
+                        // Inline confirmation rather than a modal: the row is
+                        // already the subject, so a dialog would only restate it.
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-xs text-text-secondary">Delete this?</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              deletePayment.mutate(payment.id);
+                              setConfirmingId(null);
+                            }}
+                            className="min-h-[36px] rounded-sm bg-danger px-2.5 text-xs font-bold text-white transition-transform duration-instant ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingId(null)}
+                            className="min-h-[36px] rounded-sm px-2.5 text-xs font-medium text-text-secondary transition-colors duration-fast ease-out hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          >
+                            Keep
+                          </button>
+                        </span>
+                      ) : (
+                        <>
+                          {!payment.verified && (
+                            <button
+                              type="button"
+                              onClick={() => verify.mutate(payment.id)}
+                              aria-label={`Mark ${formatCurrency(payment.amount)} from ${payment.customer.name ?? payment.customer.waNumber} as verified`}
+                              className="flex h-11 items-center gap-1.5 rounded-md border border-success-border bg-success-muted px-2.5 text-xs font-bold text-success transition-transform duration-instant ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success sm:h-8 sm:px-2"
+                            >
+                              <Check className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden="true" />
+                              Verify
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingId(payment.id)}
+                            aria-label={`Delete the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`}
+                            className="flex h-11 w-11 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-8 sm:w-8"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  </Row>
+                );
+              })}
+            </RowList>
+          )}
+        </Panel>
       </div>
-
-      {isLoading && <div className="h-32 animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />}
-      {!isLoading && (!payments || payments.length === 0) && (
-        <EmptyState icon={CreditCard} title={tab === 'review' ? 'Nothing to review' : 'No payments yet'} description={tab === 'review' ? 'All payments have been verified.' : 'Payments appear when you log them from an order or customer record.'} />
-      )}
-
-      {!isLoading && payments && payments.length > 0 && (
-        <div className="space-y-2">
-          {payments.map((payment) => (
-            <div key={payment.id} className="flex items-center justify-between rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-[var(--color-text-primary)]">
-                    {payment.customer.name ?? payment.customer.waNumber}
-                  </span>
-                  {payment.verified && <span className="rounded-[var(--radius-sm)] bg-[var(--color-success-muted)] px-1.5 py-0.5 text-[10px] text-[var(--color-success)]">Verified</span>}
-                  {payment.screenshotUrl && <Image className="h-3.5 w-3.5 text-[var(--color-text-muted)]" />}
-                </div>
-                <p className="text-xs text-[var(--color-text-muted)]">{payment.method} {payment.reference && `(${payment.reference})`}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-sm font-medium text-[var(--color-text-primary)]">{formatCurrency(payment.amount)}</span>
-                {!payment.verified && (
-                  <button onClick={() => verify.mutate(payment.id)} className="rounded-[var(--radius-sm)] bg-[var(--color-success-muted)] p-1.5 hover:bg-[var(--color-success)]/20">
-                    <Check className="h-4 w-4 text-[var(--color-success)]" />
-                  </button>
-                )}
-                <button onClick={() => deletePayment.mutate(payment.id)} className="rounded-[var(--radius-sm)] bg-[var(--color-danger-muted)] p-1.5 hover:bg-[var(--color-danger)]/20">
-                  <Trash2 className="h-4 w-4 text-[var(--color-danger)]" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

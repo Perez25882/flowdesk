@@ -3,9 +3,11 @@ import { MessageType } from '../../types/prisma-enums.js';
 import { env } from '../../config/env.js';
 import type {
   MetaContact,
+  MetaEchoMessage,
   MetaMedia,
   MetaMessage,
   MetaWebhookPayload,
+  ParsedEchoMessage,
   ParsedIncomingMessage,
   WebhookVerificationParams,
 } from './webhook.types.js';
@@ -27,6 +29,12 @@ function parseSignature(signature: string): Buffer | null {
 }
 
 export function validateWebhookSignature(rawBody: Buffer, signature: string): boolean {
+  // Without a shared secret the caller cannot be authenticated. Fail closed —
+  // an unverified webhook must never reach the processing pipeline.
+  if (!env.META_WEBHOOK_SECRET) {
+    return false;
+  }
+
   const receivedDigest = parseSignature(signature);
 
   if (!receivedDigest) {
@@ -199,12 +207,83 @@ export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncoming
   );
 }
 
+/**
+ * Extracts messages the owner sent from the WhatsApp Business app.
+ *
+ * Coexistence numbers mirror those sends back to us on `smb_message_echoes`.
+ * Without this the dashboard would show the conversation as unanswered and the
+ * assistant would reply on top of a human who had already handled it.
+ */
+export function parseEchoPayload(payload: MetaWebhookPayload): ParsedEchoMessage[] {
+  return payload.entry.flatMap((entry) =>
+    entry.changes.flatMap((change) => {
+      if (change.field !== 'smb_message_echoes' || !change.value.message_echoes) {
+        return [];
+      }
+
+      return change.value.message_echoes.flatMap((echo: MetaEchoMessage) => {
+        // An echo with no recipient cannot be attributed to a conversation.
+        if (!echo.to) {
+          return [];
+        }
+
+        return [
+          {
+            businessPhoneNumberId: change.value.metadata.phone_number_id,
+            displayPhoneNumber: change.value.metadata.display_phone_number,
+            waMessageId: echo.id,
+            to: echo.to,
+            timestamp: new Date(Number(echo.timestamp) * 1000),
+            type: extractMessageType(echo),
+            body: extractBody(echo),
+            rawPayload: echo,
+          },
+        ];
+      });
+    }),
+  );
+}
+
+/**
+ * Fields present in a delivery that nothing here consumes yet.
+ *
+ * Meta silently keeps sending a subscribed field forever, so an unhandled one
+ * is invisible without this: the payload is dropped and no one finds out until
+ * a feature that depends on it is reported broken. Logging the field names (and
+ * the shape of their value, never the contents) is how the real schema for
+ * `history` and `smb_app_state_sync` gets captured before writing a parser
+ * against a guessed structure.
+ */
+const HANDLED_FIELDS = new Set(['messages', 'smb_message_echoes']);
+
+export function describeUnhandledFields(
+  payload: MetaWebhookPayload,
+): Array<{ field: string; valueKeys: string[] }> {
+  return payload.entry.flatMap((entry) =>
+    entry.changes
+      .filter((change) => !HANDLED_FIELDS.has(change.field))
+      .map((change) => ({
+        field: change.field,
+        valueKeys: Object.keys(change.value ?? {}),
+      })),
+  );
+}
+
 export function handleVerification(params: WebhookVerificationParams): string | null {
   if (params.mode !== 'subscribe') {
     return null;
   }
 
-  if (params.token !== env.META_VERIFY_TOKEN) {
+  // Fail closed when unconfigured, otherwise an absent token on both sides
+  // would compare equal and hand out a verified webhook subscription.
+  if (!env.META_VERIFY_TOKEN || !params.token) {
+    return null;
+  }
+
+  const expected = Buffer.from(env.META_VERIFY_TOKEN);
+  const received = Buffer.from(params.token);
+
+  if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
     return null;
   }
 

@@ -1,30 +1,70 @@
 import { useMemo, useState } from 'react';
-import { MessageSquare, AlertTriangle, CheckCircle2, Search } from 'lucide-react';
+import { CheckCircle2, MessageSquare } from 'lucide-react';
 import { useMessages, useCorrectMessageIntent } from '@/hooks/useMessages';
 import EmptyState from '@/components/shared/EmptyState';
-import { timeAgo } from '@/lib/utils';
+import PageHeader from '@/components/shared/PageHeader';
+import SearchInput from '@/components/ui/SearchInput';
+import { Panel } from '@/components/ui/Panel';
+import { Tabs, type TabOption } from '@/components/ui/Tabs';
+import { SkeletonRows } from '@/components/ui/Skeleton';
+import { Badge, type BadgeTone } from '@/components/ui/Badge';
+import { useTabParam } from '@/hooks/useTabParam';
+import { timeAgo, cn } from '@/lib/utils';
+
+type MessageTab = 'all' | 'review';
+const MESSAGE_TABS = ['all', 'review'] as const;
 
 const INTENT_OPTIONS: { value: string; label: string }[] = [
-  { value: 'ORDER', label: 'Order' },
-  { value: 'INQUIRY', label: 'Inquiry' },
-  { value: 'PAYMENT', label: 'Payment' },
-  { value: 'COMPLAINT', label: 'Complaint' },
-  { value: 'CANCEL', label: 'Cancel' },
-  { value: 'GREETING', label: 'Greeting' },
+  { value: 'ORDER', label: 'An order' },
+  { value: 'INQUIRY', label: 'A question' },
+  { value: 'PAYMENT', label: 'A payment' },
+  { value: 'COMPLAINT', label: 'A complaint' },
+  { value: 'CANCEL', label: 'A cancellation' },
+  { value: 'GREETING', label: 'A greeting' },
   { value: 'THANKS', label: 'Thanks' },
-  { value: 'OTHER', label: 'Other' },
-  { value: 'UNCLASSIFIED', label: 'Unclassified' },
+  { value: 'OTHER', label: 'Something else' },
+  { value: 'UNCLASSIFIED', label: 'Cannot tell' },
 ];
 
-const intentColor: Record<string, string> = {
-  ORDER: 'text-[var(--color-success)]',
-  PAYMENT: 'text-[var(--color-warning)]',
-  COMPLAINT: 'text-[var(--color-danger)]',
-  UNCLASSIFIED: 'text-[var(--color-text-muted)]',
+const INTENT_TONE: Record<string, BadgeTone> = {
+  ORDER: 'success',
+  PAYMENT: 'info',
+  COMPLAINT: 'danger',
+  CANCEL: 'danger',
+  INQUIRY: 'neutral',
+  GREETING: 'neutral',
+  THANKS: 'neutral',
+  OTHER: 'neutral',
+  UNCLASSIFIED: 'warning',
 };
 
+const INTENT_LABEL: Record<string, string> = {
+  ORDER: 'Order',
+  INQUIRY: 'Question',
+  PAYMENT: 'Payment',
+  COMPLAINT: 'Complaint',
+  CANCEL: 'Cancellation',
+  GREETING: 'Greeting',
+  THANKS: 'Thanks',
+  OTHER: 'Other',
+  UNCLASSIFIED: 'Unclear',
+};
+
+/**
+ * The review queue.
+ *
+ * This screen exists because Flowdesk sometimes cannot tell what a message
+ * meant, and the correction the owner makes here is training data. The
+ * previous version presented that as a bare dropdown labelled "Correct intent"
+ * listing nine engineering enum names.
+ *
+ * Now the question is asked in words a shop owner uses — "What was this
+ * message actually about?" — and the options are phrases, not enum labels. The
+ * confidence score is spelled out too, since "62% conf" means nothing to
+ * someone who has never seen a classifier.
+ */
 export default function MessagesPage(): React.JSX.Element {
-  const [tab, setTab] = useState<'all' | 'review'>('all');
+  const [tab, setTab] = useTabParam<MessageTab>('view', MESSAGE_TABS, 'all');
   const [search, setSearch] = useState('');
   const { data: allMessages, isLoading: allLoading } = useMessages();
   const { data: reviewMessages, isLoading: reviewLoading } = useMessages(true);
@@ -45,132 +85,156 @@ export default function MessagesPage(): React.JSX.Element {
     });
   }, [messages, search]);
 
+  const tabOptions: readonly TabOption<MessageTab>[] = [
+    { value: 'all', label: 'All messages' },
+    { value: 'review', label: 'Needs you', count: reviewMessages?.length ?? 0 },
+  ];
+
   return (
-    <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Messages</h1>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setTab('all')}
-          className={`rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium transition-colors ${
-            tab === 'all'
-              ? 'bg-[var(--color-primary)] text-white'
-              : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-          }`}
-        >
-          All
-      </button>
-        <button
-          onClick={() => setTab('review')}
-          className={`rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium transition-colors ${
-            tab === 'review'
-              ? 'bg-[var(--color-primary)] text-white'
-              : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-          }`}
-        >
-          Needs Review {reviewMessages && reviewMessages.length > 0 ? `(${reviewMessages.length})` : ''}
-      </button>
-
-        <div className="relative ml-auto max-w-xs flex-1">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-muted)]" />
-          <input
+    <div className="flex flex-col gap-5">
+      <PageHeader
+        title="Messages"
+        description="What came in, and what needs a decision."
+        actions={
+          <SearchInput
+            label="Search messages by customer, number or text"
+            placeholder="Search messages"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name, number, or text..."
-            className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] pl-8 pr-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
+            onChange={setSearch}
+            className="w-full sm:w-64"
           />
+        }
+      />
+
+      <div>
+        <Tabs label="Filter messages" options={tabOptions} value={tab} onChange={setTab} />
+
+        <div className="mt-4">
+          {isLoading && (
+            <Panel>
+              <SkeletonRows count={5} />
+            </Panel>
+          )}
+
+          {!isLoading && filtered.length === 0 && (
+            <Panel>
+              <EmptyState
+                icon={MessageSquare}
+                title={search ? 'No matches' : tab === 'review' ? 'Nothing needs you' : 'No messages yet'}
+                description={
+                  search
+                    ? 'Try a name, a number, or a word from the message.'
+                    : tab === 'review'
+                      ? 'Flowdesk understood every message.'
+                      : 'Messages appear as customers write to you.'
+                }
+              />
+            </Panel>
+          )}
+
+          {!isLoading && filtered.length > 0 && (
+            <ul className="space-y-2.5">
+              {filtered.map((msg) => {
+                const isPending = correctIntent.isPending && correctIntent.variables?.id === msg.id;
+                const justSaved =
+                  correctIntent.isSuccess && correctIntent.variables?.id === msg.id;
+                const failed = correctIntent.isError && correctIntent.variables?.id === msg.id;
+                const customerLabel =
+                  msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown number';
+
+                return (
+                  <li
+                    key={msg.id}
+                    className={cn(
+                      'relative overflow-hidden rounded-lg border border-border bg-surface',
+                      // A rule on the leading edge, so a flagged message is
+                      // findable while scanning without tinting the whole card.
+                      msg.requiresReview && 'border-warning-border',
+                    )}
+                  >
+                    {msg.requiresReview && (
+                      <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-warning" />
+                    )}
+
+                    <div className="px-4 py-3">
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-text-primary">
+                            {customerLabel}
+                          </span>
+                          <Badge tone={INTENT_TONE[msg.intent] ?? 'neutral'}>
+                            {INTENT_LABEL[msg.intent] ?? msg.intent}
+                          </Badge>
+                          {typeof msg.intentConfidence === 'number' && (
+                            <span className="text-2xs text-text-muted">
+                              {Math.round(msg.intentConfidence * 100)}% sure
+                            </span>
+                          )}
+                        </span>
+
+                        <span className="text-xs text-text-muted">{timeAgo(msg.createdAt)}</span>
+                      </div>
+
+                      <p className="mt-1.5 max-w-prose text-sm leading-relaxed text-text-secondary">
+                        {msg.body ?? 'This message had no text in it.'}
+                      </p>
+
+                      {msg.requiresReview && (
+                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3">
+                          <label
+                            htmlFor={`intent-${msg.id}`}
+                            className="text-xs font-medium text-text-primary"
+                          >
+                            What was this actually about?
+                          </label>
+
+                          <select
+                            id={`intent-${msg.id}`}
+                            disabled={isPending}
+                            defaultValue=""
+                            onChange={(e) => {
+                              const intent = e.target.value;
+                              if (!intent) return;
+                              correctIntent.mutate({ id: msg.id, intent });
+                              e.target.value = '';
+                            }}
+                            className="fd-input fd-select fd-input-compact h-9 w-auto py-0"
+                          >
+                            <option value="" disabled>
+                              Choose
+                            </option>
+                            {INTENT_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          {justSaved && (
+                            <span
+                              role="status"
+                              className="inline-flex items-center gap-1 text-xs font-medium text-success"
+                            >
+                              <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
+                              Saved
+                            </span>
+                          )}
+
+                          {failed && (
+                            <span role="alert" className="text-xs font-medium text-danger">
+                              {(correctIntent.error as Error).message}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
-
-      {isLoading && (
-        <div className="h-32 animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />
-      )}
-
-      {!isLoading && filtered.length === 0 && (
-        <EmptyState
-          icon={MessageSquare}
-          title={search ? 'No matches' : tab === 'review' ? 'No messages to review' : 'No messages yet'}
-          description={
-            search
-              ? 'Try a different search term.'
-              : tab === 'review'
-              ? 'All messages have been classified.'
-              : 'Messages appear when customers contact you on WhatsApp.'
-          }
-        />
-      )}
-
-      {!isLoading && filtered.length > 0 && (
-        <div className="space-y-2">
-          {filtered.map((msg) => {
-            const isPending = correctIntent.isPending && correctIntent.variables?.id === msg.id;
-            const customerLabel = msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown';
-            return (
-              <div
-                key={msg.id}
-                className={`rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 ${
-                  msg.requiresReview ? 'border-l-4 border-l-[var(--color-warning)]' : ''
-                }`}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-[var(--color-text-primary)]">
-                      {customerLabel}
-                  </span>
-                    <span className={`text-xs font-semibold uppercase ${intentColor[msg.intent] ?? 'text-[var(--color-text-muted)]'}`}>
-                      {msg.intent}
-                  </span>
-                    {msg.requiresReview && <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-warning)]" />}
-                    {typeof msg.intentConfidence === 'number' && (
-                      <span className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]">
-                        {Math.round(msg.intentConfidence * 100)}% conf
-                    </span>
-                    )}
-                </div>
-                  <span className="text-xs text-[var(--color-text-muted)]">{timeAgo(msg.createdAt)}</span>
-              </div>
-                <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{msg.body ?? '(no text)'}</p>
-
-                {msg.requiresReview && (
-                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-warning-muted)] px-3 py-2">
-                    <span className="text-xs font-medium text-[var(--color-warning)]">Correct intent</span>
-                    <select
-                      disabled={isPending}
-                      defaultValue=""
-                      onChange={(e) => {
-                        const intent = e.target.value;
-                        if (!intent) return;
-                        correctIntent.mutate({ id: msg.id, intent });
-                        e.target.value = '';
-                      }}
-                      className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
-                    >
-                      <option value="" disabled>
-                        Pick correct intent
-                    </option>
-                      {INTENT_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                      </option>
-                      ))}
-                  </select>
-                    {correctIntent.isSuccess && correctIntent.variables?.id === msg.id && (
-                      <span className="inline-flex items-center gap-1 text-xs text-[var(--color-success)]">
-                        <CheckCircle2 className="h-3.5 w-3.5" /> Updated
-                    </span>
-                    )}
-                    {correctIntent.isError && correctIntent.variables?.id === msg.id && (
-                      <span className="text-xs text-[var(--color-danger)]">
-                        {(correctIntent.error as Error).message}
-                    </span>
-                    )}
-                </div>
-                )}
-            </div>
-            );
-          })}
-      </div>
-      )}
-  </div>
   );
 }

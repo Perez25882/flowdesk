@@ -2,60 +2,273 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Flowdesk design system.
+ *
+ * A tool a shop owner opens at 6am on a mid-range Android, in market daylight,
+ * to find out what their business did overnight. It holds their money. Every
+ * decision below answers to that.
+ *
+ * Structure:
+ *   1. Palette   — raw hues, in ramps. Never referenced by components.
+ *   2. Semantic  — what the hues mean. This is what components use.
+ *   3. Type      — one family, a real weight ladder, fluid at display sizes.
+ *   4. Space     — dense, because this is an operations screen, not a brochure.
+ *   5. Motion    — short, eased-out, and mostly absent.
+ */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   1. PALETTE
+   Ramps, not one-off hexes. A ramp is what lets a colour appear as a tint
+   behind text, as a rule, and as the text itself, without three unrelated
+   values drifting apart.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 :root {
-  /* ── Colors ── */
-  --color-primary: #3d6b52;
-  --color-primary-light: #4d8a68;
-  --color-primary-muted: rgba(61, 107, 82, 0.12);
-  --color-primary-border: rgba(61, 107, 82, 0.3);
-  --color-bg: #0f0f0f;
-  --color-surface: #161616;
-  --color-surface-elevated: #1e1e1e;
-  --color-surface-hover: #242424;
-  --color-border: #2a2a2a;
-  --color-border-subtle: #1f1f1f;
-  --color-text-primary: #f0f0f0;
-  --color-text-secondary: #888;
-  --color-text-muted: #555;
-  --color-success: #22c55e;
-  --color-success-muted: rgba(34, 197, 94, 0.12);
-  --color-warning: #f59e0b;
-  --color-warning-muted: rgba(245, 158, 11, 0.12);
-  --color-danger: #ef4444;
-  --color-danger-muted: rgba(239, 68, 68, 0.12);
-  --color-info: #3b82f6;
+  /* ── Green. The brand, and money. ──────────────────────────────────── */
+  --green-50: #edf5f1;
+  --green-100: #d3e7dd;
+  --green-200: #a9cfbd;
+  --green-300: #71b097;
+  --green-400: #3d8f72;
+  --green-500: #166f4f;
+  --green-600: #125a41;
+  --green-700: #0e4733;
+  --green-800: #0a3526;
+  --green-900: #06231a;
 
-  /* ── Typography ── */
-  --font-sans: 'DM Sans', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  /* ── Clay. The second voice. ────────────────────────────────────────
+     Green alone gives a one-note palette, which is most of why the old
+     interface read as unfinished — every accent was the same accent. Clay
+     is warm, sits opposite green on the wheel without fighting it, and is
+     at home in a West African commercial context. It carries emphasis on
+     the marketing page and marks a customer worth noticing in the app.
+     It is never a status: statuses are the four hues below. */
+  --clay-50: #fbf0eb;
+  --clay-100: #f4dbcf;
+  --clay-200: #e7b69f;
+  --clay-300: #d68f6e;
+  --clay-400: #c06e48;
+  /* 500 is darkened a step from the natural midpoint of this ramp. At the
+     lighter value (#a85c3c) clay text on clay-50 measured 4.40:1, just under
+     AA. This clears it at 4.74 and still takes white at 5.30 as a fill, so
+     one value serves both jobs. */
+  --clay-500: #a3572f;
+  --clay-600: #8c4a2f;
+  --clay-700: #6e3924;
+  --clay-800: #52291a;
+  --clay-900: #351a10;
 
-  /* ── Spacing ── */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-10: 40px;
-  --space-12: 48px;
-  --space-16: 64px;
-  --space-20: 80px;
-  --space-24: 96px;
-  --space-32: 128px;
-  --space-40: 160px;
+  /* ── Neutrals. One family, faintly cool, faintly green. ─────────────
+     Cool reads precise; warm reads homely. This is a ledger. The cast is
+     shared with the brand so greys never look dirty beside it. */
+  --neutral-0: #ffffff;
+  --neutral-25: #fafbfa;
+  --neutral-50: #f4f6f5;
+  --neutral-100: #ebeeec;
+  --neutral-200: #dde2df;
+  --neutral-300: #c4ccc7;
+  --neutral-400: #9aa5a0;
+  --neutral-500: #74807a;
+  --neutral-600: #58635e;
+  --neutral-700: #414b46;
+  --neutral-800: #28312d;
+  --neutral-900: #0f1714;
 
-  /* ── Border radius ── */
-  --radius-sm: 4px;
+  /* ── Status hues. Four, each with one job, each distinguishable from
+     the others at 12px on a washed-out screen. ────────────────────── */
+  --amber-50: #fdf4e3;
+  --amber-100: #f7e2b8;
+  --amber-500: #8a5a0b;
+  --amber-200: #eccd8a;
+
+  --crimson-50: #fdecea;
+  --crimson-100: #f7c9c4;
+  --crimson-200: #efa79f;
+  --crimson-500: #a3231b;
+
+  --indigo-50: #ecf0f9;
+  --indigo-100: #c9d5ee;
+  --indigo-200: #a3b7e0;
+  --indigo-500: #2b4c7e;
+
+  --plum-50: #f3edf6;
+  --plum-100: #ddcbe6;
+  --plum-200: #c4a8d2;
+  --plum-500: #5e3a73;
+
+  /* ═════════════════════════════════════════════════════════════════════
+     2. SEMANTIC
+     What components actually read. Nothing below this line is a raw hue.
+     ═════════════════════════════════════════════════════════════════════ */
+
+  --color-primary: var(--green-500);
+  --color-primary-hover: var(--green-600);
+  --color-primary-active: var(--green-700);
+  --color-primary-light: var(--green-50);
+  --color-primary-muted: rgba(22, 111, 79, 0.07);
+  --color-primary-border: var(--green-200);
+  --color-primary-contrast: var(--neutral-0);
+
+  --color-accent: var(--clay-500);
+  --color-accent-hover: var(--clay-600);
+  --color-accent-light: var(--clay-50);
+  --color-accent-border: var(--clay-200);
+  --color-accent-contrast: var(--neutral-0);
+
+  /* Surfaces, lightest to deepest. `ink` is a full inversion, used once on
+     the marketing page. A single deliberate dark band gives the page a
+     spine; three of them would look like an accident. */
+  --color-bg: var(--neutral-50);
+  --color-surface: var(--neutral-0);
+  --color-surface-elevated: var(--neutral-0);
+  --color-surface-hover: var(--neutral-50);
+  --color-surface-sunken: var(--neutral-100);
+  --color-surface-ink: var(--neutral-900);
+  --color-surface-ink-raised: #16211d;
+
+  --color-border: var(--neutral-200);
+  --color-border-subtle: var(--neutral-100);
+  --color-border-strong: var(--neutral-300);
+  --color-border-ink: rgba(255, 255, 255, 0.12);
+
+  /* Foreground steps. `muted` is for de-emphasised text only, and still
+     clears 3:1 against every surface it is allowed on. */
+  --color-text-primary: var(--neutral-900);
+  --color-text-secondary: var(--neutral-600);
+  --color-text-muted: var(--neutral-500);
+  --color-text-inverse: var(--neutral-0);
+  --color-text-on-ink: #e8ede9;
+  --color-text-on-ink-muted: #93a09a;
+
+  --color-success: #0e6b48;
+  --color-success-muted: var(--green-50);
+  --color-success-border: var(--green-200);
+  --color-warning: var(--amber-500);
+  --color-warning-muted: var(--amber-50);
+  --color-warning-border: var(--amber-200);
+  --color-danger: var(--crimson-500);
+  --color-danger-muted: var(--crimson-50);
+  --color-danger-border: var(--crimson-200);
+  --color-info: var(--indigo-500);
+  --color-info-muted: var(--indigo-50);
+  --color-info-border: var(--indigo-200);
+
+  /* Order lifecycle. Distinct hues so a board column is identifiable at a
+     glance; always paired with a text label, never used alone. */
+  --color-status-pending: var(--amber-500);
+  --color-status-confirmed: var(--indigo-500);
+  --color-status-processing: var(--plum-500);
+  --color-status-fulfilled: var(--color-success);
+  --color-status-cancelled: var(--neutral-500);
+  --color-processing-muted: var(--plum-50);
+  --color-processing-border: var(--plum-200);
+
+  /* ═════════════════════════════════════════════════════════════════════
+     3. TYPE
+     One family. Plus Jakarta Sans is a geometric grotesque drawn for
+     interface work: open apertures, unambiguous 1/l/I, and a weight range
+     wide enough to build a hierarchy from weight alone. Using one family
+     rather than three is the more professional choice and one fewer font
+     file on a metered connection.
+
+     Figures are the exception. Anything a shop owner reads aloud, compares
+     down a column, or copies goes in the mono face.
+     ═════════════════════════════════════════════════════════════════════ */
+
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Interface sizes: tight steps, because a dense screen needs many levels
+     inside a narrow band. */
+  --text-2xs: 0.6875rem; /* 11 — column heads */
+  --text-xs: 0.75rem; /* 12 — meta, timestamps */
+  --text-sm: 0.8125rem; /* 13 — dense rows */
+  --text-base: 0.9375rem; /* 15 — body */
+  --text-md: 1rem; /* 16 — inputs, emphasis */
+  --text-lg: 1.125rem; /* 18 — panel titles */
+  --text-xl: 1.3125rem; /* 21 — page titles */
+  --text-2xl: 1.5rem; /* 24 */
+  --text-3xl: 1.875rem; /* 30 */
+
+  /* Display sizes: fluid, so a headline is never set at desktop scale on a
+     360px phone and never has to be hand-tuned per breakpoint. The middle
+     term is the slope; the clamp ends are the floor and ceiling. */
+  --text-display-sm: clamp(1.625rem, 1.24rem + 1.7vw, 2.125rem);
+  --text-display-md: clamp(2rem, 1.35rem + 2.9vw, 3rem);
+  --text-display-lg: clamp(2.375rem, 1.42rem + 4.2vw, 3.75rem);
+
+  --leading-none: 1;
+  --leading-tight: 1.14;
+  --leading-snug: 1.32;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.68;
+
+  /* Larger text needs tighter tracking to hold together; small caps need
+     it opened up to stay readable. */
+  --tracking-tighter: -0.028em;
+  --tracking-tight: -0.016em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.055em;
+
+  /* ═════════════════════════════════════════════════════════════════════
+     4. SPACE & SHAPE
+     ═════════════════════════════════════════════════════════════════════ */
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
 
-  /* ── Transitions ── */
-  --transition-fast: 120ms ease;
-  --transition-base: 200ms ease;
+  /* Elevation is tinted with the ink colour. A neutral-black shadow over a
+     tinted ground reads as grey haze. Single light source, from above. */
+  --shadow-xs: 0 1px 1px rgba(15, 23, 20, 0.04);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 20, 0.06), 0 1px 1px rgba(15, 23, 20, 0.03);
+  --shadow-md: 0 4px 10px rgba(15, 23, 20, 0.06), 0 1px 2px rgba(15, 23, 20, 0.04);
+  --shadow-lg: 0 14px 30px rgba(15, 23, 20, 0.09), 0 3px 8px rgba(15, 23, 20, 0.04);
+  --shadow-xl: 0 28px 56px rgba(15, 23, 20, 0.13), 0 8px 16px rgba(15, 23, 20, 0.05);
+
+  /* ═════════════════════════════════════════════════════════════════════
+     5. MOTION
+     The browser's built-in curves are too weak to read as deliberate.
+     `ease-in` is deliberately absent: it holds still at the exact moment
+     the user is watching hardest.
+     ═════════════════════════════════════════════════════════════════════ */
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --duration-instant: 100ms;
+  --duration-fast: 140ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+
+  --transition-fast: 140ms var(--ease-out);
+  --transition-base: 200ms var(--ease-out);
+  --transition-slow: 300ms var(--ease-out);
+
+  --focus-ring: 0 0 0 3px rgba(22, 111, 79, 0.26);
+
+  /* A named scale, so nobody writes z-index: 9999 again. */
+  --z-sticky: 20;
+  --z-header: 30;
+  --z-bottom-nav: 40;
+  --z-overlay: 50;
+  --z-drawer: 60;
+  --z-dialog: 70;
+  --z-toast: 80;
 }
 
-* {
+/* ═══════════════════════════════════════════════════════════════════════
+   BASE
+   ═══════════════════════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -64,26 +277,86 @@
 html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+  /* Only a light theme exists, but saying so keeps native scrollbars,
+     dropdowns and date pickers light for a user whose OS is in dark mode. */
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 
 body {
   font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
   background-color: var(--color-bg);
   color: var(--color-text-primary);
-  line-height: 1.5;
-  min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
+  /* Slightly tightened default. Plus Jakarta Sans is drawn a touch wide;
+     this brings body copy back to a normal colour on the page. */
+  letter-spacing: -0.006em;
+}
+
+/* Hierarchy comes from size and weight, never colour, so it survives a
+   screen washed out by sunlight. `balance` stops a headline dropping one
+   orphaned word onto its own line — most visible on a phone, where every
+   heading wraps. */
+h1,
+h2,
+h3,
+h4 {
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  font-weight: 700;
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+/* Currency, quantities and references only line up with tabular figures.
+   Without this a column of prices is visibly ragged. */
+.tabular,
+td,
+th,
+input[type='number'],
+.font-mono {
+  font-variant-numeric: tabular-nums;
 }
 
 ::selection {
-  background-color: var(--color-primary-muted);
+  background-color: var(--color-primary-light);
   color: var(--color-text-primary);
 }
 
-/* ── Scrollbar ── */
+/* Every tappable control.
+   `touch-action: manipulation` drops the 300ms the browser spends deciding
+   whether a tap begins a double-tap zoom — the largest single source of
+   "this feels slow" on Android. The tap highlight is set deliberately: the
+   default translucent black block looks like a rendering fault. */
+button,
+a,
+label,
+select,
+summary,
+[role='button'],
+[role='tab'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(22, 111, 79, 0.1);
+}
+
+/* ── Scrollbars ── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -91,22 +364,253 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
+  background: var(--color-border-strong);
+  border-radius: var(--radius-full);
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
+  background-clip: content-box;
 }
 
-/* Firefox scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
+  scrollbar-color: var(--color-border-strong) transparent;
 }
 
-/* ── Focus ring ── */
+/* Keyboard focus must be unmistakable. `:focus-visible` keeps the ring off
+   mouse clicks while guaranteeing it for keyboard and assistive tech. */
 :focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Reduced does not mean none. Opacity and colour aid comprehension and are
+   kept; movement is what causes motion sickness, so only that goes. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@layer components {
+  /* Shared primitives, defined once so a button in Settings cannot drift
+     from a button in Orders. */
+
+  .fd-skip-link {
+    position: absolute;
+    left: 1rem;
+    top: 1rem;
+    z-index: var(--z-toast);
+    transform: translateY(-200%);
+    background-color: var(--color-primary);
+    color: var(--color-primary-contrast);
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    transition: transform var(--duration-base) var(--ease-out);
+  }
+
+  .fd-skip-link:focus-visible {
+    transform: translateY(0);
+  }
+
+  /* Panel — the workhorse container. A hairline and a white ground, no
+     shadow. A panel sits on the page; it does not float. Elevation is
+     reserved for drawers and dialogs, so that when something does lift it
+     means something. */
+  .fd-panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+  }
+
+  .fd-panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .fd-panel-title {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    letter-spacing: var(--tracking-tight);
+    color: var(--color-text-primary);
+  }
+
+  .fd-overlay-scroll {
+    overscroll-behavior: contain;
+  }
+
+  /* Small caps, wide tracking. Column heads and field labels only — never a
+     section heading, which is what made every panel look identical. */
+  .fd-label {
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    letter-spacing: var(--tracking-wide);
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+  }
+
+  /* Any number a person might read aloud or compare down a column. */
+  .fd-figure {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: var(--tracking-tight);
+  }
+
+  /* ── Inputs ── */
+  .fd-input {
+    width: 100%;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 0.6875rem 0.75rem;
+    font-family: inherit;
+    /* 16px minimum: anything smaller makes iOS Safari zoom the viewport on
+       focus, and the user then has to pinch back out to see the form. */
+    font-size: var(--text-md);
+    color: var(--color-text-primary);
+    transition:
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out);
+  }
+
+  .fd-input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .fd-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: var(--focus-ring);
+  }
+
+  .fd-input[aria-invalid='true'] {
+    border-color: var(--color-danger);
+  }
+
+  .fd-input[aria-invalid='true']:focus {
+    box-shadow: 0 0 0 3px rgba(163, 35, 27, 0.22);
+  }
+
+  .fd-input:disabled {
+    background-color: var(--color-surface-sunken);
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+
+  /* Dense inputs in toolbars and inline forms.
+     They must still be 16px on a phone. Anything smaller makes iOS Safari
+     zoom the viewport the moment the field is focused, and the user is then
+     left pinching back out to see the rest of the form — which is why the
+     `fd-input text-sm` combination used across the app was a bug, not a
+     style choice. Below 640px this is a no-op; above it, the field tightens. */
+  .fd-input-compact {
+    font-size: var(--text-md);
+  }
+
+  @media (min-width: 640px) {
+    .fd-input-compact {
+      font-size: var(--text-sm);
+    }
+  }
+
+  .fd-select {
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' stroke='%2358635e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
+  }
+
+  /* ── Ink section ────────────────────────────────────────────────────
+     One inverted band on the marketing page. It gives the page a spine and
+     lets the figures inside it carry real weight. Anything set on it reads
+     from the on-ink tokens, never from the light ones. */
+  .fd-ink {
+    background-color: var(--color-surface-ink);
+    color: var(--color-text-on-ink);
+  }
+
+  /* A ruled ground, the way a ledger page is printed. Costs one repeating
+     gradient and replaces the animated blobs entirely. */
+  .fd-ruled {
+    background-image:
+      linear-gradient(to right, var(--color-border-subtle) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--color-border-subtle) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+
+  .fd-ruled-ink {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+}
+
+@layer utilities {
+  /* Staggered entry for lists that mount together. Decorative: it never
+     gates interaction, and it collapses under reduced motion. */
+  .fd-stagger > * {
+    opacity: 0;
+    animation: fd-rise 320ms var(--ease-out) forwards;
+  }
+
+  .fd-stagger > *:nth-child(1) {
+    animation-delay: 0ms;
+  }
+  .fd-stagger > *:nth-child(2) {
+    animation-delay: 40ms;
+  }
+  .fd-stagger > *:nth-child(3) {
+    animation-delay: 80ms;
+  }
+  .fd-stagger > *:nth-child(4) {
+    animation-delay: 120ms;
+  }
+  .fd-stagger > *:nth-child(n + 5) {
+    animation-delay: 160ms;
+  }
+
+  @keyframes fd-rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Skeletons breathe rather than sweep. A sweeping shimmer draws the eye
+     to the one thing on screen worth ignoring. */
+  .fd-skeleton {
+    background-color: var(--color-surface-sunken);
+    border-radius: var(--radius-sm);
+    animation: fd-pulse 1.6s var(--ease-in-out) infinite;
+  }
+
+  @keyframes fd-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
 }

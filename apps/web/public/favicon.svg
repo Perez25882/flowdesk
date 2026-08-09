@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#166f4f" />
+  <!-- Three stacked rules of decreasing length: a ledger, settling. -->
+  <rect x="8" y="9" width="16" height="2.75" rx="1.375" fill="#ffffff" />
+  <rect x="8" y="15" width="11" height="2.75" rx="1.375" fill="#ffffff" fill-opacity="0.72" />
+  <rect x="8" y="21" width="6" height="2.75" rx="1.375" fill="#ffffff" fill-opacity="0.44" />
+</svg>

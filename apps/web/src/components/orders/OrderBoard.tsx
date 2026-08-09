@@ -1,17 +1,43 @@
 import { useDroppable, useDraggable, DndContext, type DragEndEvent } from '@dnd-kit/core';
 import { useMemo } from 'react';
-import { ClipboardList } from 'lucide-react';
 import type { OrderWithRelations, OrderStatus } from '@/types/order';
 import { useOrdersByStatus, useUpdateOrderStatus } from '@/hooks/useOrders';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, cn } from '@/lib/utils';
 import OrderCard from './OrderCard';
-import EmptyState from '@/components/shared/EmptyState';
-
-const COLUMNS: OrderStatus[] = ['PENDING', 'CONFIRMED', 'PROCESSING', 'FULFILLED', 'CANCELLED'];
+import { SkeletonCards } from '@/components/ui/Skeleton';
 
 /**
- * CANCELLED is a terminal state — orders there shouldn't be draggable.
- * Other OrderStatuses render the draggable wrapper.
+ * The order board.
+ *
+ * The previous version gave all five statuses identical columns of identical
+ * width, which said that a cancelled order deserves as much of the screen as
+ * an order waiting to be confirmed. It does not. Pending is the work; the rest
+ * is history.
+ *
+ * So the columns are weighted: Pending is widest and carries an accent rule,
+ * Cancelled is narrowest and visually recedes. On a 1440px screen that is the
+ * difference between five cramped 250px columns and a board you can actually
+ * read from across the shop.
+ */
+
+/**
+ * Column widths are set on the grid container, in the same order as this list.
+ * Attention, expressed as width: 1.25 / 1.1 / 1.1 / 1 / 0.8.
+ */
+const COLUMNS: {
+  status: OrderStatus;
+  label: string;
+  accent: string;
+}[] = [
+  { status: 'PENDING', label: 'Pending', accent: 'bg-status-pending' },
+  { status: 'CONFIRMED', label: 'Confirmed', accent: 'bg-status-confirmed' },
+  { status: 'PROCESSING', label: 'Packing', accent: 'bg-status-processing' },
+  { status: 'FULFILLED', label: 'Delivered', accent: 'bg-status-fulfilled' },
+  { status: 'CANCELLED', label: 'Cancelled', accent: 'bg-status-cancelled' },
+];
+
+/**
+ * CANCELLED is a terminal state — orders there should not be draggable.
  */
 function OrderCardDraggable({
   order,
@@ -28,29 +54,46 @@ function OrderCardDraggable({
     disabled: !draggable,
   });
 
-  const style = transform
-    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, opacity: isDragging ? 0.5 : 1 }
-    : { opacity: isDragging ? 0.5 : 1 };
+  // Full transform string rather than dnd-kit's shorthand, so the browser
+  // promotes it to the compositor and the card does not judder while the
+  // query cache is busy behind it.
+  const style = {
+    transform: transform
+      ? `translate3d(${transform.x}px, ${transform.y}px, 0) scale(1.02)`
+      : undefined,
+    opacity: isDragging ? 0.6 : 1,
+    zIndex: isDragging ? 1 : undefined,
+  };
 
   return (
     <div
       ref={setNodeRef}
       style={style}
       {...(draggable ? { ...listeners, ...attributes } : {})}
-      className={draggable ? 'cursor-grab active:cursor-grabbing' : ''}
+      className={cn(
+        'touch-manipulation',
+        draggable && 'cursor-grab active:cursor-grabbing',
+        // Only the drag itself is transitioned, and only while not dragging,
+        // so releasing a card settles rather than snapping.
+        !isDragging && 'transition-transform duration-fast ease-out',
+      )}
     >
       <OrderCard order={order} onClick={onClick} />
-  </div>
+    </div>
   );
 }
 
 function KanbanColumn({
   status,
+  label,
+  accent,
   onSelectOrder,
   isDropTarget,
   staffId,
 }: {
   status: OrderStatus;
+  label: string;
+  accent: string;
   onSelectOrder: (order: OrderWithRelations) => void;
   isDropTarget: boolean;
   staffId: string;
@@ -68,73 +111,78 @@ function KanbanColumn({
 
   const sortedOrders = useMemo(() => {
     if (!orders) return [];
-    return [...orders].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return [...orders].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
   }, [orders]);
 
-  const isCancelled = status === 'CANCELLED';
+  const isTerminal = status === 'CANCELLED';
 
   return (
-    <div
+    <section
       ref={isDropTarget ? setNodeRef : undefined}
-      className={`flex flex-col rounded-[var(--radius-md)] border ${
+      aria-label={`${label}, ${count} orders`}
+      className={cn(
+        'flex min-h-0 flex-col rounded-lg border transition-colors duration-fast ease-out',
         isOver
-          ? 'border-[var(--color-primary)] bg-[var(--color-primary-muted)]'
-          : isCancelled
-          ? 'border-[var(--color-border)] bg-[var(--color-surface)] opacity-90'
-          : 'border-[var(--color-border)] bg-[var(--color-surface)]'
-      } transition-colors`}
-      style={{ maxHeight: 'calc(100vh - 180px)' }}
+          ? 'border-primary bg-primary-muted'
+          : isTerminal
+            ? 'border-border-subtle bg-surface-sunken/60'
+            : 'border-border bg-surface',
+      )}
     >
-      <div className="flex items-center justify-between border-b border-[var(--color-border)] px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <span
-            className={`text-xs font-semibold uppercase tracking-wider ${
-              isCancelled ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-primary)]'
-            }`}
-          >
-            {status}
-        </span>
-          <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--color-surface-elevated)] px-1.5 text-[11px] font-medium text-[var(--color-text-secondary)]">
-            {count}
-        </span>
-      </div>
-        <span className="font-mono text-xs text-[var(--color-text-muted)]">
-          {formatCurrency(totalValue)}
-      </span>
-    </div>
+      <header className="shrink-0 border-b border-border-subtle px-3 py-2.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-2">
+            {/* A hue chip rather than coloured text: the label stays at full
+                contrast and the colour still identifies the column. */}
+            <span aria-hidden="true" className={cn('h-2 w-2 shrink-0 rounded-full', accent)} />
+            <span
+              className={cn(
+                'truncate text-sm font-semibold',
+                isTerminal ? 'text-text-muted' : 'text-text-primary',
+              )}
+            >
+              {label}
+            </span>
+            <span className="fd-figure shrink-0 text-xs text-text-muted">{count}</span>
+          </span>
+        </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto p-2">
-        {isLoading && (
-          <>
-            {[1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="h-[120px] animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]"
-              />
-            ))}
-          </>
+        {/* The column total is what makes a board a ledger. Hidden when zero,
+            because "GHS 0.00" five times across the top is just noise. */}
+        {totalValue > 0 && (
+          <span className="fd-figure mt-0.5 block text-xs text-text-secondary">
+            {formatCurrency(totalValue)}
+          </span>
         )}
+      </header>
+
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+        {isLoading && <SkeletonCards count={2} />}
 
         {error && (
-          <div className="py-4 text-center text-sm text-[var(--color-danger)]">
-            Failed to load orders
-        </div>
+          <p className="px-1 py-3 text-sm text-danger">
+            Could not load these orders. Check your connection and try again.
+          </p>
         )}
 
         {!isLoading && !error && sortedOrders.length === 0 && (
-          <EmptyState
-            icon={ClipboardList}
-            title={`No ${status.toLowerCase()} orders`}
-            description="Orders in this status will appear here."
-          />
+          <p className="px-1 py-6 text-xs text-text-muted">Nothing here.</p>
         )}
 
-        {!isLoading && !error &&
+        {!isLoading &&
+          !error &&
           sortedOrders.map((order) => (
-            <OrderCardDraggable key={order.id} order={order} onClick={onSelectOrder} draggable={!isCancelled} />
+            <OrderCardDraggable
+              key={order.id}
+              order={order}
+              onClick={onSelectOrder}
+              draggable={!isTerminal}
+            />
           ))}
-    </div>
-  </div>
+      </div>
+    </section>
   );
 }
 
@@ -155,24 +203,36 @@ export default function OrderBoard({ onSelectOrder, staffId }: OrderBoardProps):
 
     if (active.data.current?.order?.status === newStatus) return;
 
-    // Drop on CANCELLED = intentional cancel. Pass a note so the history records a reason.
-    const note = newStatus === 'CANCELLED' ? 'Cancelled via Kanban' : undefined;
+    // Drop on CANCELLED = intentional cancel. Pass a note so the history
+    // records a reason.
+    const note = newStatus === 'CANCELLED' ? 'Cancelled from the board' : undefined;
     updateStatus.mutate({ orderId, data: { status: newStatus, ...(note ? { note } : {}) } });
   };
 
   return (
     <DndContext onDragEnd={handleDragEnd}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        {COLUMNS.map((status) => (
+      <div
+        className={cn(
+          'grid min-h-0 flex-1 gap-3 md:grid-cols-2 lg:grid-cols-3',
+          // The weighting only applies once all five fit side by side. Written
+          // as a CSS class rather than measured in JS, so it responds to a
+          // resize without a listener and costs nothing at runtime.
+          'xl:[grid-template-columns:1.25fr_1.1fr_1.1fr_1fr_0.8fr]',
+        )}
+        style={{ maxHeight: 'calc(100dvh - 15rem)' }}
+      >
+        {COLUMNS.map((column) => (
           <KanbanColumn
-            key={status}
-            status={status}
+            key={column.status}
+            status={column.status}
+            label={column.label}
+            accent={column.accent}
             onSelectOrder={onSelectOrder}
-            isDropTarget={status !== 'CANCELLED'}
+            isDropTarget={column.status !== 'CANCELLED'}
             staffId={staffId}
           />
         ))}
-     </div>
-   </DndContext>
+      </div>
+    </DndContext>
   );
 }

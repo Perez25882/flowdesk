@@ -1,21 +1,19 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import {
-  Settings,
-  Bell,
-  MessageSquare,
-  Package,
-  CreditCard,
-  ShieldCheck,
-  AlertCircle,
-  MessagesSquare,
-  RotateCw,
-  Loader2,
-} from 'lucide-react';
+import { AlertCircle, RotateCw } from 'lucide-react';
 import { useBusiness, useUpdateBusiness } from '@/hooks/useBusiness';
 import { useBadges } from '@/hooks/useBadges';
 import { useCheckout, type BillablePlan } from '@/hooks/useBilling';
+import { BILLABLE_PLAN_CODES, PLANS, getPlan, limit, planHighlights } from '@/config/plans';
 import WhatsAppConnection from '@/components/settings/WhatsAppConnection';
+import PageHeader from '@/components/shared/PageHeader';
+import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
+import { Button } from '@/components/ui/Button';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { Tabs, type TabOption } from '@/components/ui/Tabs';
+import { useTabParam } from '@/hooks/useTabParam';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
+import { cn } from '@/lib/utils';
 
 interface DraftState {
   name: string;
@@ -25,157 +23,176 @@ interface DraftState {
   notifyOnPayment: boolean;
 }
 
-interface ReplyTemplatesDraft {
-  orderReceived: string;
-  orderConfirmed: string;
-  orderReady: string;
-  orderCancelled: string;
-  paymentReceived: string;
-  paymentPartial: string;
-  lowStock: string;
-  greeting: string;
-  thanks: string;
-  unknown: string;
-}
+/**
+ * Reply template contract.
+ *
+ * These keys, placeholders and defaults MUST match the reply engine in
+ * `apps/api/src/services/templates/template-engine.ts`, which is the single
+ * source of truth. The API validates incoming keys against that same list, so
+ * any drift here is not cosmetic — it makes every save fail with a 400 and the
+ * owner cannot customise their auto-replies at all.
+ */
+type TemplateKey =
+  | 'order_pending'
+  | 'order_confirmed'
+  | 'order_processing'
+  | 'order_fulfilled'
+  | 'order_cancelled'
+  | 'payment_received'
+  | 'status_check_response'
+  | 'greeting'
+  | 'inquiry'
+  | 'payment'
+  | 'complaint'
+  | 'fallback';
 
-type TemplateKey = keyof ReplyTemplatesDraft;
+type ReplyTemplatesDraft = Record<TemplateKey, string>;
 
-const TEMPLATE_META: Array<{ key: TemplateKey; label: string; description: string; placeholders: string[] }> = [
+const TEMPLATE_META: Array<{
+  key: TemplateKey;
+  label: string;
+  description: string;
+  placeholders: string[];
+}> = [
   {
-    key: 'orderReceived',
-    label: 'Order Received',
-    description: 'Sent immediately when the system parses an order from WhatsApp.',
-    placeholders: ['{reference}', '{customerName}'],
+    key: 'order_pending',
+    label: 'Order received',
+    description: 'Goes out the moment Flowdesk reads an order out of a message.',
+    placeholders: ['{name}', '{ref}', '{business}'],
   },
   {
-    key: 'orderConfirmed',
-    label: 'Order Confirmed',
-    description: 'Sent after the owner confirms the order.',
-    placeholders: ['{reference}', '{total}', '{customerName}'],
+    key: 'order_confirmed',
+    label: 'Order confirmed',
+    description: 'Goes out after you confirm the order.',
+    placeholders: ['{ref}', '{business}'],
   },
   {
-    key: 'orderReady',
-    label: 'Order Ready',
-    description: 'Sent when the order is marked fulfilled and ready for pickup/delivery.',
-    placeholders: ['{reference}'],
+    key: 'order_processing',
+    label: 'Being packed',
+    description: 'Goes out when the order moves into packing.',
+    placeholders: ['{ref}', '{business}'],
   },
   {
-    key: 'orderCancelled',
-    label: 'Order Cancelled',
-    description: "Sent when an order is cancelled by the team.",
-    placeholders: ['{reference}'],
+    key: 'order_fulfilled',
+    label: 'Delivered',
+    description: 'Goes out when you mark the order delivered.',
+    placeholders: ['{ref}', '{business}'],
   },
   {
-    key: 'paymentReceived',
-    label: 'Payment Received',
-    description: 'Sent when a payment is logged against an order.',
-    placeholders: ['{reference}', '{amount}'],
+    key: 'order_cancelled',
+    label: 'Order cancelled',
+    description: 'Goes out when anyone on your team cancels an order.',
+    placeholders: ['{ref}', '{reason}', '{business}'],
   },
   {
-    key: 'paymentPartial',
-    label: 'Partial Payment',
-    description: 'Sent when a payment covers only part of an order.',
-    placeholders: ['{reference}', '{amount}', '{balance}'],
+    key: 'payment_received',
+    label: 'Payment received',
+    description: 'Goes out when you record a payment against an order.',
+    placeholders: ['{amount}', '{ref}', '{business}'],
   },
   {
-    key: 'lowStock',
-    label: 'Low Stock Alert',
-    description: 'Sent to the owner when a product drops below its reorder threshold.',
-    placeholders: ['{product}', '{stock}'],
+    key: 'status_check_response',
+    label: 'Where is my order',
+    description: 'Goes out when a customer asks about an order they have already placed.',
+    placeholders: ['{ref}', '{status}', '{details}', '{business}'],
   },
   {
     key: 'greeting',
     label: 'Greeting',
-    description: 'Sent when a customer messages for the first time or just says hi.',
-    placeholders: ['{businessName}'],
+    description: 'Goes out when someone messages for the first time, or just says hello.',
+    placeholders: ['{name}', '{business}'],
   },
   {
-    key: 'thanks',
-    label: 'Thanks',
-    description: 'Sent on thank-you messages from customers.',
-    placeholders: ['{businessName}'],
+    key: 'inquiry',
+    label: 'General question',
+    description: 'Goes out when a customer asks something that is not an order.',
+    placeholders: ['{name}', '{business}'],
   },
   {
-    key: 'unknown',
-    label: 'Unknown Intent',
-    description: 'Fallback when the system cannot classify a message.',
-    placeholders: [],
+    key: 'payment',
+    label: 'Payment mentioned',
+    description: 'Goes out when someone mentions paying but gives no order reference.',
+    placeholders: ['{name}', '{business}'],
+  },
+  {
+    key: 'complaint',
+    label: 'Complaint',
+    description: 'Goes out when a customer raises a problem.',
+    placeholders: ['{name}', '{business}'],
+  },
+  {
+    key: 'fallback',
+    label: 'Anything else',
+    description: 'Goes out when Flowdesk cannot tell what a message was about.',
+    placeholders: ['{name}', '{business}'],
   },
 ];
 
 const DEFAULT_TEMPLATES: ReplyTemplatesDraft = {
-  orderReceived:
-    'Thank you for your order {reference}! We have received it and will confirm shortly.',
-  orderConfirmed:
-    'Your order {reference} is confirmed. Total: {total}. We will let you know when it is ready.',
-  orderReady: 'Your order {reference} is ready for pickup. Thank you for shopping with us!',
-  orderCancelled: 'Your order {reference} has been cancelled. If this was a mistake, please reply here.',
-  paymentReceived: 'Payment of {amount} received for order {reference}. Thank you!',
-  paymentPartial:
-    'We received {amount} as partial payment for order {reference}. Outstanding: {balance}.',
-  lowStock:
-    'Heads up — {product} is running low ({stock} left). Re-order soon from your supplier.',
-  greeting: 'Hello! Welcome to {businessName}. How can we help you today?',
-  thanks: 'Thank you for shopping with us! Have a great day.',
-  unknown:
-    "Sorry, we couldn't understand your message. Reply with 'help' to see what we can do.",
+  order_pending:
+    "Hi {name}! We received your order (Ref: {ref}). We'll confirm shortly. — {business}",
+  order_confirmed:
+    "Your order {ref} is confirmed and being prepared. We'll let you know when it's ready. — {business}",
+  order_processing:
+    'Your order {ref} is being packed and prepared for delivery/pickup. — {business}',
+  order_fulfilled: 'Your order {ref} has been completed. Thank you for your business! — {business}',
+  order_cancelled:
+    'Your order {ref} has been cancelled. {reason} Please contact us if you have questions. — {business}',
+  payment_received: 'Payment of GHS {amount} received for order {ref}. Thank you! — {business}',
+  status_check_response: 'Your order {ref} is currently: {status}. {details} — {business}',
+  greeting: 'Hello {name}! Welcome to {business}. How can we help you today?',
+  inquiry:
+    'Hi {name}! Thanks for your question. Please share more details and we’ll get back to you right away. — {business}',
+  payment:
+    'Hi {name}! We received your payment message. Please share the order reference or amount and we’ll confirm. — {business}',
+  complaint:
+    'Hi {name}! We’re sorry for the inconvenience. Please share more details and we’ll look into it immediately. — {business}',
+  fallback:
+    'Hi {name}! We received your message. Our team will review it and get back to you shortly. — {business}',
 };
 
-const PLAN_DETAILS: Record<string, { label: string; price: string; conversations: string; features: string[] }> = {
-  TRIAL: {
-    label: '14-Day Trial',
-    price: 'GHS 0',
-    conversations: 'Up to 100 conversations',
-    features: ['All Starter features', 'Test WhatsApp auto-parsing', 'Test MoMo auto-verification'],
-  },
-  STARTER: {
-    label: 'Starter',
-    price: 'GHS 150 / mo',
-    conversations: '500 conversations/mo',
-    features: ['Unlimited orders', 'Stock tracking', 'Auto-replies'],
-  },
-  BUSINESS: {
-    label: 'Business',
-    price: 'GHS 350 / mo',
-    conversations: '2,500 conversations/mo',
-    features: ['Up to 5 staff', 'Auto-reports', 'Priority MoMo verification'],
-  },
-  GROWTH: {
-    label: 'Growth',
-    price: 'GHS 700 / mo',
-    conversations: '10,000 conversations/mo',
-    features: ['Unlimited staff', 'Broadcast campaigns', 'Dedicated support'],
-  },
-  ENTERPRISE: {
-    label: 'Enterprise',
-    price: 'Custom',
-    conversations: 'Unlimited',
-    features: ['SLA', 'Custom integrations', 'Account manager'],
-  },
-  SUSPENDED: {
-    label: 'Suspended',
-    price: '—',
-    conversations: '—',
-    features: ['Account suspended — contact support'],
-  },
-};
 
-const BILLABLE_UPGRADES: BillablePlan[] = ['STARTER', 'BUSINESS', 'GROWTH'];
+type SettingsTab = 'business' | 'replies' | 'plan';
 
-function getPlanKey(plan: string): string {
-  if (plan === 'TRIAL') return 'TRIAL';
-  return plan;
-}
+const TAB_OPTIONS: readonly TabOption<SettingsTab>[] = [
+  { value: 'business', label: 'Business' },
+  { value: 'replies', label: 'Automatic replies' },
+  { value: 'plan', label: 'Plan and billing' },
+];
 
-function templatesFromReply(reply: Record<string, string> | null | undefined): ReplyTemplatesDraft {
-  const out = { ...DEFAULT_TEMPLATES } as ReplyTemplatesDraft;
-  if (!reply) return out;
+const SETTINGS_TAB_VALUES = TAB_OPTIONS.map((t) => t.value);
+
+/**
+ * The API stores customisations under `overrides`, keyed by template, with
+ * anything absent falling back to the engine default. Reading the object as a
+ * flat map silently showed defaults even after a save.
+ */
+function templatesFromReply(
+  reply: { overrides?: Record<string, string> | null } | null | undefined,
+): ReplyTemplatesDraft {
+  const out = { ...DEFAULT_TEMPLATES };
+  const overrides = reply?.overrides;
+  if (!overrides) return out;
   for (const meta of TEMPLATE_META) {
-    if (reply[meta.key]) out[meta.key] = reply[meta.key]!;
+    const value = overrides[meta.key];
+    if (value) out[meta.key] = value;
   }
   return out;
 }
 
+/**
+ * Settings.
+ *
+ * This was one 600-line scroll ending in a Save button. Two consequences: the
+ * button was invisible from anywhere you might actually make a change, and the
+ * twelve reply templates — the longest and least frequently touched section —
+ * sat between the owner and everything else.
+ *
+ * It is now three sections, with a save bar that appears only when something is
+ * unsaved and then stays pinned to the bottom of the viewport. The bar also
+ * says how many changes are pending, because on a page this size it is easy to
+ * forget you edited something two sections ago.
+ */
 export default function SettingsPage(): React.JSX.Element {
   const { data: business, isLoading, refetch: refetchBusiness } = useBusiness();
   const updateBusiness = useUpdateBusiness();
@@ -183,25 +200,30 @@ export default function SettingsPage(): React.JSX.Element {
   const checkout = useCheckout();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const [tab, setTab] = useTabParam<SettingsTab>('section', SETTINGS_TAB_VALUES, 'business');
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [draftTemplates, setDraftTemplates] = useState<ReplyTemplatesDraft>(DEFAULT_TEMPLATES);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   // Detect a Paystack return. ?billing=return means the user bounced back from
   // the hosted checkout — refetch so they immediately see the upgraded plan.
-  // ?billing=cancelled means they bailed before paying; show the same banner
-  // but make the manual change obvious.
+  // ?billing=cancelled means they bailed before paying.
   const billingReturn = searchParams.get('billing') === 'return';
   const billingCancelled = searchParams.get('billing') === 'cancelled';
+  const wantsWhatsAppSetup = searchParams.get('connect') === 'whatsapp';
 
   useEffect(() => {
     if (!billingReturn && !billingCancelled) return;
     void refetchBusiness();
-    // Strip the marker so a refresh doesn't re-trigger.
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete('billing');
-      return next;
-    }, { replace: true });
+    // Strip the marker so a refresh does not re-trigger.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('billing');
+        return next;
+      },
+      { replace: true },
+    );
   }, [billingReturn, billingCancelled, refetchBusiness, setSearchParams]);
 
   useEffect(() => {
@@ -217,13 +239,13 @@ export default function SettingsPage(): React.JSX.Element {
     }
   }, [business, draft]);
 
-  const handleUpgrade = (plan: BillablePlan): void => {
+  function handleUpgrade(plan: BillablePlan): void {
     checkout.mutate(plan, {
       onSuccess: (data) => {
         window.location.href = data.authorizationUrl;
       },
     });
-  };
+  }
 
   const profileDirty =
     !!draft &&
@@ -235,19 +257,24 @@ export default function SettingsPage(): React.JSX.Element {
       draft.notifyOnPayment !== business.notifyOnPayment);
 
   const knownServerTemplates = templatesFromReply(business?.replyTemplates);
-  const templatesDirty = TEMPLATE_META.some((m) => draftTemplates[m.key] !== knownServerTemplates[m.key]);
-
+  const dirtyTemplateCount = TEMPLATE_META.filter(
+    (m) => draftTemplates[m.key] !== knownServerTemplates[m.key],
+  ).length;
+  const templatesDirty = dirtyTemplateCount > 0;
   const anyDirty = profileDirty || templatesDirty;
 
-  const handleSave = (): void => {
+  useUnsavedChangesWarning(anyDirty);
+
+  function handleSave(): void {
     if (!anyDirty) return;
+
     const payload: {
       name?: string;
       ownerName?: string;
       notifyOnNewOrder?: boolean;
       notifyOnLowStock?: boolean;
       notifyOnPayment?: boolean;
-      replyTemplates?: Record<string, string>;
+      replyTemplates?: { overrides: Record<string, string> };
     } = {};
 
     if (draft) {
@@ -259,29 +286,34 @@ export default function SettingsPage(): React.JSX.Element {
         payload.notifyOnPayment = draft.notifyOnPayment;
       }
       if (templatesDirty) {
-        payload.replyTemplates = { ...draftTemplates };
+        // Only genuinely customised templates are sent. Persisting a copy of
+        // every default would freeze this owner's wording, so later
+        // improvements to the shipped defaults would never reach them.
+        const overrides: Record<string, string> = {};
+        for (const meta of TEMPLATE_META) {
+          if (draftTemplates[meta.key] !== DEFAULT_TEMPLATES[meta.key]) {
+            overrides[meta.key] = draftTemplates[meta.key];
+          }
+        }
+        payload.replyTemplates = { overrides };
       }
     }
-    updateBusiness.mutate(payload, {
-      onSuccess: () => setDraft(null),
-    });
-  };
 
-  const handleResetTemplate = (key: TemplateKey): void => {
-    setDraftTemplates((prev) => ({ ...prev, [key]: DEFAULT_TEMPLATES[key] }));
-  };
+    updateBusiness.mutate(payload, { onSuccess: () => setDraft(null) });
+  }
 
-  const handleResetAllTemplates = (): void => {
-    if (!confirm('Reset all reply templates to the defaults?')) return;
-    setDraftTemplates({ ...DEFAULT_TEMPLATES });
-  };
+  function handleDiscard(): void {
+    setDraft(null);
+    setDraftTemplates(templatesFromReply(business?.replyTemplates));
+  }
 
   if (isLoading || !business) {
     return (
-      <div className="flex flex-col gap-6">
-        <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Settings</h1>
-        <div className="h-32 animate-pulse rounded-[var(--radius-md)] bg-[var(--color-surface-elevated)]" />
-     </div>
+      <div className="flex flex-col gap-5">
+        <Skeleton className="h-8 w-40" />
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-64 w-full" />
+      </div>
     );
   }
 
@@ -291,293 +323,439 @@ export default function SettingsPage(): React.JSX.Element {
     lowStock: badges?.lowStockProducts ?? 0,
   };
 
-  const plan = PLAN_DETAILS[getPlanKey(business.plan)] ?? PLAN_DETAILS.STARTER!;
-  const trialDaysLeft =
-    business.trialEndsAt
-      ? Math.max(0, Math.ceil((new Date(business.trialEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
-      : null;
+  const plan = getPlan(business.plan);
+  const trialDaysLeft = business.trialEndsAt
+    ? Math.max(
+        0,
+        Math.ceil((new Date(business.trialEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
+      )
+    : null;
 
   return (
-    <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Settings</h1>
+    // Bottom padding leaves room for the save bar so it never covers the last
+    // control on the page.
+    <div className={cn('flex flex-col gap-5', anyDirty && 'pb-20')}>
+      <PageHeader
+        title="Settings"
+        description="Connection, replies, and billing."
+      />
 
-      {/* WhatsApp Connection */}
+      {/* The connection sits above the tabs because it is the only setting
+          that can stop the entire product working. */}
       <WhatsAppConnection />
 
-      {/* Plan & Billing */}
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-          <CreditCard className="h-4 w-4" /> Plan & Billing
-       </h2>
+      {wantsWhatsAppSetup && (
+        <p className="rounded-lg border border-info-border bg-info-muted px-4 py-3 text-sm text-text-secondary">
+          Connect your number above. Everything else can wait.
+        </p>
+      )}
 
-        {billingReturn && (
-          <div className="mb-4 rounded-[var(--radius-sm)] border border-[var(--color-success)] bg-[var(--color-success-muted)] px-3 py-2 text-sm text-[var(--color-success)]">
-            Payment received. Plan changes may take a few seconds to reflect.
-         </div>
-        )}
-        {billingCancelled && (
-          <div className="mb-4 rounded-[var(--radius-sm)] border border-[var(--color-warning)] bg-[var(--color-warning-muted)] px-3 py-2 text-sm text-[var(--color-warning)]">
-            Checkout was cancelled. No charges were made.
-         </div>
-        )}
+      <div>
+        <Tabs label="Settings sections" options={TAB_OPTIONS} value={tab} onChange={setTab} />
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="space-y-2 text-sm lg:col-span-2">
-            <p>
-              Current plan: <span className="font-medium text-[var(--color-text-primary)]">{plan.label}</span>
-              <span className="ml-2 text-[var(--color-text-muted)]">{plan.price}</span>
-           </p>
-            <p className="text-[var(--color-text-secondary)]">{plan.conversations}</p>
-            <p className="text-[var(--color-text-secondary)]">
-              Conversations used this month:{' '}
-              <span className="font-mono">{business.monthlyConvoCount.toLocaleString()}</span>
-           </p>
-            {trialDaysLeft !== null && (
-              <p className="flex items-center gap-1.5 text-[var(--color-warning)]">
-                <AlertCircle className="h-4 w-4" />
-                {trialDaysLeft} day{trialDaysLeft === 1 ? '' : 's'} left in your trial
-             </p>
-            )}
-            <p
-              className={`flex items-center gap-1.5 ${business.waWebhookVerified ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}
-            >
-              <ShieldCheck className="h-4 w-4" />
-              WhatsApp: {business.waWebhookVerified ? 'Connected & verified' : 'Not verified'}
-           </p>
-            <p className="text-[var(--color-text-muted)]">Phone: {business.phone}</p>
-         </div>
-          <ul className="space-y-1 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3 text-xs text-[var(--color-text-secondary)]">
-            {plan.features.map((f) => (
-              <li key={f} className="flex items-start gap-1.5">
-                <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-[var(--color-primary)]" />
-                <span>{f}</span>
-             </li>
-            ))}
-         </ul>
-       </div>
+        <div className="mt-5 flex flex-col gap-5">
+          {/* ── Business ── */}
+          {tab === 'business' && (
+            <>
+              <Panel>
+                <PanelHead title="Business details" />
+                <div className="grid gap-4 p-4 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-sm font-medium text-text-primary">Business name</span>
+                    <input
+                      value={draft?.name ?? ''}
+                      onChange={(e) =>
+                        setDraft((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                      }
+                      className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                    />
+                    <span className="text-xs text-text-muted">
+                      Used in replies wherever a template has{' '}
+                      <code className="fd-figure">{'{business}'}</code>.
+                    </span>
+                  </label>
 
-        <div className="mt-5">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-muted)]">Change plan</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {BILLABLE_UPGRADES.map((code) => {
-              const details = PLAN_DETAILS[code]!;
-              const isCurrent = business.plan === code;
-              const isLoading = checkout.isPending && checkout.variables === code;
-              return (
-                <div
-                  key={code}
-                  className={`flex flex-col rounded-[var(--radius-sm)] border p-3 ${
-                    isCurrent
-                      ? 'border-[var(--color-primary)] bg-[var(--color-primary-muted)]'
-                      : 'border-[var(--color-border)] bg-[var(--color-surface-elevated)]'
-                  }`}
-                >
-                  <p className="text-sm font-semibold text-[var(--color-text-primary)]">{details.label}</p>
-                  <p className="mt-1 text-xs text-[var(--color-text-muted)]">{details.price}</p>
-                  <p className="mt-2 text-xs text-[var(--color-text-secondary)]">{details.conversations}</p>
-                  <button
-                    type="button"
-                    disabled={isCurrent || checkout.isPending}
-                    onClick={() => handleUpgrade(code)}
-                    className="mt-3 inline-flex items-center justify-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-primary)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[var(--color-primary-light)] disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : isCurrent ? 'Current plan' : 'Upgrade'}
-                 </button>
-               </div>
-              );
-            })}
-         </div>
-          {checkout.isError && (
-            <p className="mt-3 text-xs text-[var(--color-danger)]">{(checkout.error as Error).message}</p>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-sm font-medium text-text-primary">Your name</span>
+                    <input
+                      value={draft?.ownerName ?? ''}
+                      onChange={(e) =>
+                        setDraft((prev) => (prev ? { ...prev, ownerName: e.target.value } : prev))
+                      }
+                      className="fd-input fd-input-compact h-11 py-0 sm:h-10"
+                    />
+                  </label>
+                </div>
+              </Panel>
+
+              <Panel>
+                <PanelHead title="What Flowdesk tells you about" />
+                <RowList>
+                  <ToggleRow
+                    label="A new order arrives"
+                    description="Someone places or changes an order."
+                    checked={draft?.notifyOnNewOrder ?? business.notifyOnNewOrder}
+                    onChange={(v) =>
+                      setDraft((prev) => (prev ? { ...prev, notifyOnNewOrder: v } : prev))
+                    }
+                  />
+                  <ToggleRow
+                    label="A product runs low"
+                    description="Stock drops to or below the level you set for it."
+                    checked={draft?.notifyOnLowStock ?? business.notifyOnLowStock}
+                    onChange={(v) =>
+                      setDraft((prev) => (prev ? { ...prev, notifyOnLowStock: v } : prev))
+                    }
+                  />
+                  <ToggleRow
+                    label="A payment comes in"
+                    description="A payment is recorded, whether or not it has been verified."
+                    checked={draft?.notifyOnPayment ?? business.notifyOnPayment}
+                    onChange={(v) =>
+                      setDraft((prev) => (prev ? { ...prev, notifyOnPayment: v } : prev))
+                    }
+                  />
+                </RowList>
+              </Panel>
+
+              <Panel>
+                <PanelHead title="Right now" />
+                <RowList>
+                  <Row>
+                    <span className="text-sm text-text-secondary">Orders waiting</span>
+                    <span
+                      className={cn(
+                        'fd-figure text-sm font-semibold',
+                        flags.pendingOrders > 0 ? 'text-warning' : 'text-text-muted',
+                      )}
+                    >
+                      {flags.pendingOrders}
+                    </span>
+                  </Row>
+                  <Row>
+                    <span className="text-sm text-text-secondary">Messages needing you</span>
+                    <span
+                      className={cn(
+                        'fd-figure text-sm font-semibold',
+                        flags.reviewMessages > 0 ? 'text-danger' : 'text-text-muted',
+                      )}
+                    >
+                      {flags.reviewMessages}
+                    </span>
+                  </Row>
+                  <Row>
+                    <span className="text-sm text-text-secondary">Products running low</span>
+                    <span
+                      className={cn(
+                        'fd-figure text-sm font-semibold',
+                        flags.lowStock > 0 ? 'text-warning' : 'text-text-muted',
+                      )}
+                    >
+                      {flags.lowStock}
+                    </span>
+                  </Row>
+                </RowList>
+              </Panel>
+            </>
           )}
-       </div>
-     </div>
 
-      {/* Business Profile */}
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-          <Settings className="h-4 w-4" /> Business Profile
-       </h2>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-xs text-[var(--color-text-muted)]">Business Name</label>
-            <input
-              value={draft?.name ?? ''}
-              onChange={(e) => setDraft((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
-              className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
-            />
-         </div>
-          <div>
-            <label className="mb-1 block text-xs text-[var(--color-text-muted)]">Owner Name</label>
-            <input
-              value={draft?.ownerName ?? ''}
-              onChange={(e) => setDraft((prev) => (prev ? { ...prev, ownerName: e.target.value } : prev))}
-              className="w-full rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-primary)] focus:outline-none"
-            />
-         </div>
-       </div>
-     </div>
-
-      {/* Notifications */}
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-          <Bell className="h-4 w-4" /> Notifications
-       </h2>
-        <div className="space-y-3">
-          <ToggleRow
-            icon={<MessageSquare className="h-4 w-4" />}
-            label="New Order Alert"
-            description="Get notified when a customer places or updates an order."
-            checked={draft?.notifyOnNewOrder ?? business.notifyOnNewOrder}
-            onChange={(v) => setDraft((prev) => (prev ? { ...prev, notifyOnNewOrder: v } : prev))}
-          />
-          <ToggleRow
-            icon={<Package className="h-4 w-4" />}
-            label="Low Stock Alert"
-            description="Ping me when a product drops below its reorder threshold."
-            checked={draft?.notifyOnLowStock ?? business.notifyOnLowStock}
-            onChange={(v) => setDraft((prev) => (prev ? { ...prev, notifyOnLowStock: v } : prev))}
-          />
-          <ToggleRow
-            icon={<CreditCard className="h-4 w-4" />}
-            label="Payment Alert"
-            description="Get notified on new payment records (verified or pending)."
-            checked={draft?.notifyOnPayment ?? business.notifyOnPayment}
-            onChange={(v) => setDraft((prev) => (prev ? { ...prev, notifyOnPayment: v } : prev))}
-          />
-       </div>
-     </div>
-
-      {/* Reply Templates */}
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-            <MessagesSquare className="h-4 w-4" /> Reply Templates
-         </h2>
-          <button
-            onClick={handleResetAllTemplates}
-            className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
-          >
-            <RotateCw className="h-3 w-3" /> Reset all to default
-         </button>
-       </div>
-        <p className="mb-3 text-xs text-[var(--color-text-muted)]">
-          Use <span className="font-mono text-[var(--color-text-secondary)]">{'{placeholders}'}</span> like{' '}
-          <span className="font-mono text-[var(--color-text-secondary)]">{'{reference}'}</span> to inject dynamic values.
-       </p>
-        <div className="space-y-3">
-          {TEMPLATE_META.map((m) => {
-            const isDirty = draftTemplates[m.key] !== knownServerTemplates[m.key];
-            return (
-              <div key={m.key} className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3">
-                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                  <label className="text-xs font-medium uppercase tracking-wider text-[var(--color-text-secondary)]">
-                    {m.label}
-                 </label>
-                  <div className="flex flex-wrap items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
-                    {m.placeholders.map((p) => (
-                      <span key={p} className="rounded-[var(--radius-sm)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono">
-                        {p}
-                     </span>
-                    ))}
-                    {isDirty && (
-                      <button
-                        onClick={() => handleResetTemplate(m.key)}
-                        className="rounded-[var(--radius-sm)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
+          {/* ── Replies ── */}
+          {tab === 'replies' && (
+            <Panel>
+              <PanelHead
+                title="Automatic replies"
+                meta={dirtyTemplateCount > 0 ? `${dirtyTemplateCount} edited` : undefined}
+                action={
+                  confirmingReset ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-xs text-text-secondary">Reset all twelve?</span>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => {
+                          setDraftTemplates({ ...DEFAULT_TEMPLATES });
+                          setConfirmingReset(false);
+                        }}
                       >
                         Reset
-                     </button>
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmingReset(false)}>
+                        Keep
+                      </Button>
+                    </span>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setConfirmingReset(true)}
+                      leadingIcon={<RotateCw className="h-3.5 w-3.5" strokeWidth={1.75} />}
+                    >
+                      Reset all
+                    </Button>
+                  )
+                }
+              />
+
+              <div className="border-b border-border-subtle px-4 py-3">
+                <p className="max-w-prose text-sm text-text-secondary">
+                  Sent on your behalf. Anything in brackets is replaced before sending, so{' '}
+                  <code className="fd-figure rounded-xs bg-surface-sunken px-1">{'{ref}'}</code>{' '}
+                  becomes the actual order number.
+                </p>
+              </div>
+
+              <div className="divide-y divide-border-subtle">
+                {TEMPLATE_META.map((m) => {
+                  const isDirty = draftTemplates[m.key] !== knownServerTemplates[m.key];
+
+                  return (
+                    <div key={m.key} className="p-4">
+                      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                        <label
+                          htmlFor={`template-${m.key}`}
+                          className="text-sm font-semibold text-text-primary"
+                        >
+                          {m.label}
+                        </label>
+
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          {m.placeholders.map((p) => (
+                            <code
+                              key={p}
+                              className="fd-figure rounded-xs bg-surface-sunken px-1 py-px text-2xs text-text-secondary"
+                            >
+                              {p}
+                            </code>
+                          ))}
+                          {isDirty && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDraftTemplates((prev) => ({
+                                  ...prev,
+                                  [m.key]: DEFAULT_TEMPLATES[m.key],
+                                }))
+                              }
+                              className="rounded-sm px-1.5 py-px text-2xs font-semibold text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                            >
+                              Undo
+                            </button>
+                          )}
+                        </span>
+                      </div>
+
+                      <p className="mb-2 text-xs text-text-muted">{m.description}</p>
+
+                      <textarea
+                        id={`template-${m.key}`}
+                        value={draftTemplates[m.key]}
+                        onChange={(e) =>
+                          setDraftTemplates((prev) => ({ ...prev, [m.key]: e.target.value }))
+                        }
+                        rows={2}
+                        className={cn('fd-input fd-input-compact resize-y', isDirty && 'border-primary-border')}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </Panel>
+          )}
+
+          {/* ── Plan ── */}
+          {tab === 'plan' && (
+            <>
+              {billingReturn && (
+                <p
+                  role="status"
+                  className="rounded-lg border border-success-border bg-success-muted px-4 py-3 text-sm font-medium text-success"
+                >
+                  Payment received. Your new plan may take a few seconds to show here.
+                </p>
+              )}
+              {billingCancelled && (
+                <p
+                  role="status"
+                  className="rounded-lg border border-warning-border bg-warning-muted px-4 py-3 text-sm font-medium text-warning"
+                >
+                  Checkout was cancelled. Nothing was charged.
+                </p>
+              )}
+
+              <Panel>
+                <PanelHead title="Your plan" />
+
+                <div className="grid gap-5 p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)]">
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex items-baseline gap-2.5">
+                      <span className="text-lg font-bold tracking-tight text-text-primary">
+                        {plan.name}
+                      </span>
+                      <span className="fd-figure text-sm text-text-secondary">{plan.price}</span>
+                    </div>
+
+                    <p className="text-sm text-text-secondary">
+                      {limit(plan.conversationsPerMonth)} conversations a month
+                    </p>
+
+                    <p className="text-sm text-text-secondary">
+                      Used this month:{' '}
+                      <span className="fd-figure font-semibold text-text-primary">
+                        {business.monthlyConvoCount.toLocaleString()}
+                      </span>
+                    </p>
+
+                    {trialDaysLeft !== null && (
+                      <p className="flex items-center gap-1.5 text-sm font-medium text-warning">
+                        <AlertCircle className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+                        {trialDaysLeft} day{trialDaysLeft === 1 ? '' : 's'} left in your trial
+                      </p>
                     )}
-                 </div>
-               </div>
-                <p className="mb-2 text-xs text-[var(--color-text-muted)]">{m.description}</p>
-                <textarea
-                  value={draftTemplates[m.key]}
-                  onChange={(e) =>
-                    setDraftTemplates((prev) => ({ ...prev, [m.key]: e.target.value }))
-                  }
-                  rows={2}
-                  className="w-full resize-none rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-primary)] focus:outline-none"
-                />
-             </div>
-            );
-          })}
-       </div>
-     </div>
 
-      {/* Realtime stats */}
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
-          Realtime Health
-       </h2>
-        <div className="grid grid-cols-3 gap-3 text-center">
-          <RealtimeMetric label="Pending orders" value={flags.pendingOrders} tone="warning" />
-          <RealtimeMetric label="Messages to review" value={flags.reviewMessages} tone="danger" />
-          <RealtimeMetric label="Low stock items" value={flags.lowStock} tone="warning" />
-       </div>
-     </div>
+                    <p className="fd-figure text-sm text-text-muted">{business.phone}</p>
+                  </div>
 
-      <div className="flex items-center justify-between gap-3">
-        {updateBusiness.isError && (
-          <p className="text-sm text-[var(--color-danger)]">{(updateBusiness.error as Error).message}</p>
-        )}
-        {updateBusiness.isSuccess && !anyDirty && (
-          <p className="text-sm text-[var(--color-success)]">Saved</p>
-        )}
-        <button
-          onClick={handleSave}
-          disabled={!anyDirty || updateBusiness.isPending}
-          className="ml-auto w-full rounded-[var(--radius-md)] bg-[var(--color-primary)] py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--color-primary-light)] disabled:opacity-50 sm:w-auto"
-        >
-          {updateBusiness.isPending ? 'Saving…' : 'Save Changes'}
-       </button>
-     </div>
-   </div>
+                  <ul className="flex flex-col gap-1.5 border-t border-border-subtle pt-4 md:border-l md:border-t-0 md:pl-5 md:pt-0">
+                    {planHighlights(plan).map((f) => (
+                      <li key={f} className="flex items-start gap-2 text-sm text-text-secondary">
+                        <span
+                          aria-hidden="true"
+                          className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-primary"
+                        />
+                        {f}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </Panel>
+
+              <Panel>
+                <PanelHead title="Change plan" />
+                <div className="grid gap-3 p-4 sm:grid-cols-3">
+                  {BILLABLE_PLAN_CODES.map((code) => {
+                    const details = PLANS[code];
+                    const isCurrent = business.plan === code;
+                    const isBusy = checkout.isPending && checkout.variables === code;
+
+                    return (
+                      <div
+                        key={code}
+                        className={cn(
+                          'flex flex-col rounded-md border p-3.5',
+                          isCurrent ? 'border-primary bg-primary-light' : 'border-border',
+                        )}
+                      >
+                        <span className="text-sm font-bold text-text-primary">{details.name}</span>
+                        <span className="fd-figure mt-1 text-sm text-text-secondary">
+                          {details.price}
+                        </span>
+                        <span className="mt-2 flex-1 text-xs text-text-muted">
+                          {limit(details.conversationsPerMonth)} conversations a month
+                        </span>
+
+                        <Button
+                          size="sm"
+                          variant={isCurrent ? 'secondary' : 'primary'}
+                          className="mt-3.5"
+                          fullWidth
+                          disabled={isCurrent || checkout.isPending}
+                          isLoading={isBusy}
+                          onClick={() => handleUpgrade(code as BillablePlan)}
+                        >
+                          {isCurrent ? 'Your plan' : 'Switch to this'}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {checkout.isError && (
+                  <p role="alert" className="px-4 pb-4 text-sm font-medium text-danger">
+                    {(checkout.error as Error).message}
+                  </p>
+                )}
+              </Panel>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── Save bar ──────────────────────────────────────────────────────
+          Appears only when there is something to save, and reports what.
+          Fixed rather than sticky so it clears the phone navigation bar. */}
+      {anyDirty && (
+        <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-sticky px-4 pb-2 md:bottom-0 md:px-6 md:pb-4">
+          <div className="mx-auto flex max-w-shell items-center justify-between gap-3 rounded-lg border border-border bg-surface px-4 py-3 shadow-lg">
+            <span className="min-w-0 text-sm text-text-secondary">
+              <span className="font-medium text-text-primary">Unsaved changes</span>
+              {dirtyTemplateCount > 0 && (
+                <span className="hidden sm:inline">
+                  {' '}
+                  in {dirtyTemplateCount} repl{dirtyTemplateCount === 1 ? 'y' : 'ies'}
+                  {profileDirty ? ' and your business details' : ''}
+                </span>
+              )}
+            </span>
+
+            <span className="flex shrink-0 items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={handleDiscard}>
+                Discard
+              </Button>
+              <Button size="sm" onClick={handleSave} isLoading={updateBusiness.isPending}>
+                Save
+              </Button>
+            </span>
+          </div>
+
+          {updateBusiness.isError && (
+            <p
+              role="alert"
+              className="mx-auto mt-2 max-w-shell rounded-md border border-danger-border bg-danger-muted px-4 py-2 text-sm font-medium text-danger"
+            >
+              {(updateBusiness.error as Error).message}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
+/**
+ * A switch on a rule.
+ *
+ * The input is a real checkbox behind the visual, so it is focusable, toggles
+ * with the space bar, and reports its state to a screen reader without any
+ * ARIA. The visible track is drawn from `peer-checked`.
+ */
 function ToggleRow({
-  icon,
   label,
   description,
   checked,
   onChange,
 }: {
-  icon: React.ReactNode;
   label: string;
   description: string;
   checked: boolean;
   onChange: (v: boolean) => void;
 }): React.JSX.Element {
   return (
-    <label className="flex items-start justify-between gap-3 rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3">
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 text-[var(--color-text-secondary)]">{icon}</span>
-        <div>
-          <span className="block text-sm text-[var(--color-text-primary)]">{label}</span>
-          <span className="block text-xs text-[var(--color-text-muted)]">{description}</span>
-       </div>
-     </div>
-      <span className="relative inline-flex">
+    <label className="flex cursor-pointer items-start justify-between gap-4 px-4 py-3 transition-colors duration-fast ease-out hover:bg-surface-hover">
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-sm font-medium text-text-primary">{label}</span>
+        <span className="text-xs text-text-secondary">{description}</span>
+      </span>
+
+      <span className="relative mt-0.5 inline-flex shrink-0">
         <input
           type="checkbox"
           checked={checked}
           onChange={(e) => onChange(e.target.checked)}
           className="peer sr-only"
         />
-        <span className="h-5 w-9 rounded-full bg-[var(--color-border)] transition-colors peer-checked:bg-[var(--color-primary)]" />
-        <span className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform peer-checked:translate-x-4" />
-     </span>
-   </label>
-  );
-}
-
-function RealtimeMetric({ label, value, tone }: { label: string; value: number; tone: 'danger' | 'warning' }): React.JSX.Element {
-  const color = tone === 'danger' ? 'text-[var(--color-danger)]' : 'text-[var(--color-warning)]';
-  return (
-    <div className="rounded-[var(--radius-sm)] bg-[var(--color-surface-elevated)] p-3">
-      <div className={`font-mono text-2xl font-semibold ${color}`}>{value}</div>
-      <div className="mt-1 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
-   </div>
+        <span className="h-5 w-9 rounded-full bg-border-strong transition-colors duration-fast ease-out peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-primary peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-surface" />
+        <span className="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-xs transition-transform duration-fast ease-out peer-checked:translate-x-4" />
+      </span>
+    </label>
   );
 }
