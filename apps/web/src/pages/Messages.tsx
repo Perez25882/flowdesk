@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { CheckCircle2, MessageSquare } from 'lucide-react';
 import { useMessages, useCorrectMessageIntent } from '@/hooks/useMessages';
+import ReplyEditor from '@/components/messages/ReplyEditor';
 import EmptyState from '@/components/shared/EmptyState';
 import PageHeader from '@/components/shared/PageHeader';
 import SearchInput from '@/components/ui/SearchInput';
@@ -227,6 +228,10 @@ export default function MessagesPage(): React.JSX.Element {
                           )}
                         </div>
                       )}
+
+                      {/* Inbound only — there is nothing to reply to on a
+                          message the business itself sent. */}
+                      {msg.direction === 'INBOUND' && <ReplyEditor message={msg} />}
                     </div>
                   </li>
                 );
