@@ -25,7 +25,7 @@ export type Capability =
   | 'payments.read'
   | 'payments.create'
   | 'payments.verify'
-  | 'payments.delete'
+  | 'payments.void'
   | 'messages.read'
   | 'messages.write'
   /**
@@ -70,7 +70,7 @@ export const ROLE_CAPABILITIES: Record<StaffRole, readonly Capability[]> = {
     'payments.read',
     'payments.create',
     'payments.verify',
-    'payments.delete',
+    'payments.void',
     'messages.read',
     'messages.write',
     'messages.send',

@@ -28,7 +28,7 @@ export async function logPayment(
 
   const payment = await repository.createPayment(data, businessId, loggedById);
 
-  if (payment.verified) {
+  if (payment.confidence !== 'CLAIMED') {
     emitPaymentConfirmed(businessId, {
       paymentId: payment.id,
       orderId: payment.orderId ?? '',
@@ -39,57 +39,75 @@ export async function logPayment(
 
     await logActivity({
       staffId: loggedById ?? 'owner',
-      action: 'payment.logged',
+      action: payment.direction === 'OUT' ? 'payment.refunded' : 'payment.logged',
       resourceId: payment.id,
       resourceType: 'payment',
-      note: `Payment of GHS ${Number(payment.amount).toFixed(2)} logged`,
+      note: `${payment.direction === 'OUT' ? 'Refund' : 'Payment'} of GHS ${Number(payment.amount).toFixed(2)} logged`,
     }).catch(() => {});
   }
 
   return payment;
 }
 
-export async function verifyPayment(
+export async function attestPayment(
   paymentId: string,
   businessId: string,
-  verifiedBy: string,
+  attestedBy: string,
 ): Promise<repository.PaymentWithCustomer> {
   const payment = await repository.findPaymentById(paymentId, businessId);
   if (!payment) {
     throw new NotFoundError('Payment not found');
   }
 
-  if (payment.verified) {
-    throw new ValidationError('Payment is already verified');
+  const attested = await repository.attestPaymentWithSideEffects(paymentId, businessId, attestedBy);
+  if (!attested) {
+    // The conditional claim did not land: someone else attested it, or it was
+    // voided between the read and the write.
+    throw new ValidationError('Payment has already been attested or voided');
   }
 
-  const verified = await repository.verifyPaymentWithSideEffects(paymentId, verifiedBy);
-
   emitPaymentConfirmed(businessId, {
-    paymentId: verified.id,
-    orderId: verified.orderId ?? '',
-    amount: Number(verified.amount),
+    paymentId: attested.id,
+    orderId: attested.orderId ?? '',
+    amount: Number(attested.amount),
   });
 
   await logActivity({
-    staffId: verifiedBy,
-    action: 'payment.verified',
+    staffId: attestedBy,
+    action: 'payment.attested',
     resourceId: paymentId,
     resourceType: 'payment',
-    note: `Payment of GHS ${Number(verified.amount).toFixed(2)} verified`,
+    note: `Payment of GHS ${Number(attested.amount).toFixed(2)} attested as received`,
   }).catch(() => {});
 
-  await notifyPaymentReceived(verified.id);
+  await notifyPaymentReceived(attested.id);
 
-  return verified;
+  return attested;
 }
 
-export async function deletePayment(paymentId: string, businessId: string): Promise<void> {
+export async function voidPayment(
+  paymentId: string,
+  businessId: string,
+  voidedBy: string,
+  reason: string,
+): Promise<void> {
   const payment = await repository.findPaymentById(paymentId, businessId);
   if (!payment) {
     throw new NotFoundError('Payment not found');
   }
-  await repository.deletePayment(paymentId, businessId);
+
+  const didVoid = await repository.voidPayment(paymentId, businessId, voidedBy, reason);
+  if (!didVoid) {
+    throw new ValidationError('Payment is already voided');
+  }
+
+  await logActivity({
+    staffId: voidedBy,
+    action: 'payment.voided',
+    resourceId: paymentId,
+    resourceType: 'payment',
+    note: `Payment of GHS ${Number(payment.amount).toFixed(2)} voided: ${reason}`,
+  }).catch(() => {});
 }
 
 export async function listPayments(
