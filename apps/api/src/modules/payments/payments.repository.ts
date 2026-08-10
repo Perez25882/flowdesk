@@ -1,15 +1,30 @@
 import { prisma } from '../../config/database.js';
 import { Prisma } from '@prisma/client';
+import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
 import { recalculateCustomerTotals } from '../customers/customers.repository.js';
+
+/**
+ * What counts as money, as a Prisma filter.
+ *
+ * The database-side twin of `isAttested` in @flowdesk/shared. The two must agree;
+ * if you change one, change the other.
+ */
+export const ATTESTED_PAYMENT = {
+  confidence: { not: 'CLAIMED' },
+  voidedAt: null,
+} satisfies Prisma.PaymentWhereInput;
 
 export interface PaymentWithCustomer {
   id: string;
   amount: Prisma.Decimal;
   method: string;
+  direction: PaymentDirection;
+  confidence: PaymentConfidence;
   reference: string | null;
-  verified: boolean;
-  verifiedAt: Date | null;
+  attestedAt: Date | null;
+  voidedAt: Date | null;
+  voidReason: string | null;
   screenshotUrl: string | null;
   customer: { id: string; name: string | null; waNumber: string };
   orderId: string | null;
@@ -30,12 +45,13 @@ export async function createPayment(
         orderId: data.orderId ?? null,
         amount: new Prisma.Decimal(data.amount),
         method: data.method,
+        direction: data.direction,
         reference: data.reference ?? null,
         notes: data.notes ?? null,
         loggedById,
-        verified: data.verified,
-        verifiedBy: data.verified ? loggedById : null,
-        verifiedAt: data.verified ? new Date() : null,
+        confidence: data.attested ? 'SELLER_ATTESTED' : 'CLAIMED',
+        attestedBy: data.attested ? loggedById : null,
+        attestedAt: data.attested ? new Date() : null,
       },
       include: {
         customer: { select: { id: true, name: true, waNumber: true } },
@@ -43,8 +59,8 @@ export async function createPayment(
       },
     });
 
-    // Only a verified payment moves money, so totals are refreshed only then.
-    if (data.verified) {
+    // Only attested money moves totals, so they are refreshed only then.
+    if (data.attested) {
       if (payment.orderId) {
         await recalculateOrderPaid(payment.orderId, tx);
       }
@@ -72,7 +88,9 @@ export async function listPayments(
   const where: Prisma.PaymentWhereInput = { businessId };
   if (filters.customerId) where.customerId = filters.customerId;
   if (filters.orderId) where.orderId = filters.orderId;
-  if (filters.verified !== undefined) where.verified = filters.verified;
+  if (filters.confidence) where.confidence = filters.confidence;
+  if (filters.attested === true) Object.assign(where, ATTESTED_PAYMENT);
+  if (filters.attested === false) where.OR = [{ confidence: 'CLAIMED' }, { voidedAt: { not: null } }];
   if (filters.hasScreenshot) {
     where.screenshotUrl = { not: null };
   }
@@ -95,35 +113,55 @@ export async function listPayments(
 }
 
 /**
- * Recomputes an order's `amountPaid` from its verified payments.
+ * Recomputes an order's `amountPaid` from its attested payments, net of refunds.
  *
- * Like the customer totals, this is a materialised value rather than an
- * accumulator, so verifying, un-verifying or deleting a payment always lands on
- * the correct figure instead of drifting.
+ * Materialised rather than accumulated, so attesting, voiding or refunding always
+ * lands on the correct figure instead of drifting.
+ *
+ * The two aggregates run in sequence, not in parallel: an interactive Prisma
+ * transaction holds a single connection and concurrent queries on it are not safe.
  */
 async function recalculateOrderPaid(
   orderId: string,
   tx: Prisma.TransactionClient,
 ): Promise<void> {
-  const paid = await tx.payment.aggregate({
-    where: { orderId, verified: true },
+  const received = await tx.payment.aggregate({
+    where: { orderId, direction: 'IN', ...ATTESTED_PAYMENT },
+    _sum: { amount: true },
+  });
+  const refunded = await tx.payment.aggregate({
+    where: { orderId, direction: 'OUT', ...ATTESTED_PAYMENT },
     _sum: { amount: true },
   });
 
-  await tx.order.update({
-    where: { id: orderId },
-    data: { amountPaid: paid._sum.amount ?? new Prisma.Decimal(0) },
-  });
+  const net = (received._sum.amount ?? new Prisma.Decimal(0))
+    .sub(refunded._sum.amount ?? new Prisma.Decimal(0));
+
+  await tx.order.update({ where: { id: orderId }, data: { amountPaid: net } });
 }
 
-export async function verifyPaymentWithSideEffects(
+/**
+ * Records the seller's attestation that the money landed.
+ *
+ * The update is conditional on the payment still being an unvoided claim, so two
+ * simultaneous attestations resolve to exactly one. Returns null when the claim
+ * had already been taken — the caller reports that as a conflict, not an error.
+ */
+export async function attestPaymentWithSideEffects(
   paymentId: string,
-  verifiedBy: string,
-): Promise<PaymentWithCustomer> {
-  const verified = await prisma.$transaction(async (tx) => {
-    const updated = await tx.payment.update({
+  businessId: string,
+  attestedBy: string,
+): Promise<PaymentWithCustomer | null> {
+  return prisma.$transaction(async (tx) => {
+    const claimed = await tx.payment.updateMany({
+      where: { id: paymentId, businessId, confidence: 'CLAIMED', voidedAt: null },
+      data: { confidence: 'SELLER_ATTESTED', attestedBy, attestedAt: new Date() },
+    });
+
+    if (claimed.count !== 1) return null;
+
+    const updated = await tx.payment.findUniqueOrThrow({
       where: { id: paymentId },
-      data: { verified: true, verifiedBy, verifiedAt: new Date() },
       include: {
         customer: { select: { id: true, name: true, waNumber: true } },
         order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
@@ -133,37 +171,47 @@ export async function verifyPaymentWithSideEffects(
     if (updated.orderId) {
       await recalculateOrderPaid(updated.orderId, tx);
     }
-
     await recalculateCustomerTotals(updated.customerId, tx);
 
-    return updated;
+    return updated as unknown as PaymentWithCustomer;
   });
-
-  return verified as unknown as PaymentWithCustomer;
 }
 
 /**
- * Deletes a payment and repairs every total it contributed to.
+ * Reverses a payment's effect without destroying the record of it.
  *
- * Previously this removed the row without reversing its effects, permanently
- * corrupting the customer's balance and the order's paid amount.
+ * This used to be a hard DELETE. A deleted payment is a destroyed alibi: the one
+ * artefact a dispute turns on is what was claimed, by whom, and when. Voiding
+ * keeps the row, the reason and the actor, and repairs every total it fed.
+ *
+ * Returns false when the payment does not exist or was already voided, so a
+ * double-submit is a no-op rather than a second reversal.
  */
-export async function deletePayment(id: string, businessId: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const payment = await tx.payment.findFirst({
-      where: { id, businessId },
-      select: { id: true, customerId: true, orderId: true },
+export async function voidPayment(
+  id: string,
+  businessId: string,
+  voidedBy: string,
+  reason: string,
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const claimed = await tx.payment.updateMany({
+      where: { id, businessId, voidedAt: null },
+      data: { voidedAt: new Date(), voidedBy, voidReason: reason },
     });
 
-    if (!payment) return;
+    if (claimed.count !== 1) return false;
 
-    await tx.payment.delete({ where: { id: payment.id } });
+    const payment = await tx.payment.findUniqueOrThrow({
+      where: { id },
+      select: { customerId: true, orderId: true },
+    });
 
     if (payment.orderId) {
       await recalculateOrderPaid(payment.orderId, tx);
     }
-
     await recalculateCustomerTotals(payment.customerId, tx);
+
+    return true;
   });
 }
 
@@ -181,26 +229,29 @@ export async function getRevenueStats(businessId: string): Promise<{
   startOfWeek.setHours(0, 0, 0, 0);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const [totalAgg, todayAgg, weekAgg, monthAgg, byMethodAgg] = await Promise.all([
-    prisma.payment.aggregate({
-      where: { businessId, verified: true },
+  async function netFrom(since: Date | null): Promise<number> {
+    const window = since ? { createdAt: { gte: since } } : {};
+    const received = await prisma.payment.aggregate({
+      where: { businessId, direction: 'IN', ...ATTESTED_PAYMENT, ...window },
       _sum: { amount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { businessId, verified: true, createdAt: { gte: startOfDay } },
+    });
+    const refunded = await prisma.payment.aggregate({
+      where: { businessId, direction: 'OUT', ...ATTESTED_PAYMENT, ...window },
       _sum: { amount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { businessId, verified: true, createdAt: { gte: startOfWeek } },
-      _sum: { amount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { businessId, verified: true, createdAt: { gte: startOfMonth } },
-      _sum: { amount: true },
-    }),
+    });
+    return Number(received._sum.amount ?? 0) - Number(refunded._sum.amount ?? 0);
+  }
+
+  const [totalRevenue, today, thisWeek, thisMonth, byMethodAgg] = await Promise.all([
+    netFrom(null),
+    netFrom(startOfDay),
+    netFrom(startOfWeek),
+    netFrom(startOfMonth),
+    // Money in, by method. Refunds are excluded rather than netted: the question
+    // this answers is which rails customers actually pay on.
     prisma.payment.groupBy({
       by: ['method'],
-      where: { businessId, verified: true },
+      where: { businessId, direction: 'IN', ...ATTESTED_PAYMENT },
       _sum: { amount: true },
     }),
   ]);
@@ -210,11 +261,5 @@ export async function getRevenueStats(businessId: string): Promise<{
     byMethod[row.method] = Number(row._sum.amount ?? 0);
   }
 
-  return {
-    totalRevenue: Number(totalAgg._sum.amount ?? 0),
-    today: Number(todayAgg._sum.amount ?? 0),
-    thisWeek: Number(weekAgg._sum.amount ?? 0),
-    thisMonth: Number(monthAgg._sum.amount ?? 0),
-    byMethod,
-  };
+  return { totalRevenue, today, thisWeek, thisMonth, byMethod };
 }
