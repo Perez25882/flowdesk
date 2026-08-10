@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
-import Wordmark from '@/components/marketing/Wordmark';
+import Logo from '@/components/shared/Logo';
 
 /**
  * Shared chrome for every unauthenticated screen (sign in, register, password
@@ -47,7 +47,7 @@ export default function AuthShell({
             to="/"
             className="inline-block rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
-            <Wordmark />
+            <Logo />
             <span className="sr-only">Flowdesk home</span>
           </Link>
         </header>

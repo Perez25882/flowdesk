@@ -4,7 +4,7 @@ import { ArrowRight, Menu, X } from 'lucide-react';
 import Reveal from '@/components/ui/Reveal';
 import CaptureDemo from '@/components/marketing/CaptureDemo';
 import PricingTable from '@/components/marketing/PricingTable';
-import Wordmark from '@/components/marketing/Wordmark';
+import Logo from '@/components/shared/Logo';
 import { Button } from '@/components/ui/Button';
 import { PLANS } from '@/config/plans';
 import { cn } from '@/lib/utils';
@@ -59,7 +59,7 @@ function Nav(): React.JSX.Element {
           to="/"
           className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
-          <Wordmark />
+          <Logo />
           <span className="sr-only">Flowdesk home</span>
         </Link>
 
@@ -364,7 +364,8 @@ function Footer(): React.JSX.Element {
     <footer className="py-10">
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
-          <Wordmark />
+          {/* Unlike the header marks, this one has no hidden label beside it. */}
+          <Logo title="Flowdesk" />
 
           <nav aria-label="Footer" className="flex flex-wrap gap-x-7 gap-y-2">
             <a

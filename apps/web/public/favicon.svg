@@ -1,7 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#166f4f" />
-  <!-- Three stacked rules of decreasing length: a ledger, settling. -->
-  <rect x="8" y="9" width="16" height="2.75" rx="1.375" fill="#ffffff" />
-  <rect x="8" y="15" width="11" height="2.75" rx="1.375" fill="#ffffff" fill-opacity="0.72" />
-  <rect x="8" y="21" width="6" height="2.75" rx="1.375" fill="#ffffff" fill-opacity="0.44" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="7.158" fill="#3d6b52"/><g transform="translate(6.4 6.4) scale(0.192)"><path d="M5 0 H50 A50 50 0 0 1 50 100 H5 A5 5 0 0 1 0 95 V5 A5 5 0 0 1 5 0 Z M20 15 H50 A35 35 0 0 1 50 85 H20 A5 5 0 0 1 15 80 V20 A5 5 0 0 1 20 15 Z" fill="#ffffff" fill-rule="evenodd"/><path d="M15 25 H60 A5 5 0 0 1 65 30 V35 A5 5 0 0 1 60 40 H15 Z" fill="#ffffff"/><path d="M15 60 H60 A5 5 0 0 1 65 65 V70 A5 5 0 0 1 60 75 H15 Z" fill="#ffffff"/></g></svg>

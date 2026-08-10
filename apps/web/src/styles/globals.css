@@ -26,16 +26,16 @@
 
 :root {
   /* ── Green. The brand, and money. ──────────────────────────────────── */
-  --green-50: #edf5f1;
-  --green-100: #d3e7dd;
-  --green-200: #a9cfbd;
-  --green-300: #71b097;
-  --green-400: #3d8f72;
-  --green-500: #166f4f;
-  --green-600: #125a41;
-  --green-700: #0e4733;
-  --green-800: #0a3526;
-  --green-900: #06231a;
+  --green-50: #f0f5f2;
+  --green-100: #dbe8e1;
+  --green-200: #b9d0c3;
+  --green-300: #8fb3a0;
+  --green-400: #4d8a68;
+  --green-500: #3d6b52;
+  --green-600: #325843;
+  --green-700: #284635;
+  --green-800: #1d3427;
+  --green-900: #13221a;
 
   /* ── Clay. The second voice. ────────────────────────────────────────
      Green alone gives a one-note palette, which is most of why the old
@@ -106,7 +106,7 @@
   --color-primary-hover: var(--green-600);
   --color-primary-active: var(--green-700);
   --color-primary-light: var(--green-50);
-  --color-primary-muted: rgba(22, 111, 79, 0.07);
+  --color-primary-muted: rgba(61, 107, 82, 0.07);
   --color-primary-border: var(--green-200);
   --color-primary-contrast: var(--neutral-0);
 
