@@ -328,9 +328,15 @@ model Payment {
   reference     String?
   screenshotUrl String?
   screenshotKey String?
-  verified      Boolean       @default(false)
-  verifiedBy    String?
-  verifiedAt    DateTime?
+  confidence    PaymentConfidence @default(CLAIMED)
+  direction     PaymentDirection  @default(IN)
+  attestedBy    String?
+  attestedAt    DateTime?
+  /// Set when a payment is reversed. The row is never deleted: a destroyed
+  /// payment is a destroyed alibi, and disputes turn on exactly this record.
+  voidedAt      DateTime?
+  voidedBy      String?
+  voidReason    String?
   loggedById    String?
   notes         String?
   createdAt     DateTime      @default(now())
@@ -342,7 +348,8 @@ model Payment {
   @@index([businessId])
   @@index([businessId, customerId])
   @@index([businessId, orderId])
-  @@index([businessId, verified])
+  @@index([businessId, confidence])
+  @@index([businessId, voidedAt])
   @@index([businessId, createdAt(sort: Desc)])
   @@map("payments")
 }
@@ -542,6 +549,21 @@ enum PaymentMethod {
   CASH
   BANK_TRANSFER
   OTHER
+}
+
+/// Whose word a payment rests on. See packages/shared/src/payment-integrity.ts —
+/// the member names and their order must stay in step with PAYMENT_CONFIDENCES.
+enum PaymentConfidence {
+  CLAIMED
+  SELLER_ATTESTED
+  TELCO_MATCHED
+  GATEWAY_CONFIRMED
+}
+
+/// IN is money received. OUT is a refund back to the customer.
+enum PaymentDirection {
+  IN
+  OUT
 }
 
 enum StaffRole {
