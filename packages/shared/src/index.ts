@@ -67,3 +67,15 @@ export {
   type StockAlertPayload,
   type PaymentConfirmedPayload,
 } from './sse.js';
+
+export {
+  PAYMENT_CONFIDENCES,
+  PAYMENT_CONFIDENCE_RANK,
+  PAYMENT_CONFIDENCE_LABELS,
+  PAYMENT_DIRECTIONS,
+  isAttested,
+  netAttested,
+  type PaymentConfidence,
+  type PaymentDirection,
+  type AttestablePayment,
+} from './payment-integrity.js';
