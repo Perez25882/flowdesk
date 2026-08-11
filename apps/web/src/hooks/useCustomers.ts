@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
+import { type PaymentConfidence } from '@flowdesk/shared';
 import { apiFetch } from '@/lib/api';
 
 
@@ -30,7 +31,8 @@ export interface CustomerProfile extends Customer {
     id: string;
     amount: number;
     method: string;
-    verified: boolean;
+    confidence: PaymentConfidence;
+    voidedAt: string | null;
     createdAt: string;
   }>;
 }

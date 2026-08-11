@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Check, CreditCard, ImageIcon, Trash2 } from 'lucide-react';
+import { PAYMENT_CONFIDENCE_LABELS } from '@flowdesk/shared';
 import {
   usePayments,
-  useVerifyPayment,
-  useDeletePayment,
+  useAttestPayment,
+  useVoidPayment,
   useRevenueStats,
 } from '@/hooks/usePayments';
 import EmptyState from '@/components/shared/EmptyState';
@@ -43,8 +44,8 @@ export default function PaymentsPage(): React.JSX.Element {
   const { data: allPayments, isLoading: allLoading } = usePayments();
   const { data: reviewPayments, isLoading: reviewLoading } = usePayments(false, true);
   const { data: stats } = useRevenueStats();
-  const verify = useVerifyPayment();
-  const deletePayment = useDeletePayment();
+  const attest = useAttestPayment();
+  const voidPayment = useVoidPayment();
 
   const payments = tab === 'review' ? reviewPayments : allPayments;
   const isLoading = tab === 'review' ? reviewLoading : allLoading;
@@ -82,7 +83,7 @@ export default function PaymentsPage(): React.JSX.Element {
               title={tab === 'review' ? 'Nothing to check' : 'No payments yet'}
               description={
                 tab === 'review'
-                  ? 'Everything is matched and verified.'
+                  ? 'Everything is matched and confirmed.'
                   : 'Payments appear as you record them against orders.'
               }
             />
@@ -100,10 +101,12 @@ export default function PaymentsPage(): React.JSX.Element {
                         <span className="truncate text-sm font-medium text-text-primary">
                           {payment.customer.name ?? payment.customer.waNumber}
                         </span>
-                        {payment.verified ? (
-                          <Badge tone="success">Verified</Badge>
+                        {payment.voidedAt ? (
+                          <Badge tone="neutral">Voided</Badge>
+                        ) : payment.confidence === 'CLAIMED' ? (
+                          <Badge tone="warning">{PAYMENT_CONFIDENCE_LABELS.CLAIMED}</Badge>
                         ) : (
-                          <Badge tone="warning">Unverified</Badge>
+                          <Badge tone="success">{PAYMENT_CONFIDENCE_LABELS[payment.confidence]}</Badge>
                         )}
                         {payment.screenshotUrl && (
                           <span
@@ -129,17 +132,23 @@ export default function PaymentsPage(): React.JSX.Element {
                       {isConfirming ? (
                         // Inline confirmation rather than a modal: the row is
                         // already the subject, so a dialog would only restate it.
+                        // The reason itself is collected via window.prompt — a
+                        // stopgap until a proper dialog lands in a later phase.
                         <span className="flex items-center gap-1.5">
-                          <span className="text-xs text-text-secondary">Delete this?</span>
+                          <span className="text-xs text-text-secondary">Void this?</span>
                           <button
                             type="button"
                             onClick={() => {
-                              deletePayment.mutate(payment.id);
+                              const reason = window.prompt('Why is this payment being voided?');
                               setConfirmingId(null);
+                              if (reason === null) return;
+                              const trimmed = reason.trim();
+                              if (!trimmed) return;
+                              voidPayment.mutate({ id: payment.id, reason: trimmed });
                             }}
                             className="min-h-[36px] rounded-sm bg-danger px-2.5 text-xs font-bold text-white transition-transform duration-instant ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
                           >
-                            Delete
+                            Void
                           </button>
                           <button
                             type="button"
@@ -151,26 +160,28 @@ export default function PaymentsPage(): React.JSX.Element {
                         </span>
                       ) : (
                         <>
-                          {!payment.verified && (
+                          {payment.confidence === 'CLAIMED' && payment.voidedAt === null && (
                             <button
                               type="button"
-                              onClick={() => verify.mutate(payment.id)}
-                              aria-label={`Mark ${formatCurrency(payment.amount)} from ${payment.customer.name ?? payment.customer.waNumber} as verified`}
+                              onClick={() => attest.mutate(payment.id)}
+                              aria-label={`Confirm ${formatCurrency(payment.amount)} from ${payment.customer.name ?? payment.customer.waNumber} landed`}
                               className="flex h-11 items-center gap-1.5 rounded-md border border-success-border bg-success-muted px-2.5 text-xs font-bold text-success transition-transform duration-instant ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success sm:h-8 sm:px-2"
                             >
                               <Check className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden="true" />
-                              Verify
+                              Confirm
                             </button>
                           )}
 
-                          <button
-                            type="button"
-                            onClick={() => setConfirmingId(payment.id)}
-                            aria-label={`Delete the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`}
-                            className="flex h-11 w-11 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-8 sm:w-8"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-                          </button>
+                          {payment.voidedAt === null && (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingId(payment.id)}
+                              aria-label={`Void the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`}
+                              className="flex h-11 w-11 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-8 sm:w-8"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </button>
+                          )}
                         </>
                       )}
                     </span>

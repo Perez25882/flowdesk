@@ -282,10 +282,12 @@ export default function CustomerProfilePage(): React.JSX.Element {
                     </span>
                   </span>
 
-                  {payment.verified ? (
-                    <Badge tone="success">Verified</Badge>
+                  {payment.voidedAt ? (
+                    <Badge tone="neutral">Voided</Badge>
+                  ) : payment.confidence === 'CLAIMED' ? (
+                    <Badge tone="warning">Unconfirmed</Badge>
                   ) : (
-                    <Badge tone="warning">Unverified</Badge>
+                    <Badge tone="success">Confirmed</Badge>
                   )}
                 </Row>
               ))}

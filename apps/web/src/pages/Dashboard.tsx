@@ -37,7 +37,7 @@ export default function DashboardPage(): React.JSX.Element {
   const { data: pendingOrders, isLoading: pendingLoading } = useOrdersByStatus('PENDING');
   const { data: stats } = useOrderStats('today');
   const { data: customers } = useCustomers(undefined, undefined, true);
-  const { data: unverifiedPayments } = usePayments(false);
+  const { data: unconfirmedPayments } = usePayments(false);
   const { data: reviewMessages } = useMessages(true);
   const { data: lowStockProducts } = useLowStockProducts();
 
@@ -46,7 +46,7 @@ export default function DashboardPage(): React.JSX.Element {
   const pendingCount = stats?.byStatus?.PENDING ?? pendingOrders?.length ?? 0;
   const pendingValue = pendingOrders?.reduce((sum, o) => sum + (o.totalAmount ?? 0), 0) ?? 0;
   const revenue = stats?.totalRevenue ?? 0;
-  const reviewCount = unverifiedPayments?.length ?? 0;
+  const reviewCount = unconfirmedPayments?.length ?? 0;
 
   const topDebtors = [...(customers ?? [])]
     .filter((c) => (c.outstandingBalance ?? 0) > 0)

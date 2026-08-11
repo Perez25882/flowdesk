@@ -1,3 +1,5 @@
+import { type PaymentConfidence } from '@flowdesk/shared';
+
 export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'PROCESSING' | 'FULFILLED' | 'CANCELLED';
 
 export interface OrderItem {
@@ -28,7 +30,8 @@ export interface OrderPayment {
   id: string;
   amount: number;
   method: string;
-  verified: boolean;
+  confidence: PaymentConfidence;
+  voidedAt: string | null;
 }
 
 export interface OrderStatusHistory {

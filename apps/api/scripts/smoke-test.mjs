@@ -267,13 +267,37 @@ async function main() {
   const orderCount = Number(afterPayment.body?.data?.[0]?.totalOrders ?? 0);
   check('customer order count maintained', orderCount === 1, `got ${orderCount}`);
 
-  // Deleting a verified payment must reverse its effect.
+  // Voiding a payment must reverse its effect while keeping the record.
+  // A deleted payment is a destroyed alibi, so the row surviving is the assertion
+  // that matters most here.
   const paymentId = payment.body?.data?.id;
   if (paymentId) {
-    await call(`/payments/${paymentId}`, { method: 'DELETE', token });
+    const voided = await call(`/payments/${paymentId}/void`, {
+      method: 'POST',
+      token,
+      body: { reason: 'smoke test reversal' },
+    });
+    check('voiding a payment succeeds', voided.status === 204, `got ${voided.status}`);
+
     const reverted = await call('/customers', { token });
     const restored = Number(reverted.body?.data?.[0]?.outstandingBalance ?? 0);
-    check('deleting a payment restores the balance', restored === 966, `got ${restored}`);
+    check('voiding a payment restores the balance', restored === 966, `got ${restored}`);
+
+    const after = await call(`/payments?customerId=${created.id}`, { token });
+    const row = after.body?.data?.find((p) => p.id === paymentId);
+    check('the voided payment is still on the record', Boolean(row), 'row was destroyed');
+    check(
+      'the voided payment carries its reason',
+      row?.voidedAt !== null && row?.voidReason === 'smoke test reversal',
+      JSON.stringify(row),
+    );
+
+    const secondVoid = await call(`/payments/${paymentId}/void`, {
+      method: 'POST',
+      token,
+      body: { reason: 'double submit' },
+    });
+    check('voiding twice is rejected', secondVoid.status === 400, `got ${secondVoid.status}`);
   }
 
   // ── Lifecycle rules ──────────────────────────────────────────────────────
