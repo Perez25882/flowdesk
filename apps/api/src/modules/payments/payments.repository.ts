@@ -90,7 +90,11 @@ export async function listPayments(
   if (filters.orderId) where.orderId = filters.orderId;
   if (filters.confidence) where.confidence = filters.confidence;
   if (filters.attested === true) Object.assign(where, ATTESTED_PAYMENT);
-  if (filters.attested === false) where.OR = [{ confidence: 'CLAIMED' }, { voidedAt: { not: null } }];
+  // A live claim awaiting the owner's confirmation — deliberately excludes voided
+  // rows. A voided payment is already resolved and needs no action, so it belongs
+  // in neither the "attested" nor the "needs checking" bucket. It stays reachable
+  // by listing without the `attested` filter.
+  if (filters.attested === false) Object.assign(where, { confidence: 'CLAIMED', voidedAt: null });
   if (filters.hasScreenshot) {
     where.screenshotUrl = { not: null };
   }

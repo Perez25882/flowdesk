@@ -40,12 +40,25 @@ export const VoidPaymentSchema = z.object({
   reason: z.string().min(3).max(500),
 });
 
+/**
+ * A query-string boolean, parsed correctly.
+ *
+ * `z.coerce.boolean()` runs `Boolean(value)` under the hood, so the string
+ * "false" — truthy as a string — coerces to `true`. That silently turns
+ * `?attested=false` into `?attested=true` on the wire, which is exactly the
+ * distinction the "needs checking" queries depend on. Parse the literal
+ * strings instead.
+ */
+const queryBooleanSchema = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .transform((value) => (typeof value === 'string' ? value === 'true' : value));
+
 export const ListPaymentsQuerySchema = z.object({
   customerId: z.string().optional(),
   orderId: z.string().optional(),
   confidence: PaymentConfidenceSchema.optional(),
-  attested: z.coerce.boolean().optional(),
-  hasScreenshot: z.coerce.boolean().optional(),
+  attested: queryBooleanSchema.optional(),
+  hasScreenshot: queryBooleanSchema.optional(),
   dateFrom: z.string().datetime().optional(),
   dateTo: z.string().datetime().optional(),
   page: z.coerce.number().int().positive().default(1),

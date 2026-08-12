@@ -288,7 +288,7 @@ async function main() {
     check('the voided payment is still on the record', Boolean(row), 'row was destroyed');
     check(
       'the voided payment carries its reason',
-      row?.voidedAt !== null && row?.voidReason === 'smoke test reversal',
+      Boolean(row) && row.voidedAt !== null && row.voidReason === 'smoke test reversal',
       JSON.stringify(row),
     );
 

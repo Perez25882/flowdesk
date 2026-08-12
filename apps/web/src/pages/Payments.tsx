@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, CreditCard, ImageIcon, Trash2 } from 'lucide-react';
+import { Ban, Check, CreditCard, ImageIcon } from 'lucide-react';
 import { PAYMENT_CONFIDENCE_LABELS } from '@flowdesk/shared';
 import {
   usePayments,
@@ -179,7 +179,7 @@ export default function PaymentsPage(): React.JSX.Element {
                               aria-label={`Void the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`}
                               className="flex h-11 w-11 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-8 sm:w-8"
                             >
-                              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                              <Ban className="h-3.5 w-3.5" strokeWidth={1.75} />
                             </button>
                           )}
                         </>
