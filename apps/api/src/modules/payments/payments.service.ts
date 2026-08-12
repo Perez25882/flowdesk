@@ -29,13 +29,22 @@ export async function logPayment(
   const payment = await repository.createPayment(data, businessId, loggedById);
 
   if (payment.confidence !== 'CLAIMED') {
-    emitPaymentConfirmed(businessId, {
-      paymentId: payment.id,
-      orderId: payment.orderId ?? '',
-      amount: Number(payment.amount),
-    });
+    // Customer-facing notices only ever describe money coming IN. Firing
+    // "payment received" on a refund (direction OUT) would write a false
+    // statement into the customer's WhatsApp history at the exact moment
+    // money went the other way — precisely the artefact a dispute turns on.
+    // A refund-specific template is later-phase work; until it exists, a
+    // refund stays silent on this channel. Do not remove this guard to
+    // "fix" a missing refund notice — add the template instead.
+    if (payment.direction === 'IN') {
+      emitPaymentConfirmed(businessId, {
+        paymentId: payment.id,
+        orderId: payment.orderId ?? '',
+        amount: Number(payment.amount),
+      });
 
-    await notifyPaymentReceived(payment.id);
+      await notifyPaymentReceived(payment.id);
+    }
 
     await logActivity({
       staffId: loggedById ?? 'owner',
@@ -66,11 +75,17 @@ export async function attestPayment(
     throw new ValidationError('Payment has already been attested or voided');
   }
 
-  emitPaymentConfirmed(businessId, {
-    paymentId: attested.id,
-    orderId: attested.orderId ?? '',
-    amount: Number(attested.amount),
-  });
+  // See the matching guard in logPayment: a refund (direction OUT) must never
+  // trigger the customer-facing "payment received" notice or the confirmed
+  // event, even once attested. Refunds stay silent until a dedicated
+  // refund-issued template exists.
+  if (attested.direction === 'IN') {
+    emitPaymentConfirmed(businessId, {
+      paymentId: attested.id,
+      orderId: attested.orderId ?? '',
+      amount: Number(attested.amount),
+    });
+  }
 
   await logActivity({
     staffId: attestedBy,
@@ -80,7 +95,9 @@ export async function attestPayment(
     note: `Payment of GHS ${Number(attested.amount).toFixed(2)} attested as received`,
   }).catch(() => {});
 
-  await notifyPaymentReceived(attested.id);
+  if (attested.direction === 'IN') {
+    await notifyPaymentReceived(attested.id);
+  }
 
   return attested;
 }
@@ -114,6 +131,21 @@ export async function listPayments(
   businessId: string,
   filters: ListPaymentsQueryInput,
 ): Promise<repository.PaymentWithCustomer[]> {
+  // `attested` and `confidence` must agree, or the query is self-contradictory:
+  // attested=true means "confidence is above CLAIMED", attested=false means
+  // "confidence is CLAIMED". Rejecting the mismatch here is what stops the
+  // repository from having to silently pick a winner between the two filters —
+  // which used to mean one of them was clobbered and the caller got a
+  // confidently wrong answer instead of an empty or explained one.
+  if (filters.confidence && filters.attested !== undefined) {
+    const confidenceImpliesAttested = filters.confidence !== 'CLAIMED';
+    if (confidenceImpliesAttested !== filters.attested) {
+      throw new ValidationError(
+        `confidence=${filters.confidence} is incompatible with attested=${filters.attested}`,
+      );
+    }
+  }
+
   return repository.listPayments(businessId, filters);
 }
 

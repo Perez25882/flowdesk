@@ -50,7 +50,13 @@ export async function createPayment(
         notes: data.notes ?? null,
         loggedById,
         confidence: data.attested ? 'SELLER_ATTESTED' : 'CLAIMED',
-        attestedBy: data.attested ? loggedById : null,
+        // The owner has no staff row, so `loggedById` is null when the owner
+        // logs their own attested payment — the dominant write path. Falling
+        // back to 'owner' here matches the attest/void routes
+        // (`request.user?.staffId ?? 'owner'`) so tier-1 attestations always
+        // name an attester instead of silently recording NULL for the actor
+        // whose word the tier is supposed to rest on.
+        attestedBy: data.attested ? (loggedById ?? 'owner') : null,
         attestedAt: data.attested ? new Date() : null,
       },
       include: {
@@ -89,12 +95,27 @@ export async function listPayments(
   if (filters.customerId) where.customerId = filters.customerId;
   if (filters.orderId) where.orderId = filters.orderId;
   if (filters.confidence) where.confidence = filters.confidence;
-  if (filters.attested === true) Object.assign(where, ATTESTED_PAYMENT);
+  // `attested` narrows by voidedAt always, and by confidence only when the
+  // caller did not already supply an explicit `confidence` filter — an
+  // unconditional Object.assign here used to silently overwrite a caller's
+  // `confidence` filter with the `attested` bucket's own, so e.g.
+  // `?confidence=GATEWAY_CONFIRMED&attested=false` returned CLAIMED rows
+  // instead of an empty (or, at the service layer, rejected) result. The
+  // service layer above rejects genuinely contradictory combinations before
+  // this runs, so an explicit `confidence` reaching here is always
+  // compatible with `attested` and is left alone to do the narrowing.
+  if (filters.attested === true) {
+    where.voidedAt = null;
+    if (!filters.confidence) where.confidence = ATTESTED_PAYMENT.confidence;
+  }
   // A live claim awaiting the owner's confirmation — deliberately excludes voided
   // rows. A voided payment is already resolved and needs no action, so it belongs
   // in neither the "attested" nor the "needs checking" bucket. It stays reachable
   // by listing without the `attested` filter.
-  if (filters.attested === false) Object.assign(where, { confidence: 'CLAIMED', voidedAt: null });
+  if (filters.attested === false) {
+    where.voidedAt = null;
+    if (!filters.confidence) where.confidence = 'CLAIMED';
+  }
   if (filters.hasScreenshot) {
     where.screenshotUrl = { not: null };
   }

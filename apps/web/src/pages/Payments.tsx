@@ -94,6 +94,11 @@ export default function PaymentsPage(): React.JSX.Element {
               {payments.map((payment) => {
                 const isConfirming = confirmingId === payment.id;
 
+                const isRefund = payment.direction === 'OUT';
+                const claimedLabel = isRefund
+                  ? 'Customer says a refund landed'
+                  : PAYMENT_CONFIDENCE_LABELS.CLAIMED;
+
                 return (
                   <Row key={payment.id} className="flex-wrap gap-y-2">
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -101,10 +106,11 @@ export default function PaymentsPage(): React.JSX.Element {
                         <span className="truncate text-sm font-medium text-text-primary">
                           {payment.customer.name ?? payment.customer.waNumber}
                         </span>
+                        {isRefund && <Badge tone="info">Refund</Badge>}
                         {payment.voidedAt ? (
                           <Badge tone="neutral">Voided</Badge>
                         ) : payment.confidence === 'CLAIMED' ? (
-                          <Badge tone="warning">{PAYMENT_CONFIDENCE_LABELS.CLAIMED}</Badge>
+                          <Badge tone="warning">{claimedLabel}</Badge>
                         ) : (
                           <Badge tone="success">{PAYMENT_CONFIDENCE_LABELS[payment.confidence]}</Badge>
                         )}
@@ -125,7 +131,14 @@ export default function PaymentsPage(): React.JSX.Element {
                     </span>
 
                     <span className="flex shrink-0 items-center gap-2">
-                      <span className="fd-figure text-sm font-semibold text-text-primary">
+                      <span
+                        className={
+                          isRefund
+                            ? 'fd-figure text-sm font-semibold text-danger'
+                            : 'fd-figure text-sm font-semibold text-text-primary'
+                        }
+                      >
+                        {isRefund ? '−' : ''}
                         {formatCurrency(payment.amount)}
                       </span>
 
@@ -164,7 +177,11 @@ export default function PaymentsPage(): React.JSX.Element {
                             <button
                               type="button"
                               onClick={() => attest.mutate(payment.id)}
-                              aria-label={`Confirm ${formatCurrency(payment.amount)} from ${payment.customer.name ?? payment.customer.waNumber} landed`}
+                              aria-label={
+                                isRefund
+                                  ? `Confirm the ${formatCurrency(payment.amount)} refund to ${payment.customer.name ?? payment.customer.waNumber} was sent`
+                                  : `Confirm ${formatCurrency(payment.amount)} from ${payment.customer.name ?? payment.customer.waNumber} landed`
+                              }
                               className="flex h-11 items-center gap-1.5 rounded-md border border-success-border bg-success-muted px-2.5 text-xs font-bold text-success transition-transform duration-instant ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success sm:h-8 sm:px-2"
                             >
                               <Check className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden="true" />
@@ -176,7 +193,11 @@ export default function PaymentsPage(): React.JSX.Element {
                             <button
                               type="button"
                               onClick={() => setConfirmingId(payment.id)}
-                              aria-label={`Void the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`}
+                              aria-label={
+                                isRefund
+                                  ? `Void the ${formatCurrency(payment.amount)} refund to ${payment.customer.name ?? payment.customer.waNumber}`
+                                  : `Void the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`
+                              }
                               className="flex h-11 w-11 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-8 sm:w-8"
                             >
                               <Ban className="h-3.5 w-3.5" strokeWidth={1.75} />

@@ -1,7 +1,7 @@
 import { prisma } from '../../config/database.js';
 import { Prisma } from '@prisma/client';
 import { NotFoundError } from '../../utils/errors.js';
-import type { PaymentConfidence } from '@flowdesk/shared';
+import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { UpdateCustomerInput, ListCustomersQueryInput } from './customers.schema.js';
 
 /**
@@ -134,6 +134,7 @@ export async function getCustomerWithHistory(
     id: string;
     amount: Prisma.Decimal;
     method: string;
+    direction: PaymentDirection;
     confidence: PaymentConfidence;
     voidedAt: Date | null;
     createdAt: Date;
@@ -155,7 +156,15 @@ export async function getCustomerWithHistory(
         where: { businessId },
         orderBy: { createdAt: 'desc' },
         take: 20,
-        select: { id: true, amount: true, method: true, confidence: true, voidedAt: true, createdAt: true },
+        select: {
+          id: true,
+          amount: true,
+          method: true,
+          direction: true,
+          confidence: true,
+          voidedAt: true,
+          createdAt: true,
+        },
       },
     },
   });

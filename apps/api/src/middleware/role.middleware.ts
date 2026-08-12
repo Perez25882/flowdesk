@@ -32,7 +32,7 @@ function roleOf(request: FastifyRequest): StaffRole | undefined {
 /**
  * Restricts a route to callers holding a capability.
  *
- * @example requireCapability('payments.delete')
+ * @example requireCapability('payments.void')
  */
 export function requireCapability(capability: Capability) {
   return function capabilityMiddleware(

@@ -1,5 +1,5 @@
 import { NotFoundError } from '../../utils/errors.js';
-import type { PaymentConfidence } from '@flowdesk/shared';
+import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { UpdateCustomerInput, ListCustomersQueryInput } from './customers.schema.js';
 import * as repository from './customers.repository.js';
 
@@ -26,6 +26,7 @@ export async function getCustomerDetail(
     id: string;
     amount: number;
     method: string;
+    direction: PaymentDirection;
     confidence: PaymentConfidence;
     voidedAt: Date | null;
     createdAt: Date;

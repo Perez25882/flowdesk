@@ -270,27 +270,43 @@ export default function CustomerProfilePage(): React.JSX.Element {
             />
           ) : (
             <RowList>
-              {data.payments.map((payment) => (
-                <Row key={payment.id}>
-                  <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="fd-figure text-sm font-semibold text-text-primary">
-                      {formatCurrency(payment.amount)}
-                    </span>
-                    <span className="truncate text-xs text-text-muted">
-                      {METHOD_LABEL[payment.method] ?? payment.method} ·{' '}
-                      {timeAgo(payment.createdAt)}
-                    </span>
-                  </span>
+              {data.payments.map((payment) => {
+                const isRefund = payment.direction === 'OUT';
 
-                  {payment.voidedAt ? (
-                    <Badge tone="neutral">Voided</Badge>
-                  ) : payment.confidence === 'CLAIMED' ? (
-                    <Badge tone="warning">Unconfirmed</Badge>
-                  ) : (
-                    <Badge tone="success">Confirmed</Badge>
-                  )}
-                </Row>
-              ))}
+                return (
+                  <Row key={payment.id}>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="flex items-center gap-2">
+                        <span
+                          className={
+                            isRefund
+                              ? 'fd-figure text-sm font-semibold text-danger'
+                              : 'fd-figure text-sm font-semibold text-text-primary'
+                          }
+                        >
+                          {isRefund ? '−' : ''}
+                          {formatCurrency(payment.amount)}
+                        </span>
+                        {isRefund && <Badge tone="info">Refund</Badge>}
+                      </span>
+                      <span className="truncate text-xs text-text-muted">
+                        {METHOD_LABEL[payment.method] ?? payment.method} ·{' '}
+                        {timeAgo(payment.createdAt)}
+                      </span>
+                    </span>
+
+                    {payment.voidedAt ? (
+                      <Badge tone="neutral">Voided</Badge>
+                    ) : payment.confidence === 'CLAIMED' ? (
+                      <Badge tone="warning">
+                        {isRefund ? 'Refund claimed' : 'Unconfirmed'}
+                      </Badge>
+                    ) : (
+                      <Badge tone="success">{isRefund ? 'Refund confirmed' : 'Confirmed'}</Badge>
+                    )}
+                  </Row>
+                );
+              })}
             </RowList>
           )}
         </Panel>

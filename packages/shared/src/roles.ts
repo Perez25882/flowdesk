@@ -83,7 +83,7 @@ export const ROLE_CAPABILITIES: Record<StaffRole, readonly Capability[]> = {
 
   /**
    * Counter staff. Takes orders, updates stock, records payments — but cannot
-   * verify or delete a payment. Recording and confirming money are deliberately
+   * attest or void a payment. Recording and confirming money are deliberately
    * separate hands.
    */
   OPERATIONS: [
