@@ -314,3 +314,20 @@ export async function deleteAllSessions(businessId: string): Promise<void> {
     },
   });
 }
+
+/**
+ * The ids of every staff member attached to a business, active or not.
+ *
+ * Used when revoking access tokens business-wide. Deactivated staff are
+ * deliberately included: they cannot sign in again, but a token issued before
+ * they were deactivated is still stateless and still live until its epoch is
+ * bumped.
+ */
+export async function listStaffIdsForBusiness(businessId: string): Promise<string[]> {
+  const rows = await prisma.staff.findMany({
+    where: { businessId },
+    select: { id: true },
+  });
+
+  return rows.map((row) => row.id);
+}

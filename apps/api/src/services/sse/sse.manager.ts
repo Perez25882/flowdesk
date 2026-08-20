@@ -1,11 +1,89 @@
 import crypto from 'node:crypto';
 import type { FastifyReply } from 'fastify';
+import {
+  hasCapability,
+  isAssignmentScoped,
+  type Capability,
+  type StaffRole,
+} from '@flowdesk/shared';
 import { logger } from '../../config/logger.js';
 import { redis, sseSubscriber } from '../../config/redis.js';
 
 export interface SSEEvent {
   type: string;
   payload: Record<string, unknown>;
+}
+
+/**
+ * The capability each event requires, mirroring the gate on the equivalent HTTP
+ * route.
+ *
+ * The stream was tenant-scoped but not role-scoped: every connection for a
+ * business received every event, so a delivery rider watched `payment.confirmed`
+ * amounts, `stock.alert` product names and `order.created` customer names and
+ * totals stream past in real time — precisely the fields the REST layer takes
+ * care to withhold from them.
+ *
+ * An event type missing from this table is delivered to nobody but the owner.
+ * That is deliberate: a new event added without a decision about who may see it
+ * should fail closed, not broadcast.
+ */
+const EVENT_CAPABILITIES: Record<string, Capability> = {
+  'order.created': 'orders.read',
+  'order.updated': 'orders.read',
+  'message.flagged': 'messages.read',
+  'stock.alert': 'products.read',
+  'payment.confirmed': 'payments.read',
+};
+
+/** The identity a stream was opened with, carried from the redeemed ticket. */
+export interface SSESubscriber {
+  /** Absent for the business owner, exactly as on an access token. */
+  staffId?: string;
+  role?: StaffRole;
+}
+
+interface SSEConnection extends SSESubscriber {
+  reply: FastifyReply;
+}
+
+/**
+ * Whether this subscriber may see this event.
+ *
+ * Owners (no staff id) see everything. Staff are resolved against the same
+ * capability matrix the HTTP routes use, and assignment-scoped roles — riders —
+ * additionally only see events for the orders assigned to them.
+ *
+ * A missing `assignedStaffId` withholds the event from a rider rather than
+ * broadcasting it. An emitter that forgets the field costs a rider an update;
+ * the other default would quietly reopen the leak this filter exists to close.
+ */
+export function canReceive(subscriber: SSESubscriber, event: SSEEvent): boolean {
+  // The owner's account has no staff row, so an absent staff id is ownership —
+  // the same rule `role.middleware.ts` applies. An owner ticket carries no role
+  // either; a record with a role but no staff id is malformed and is refused
+  // rather than promoted to owner.
+  if (subscriber.staffId === undefined) {
+    return subscriber.role === undefined;
+  }
+
+  // A staff connection whose role did not survive the ticket cannot be resolved
+  // against the matrix, so it receives nothing.
+  if (subscriber.role === undefined) {
+    return false;
+  }
+
+  const capability = EVENT_CAPABILITIES[event.type];
+
+  if (capability === undefined || !hasCapability(subscriber.role, capability)) {
+    return false;
+  }
+
+  if (isAssignmentScoped(subscriber.role)) {
+    return event.payload.assignedStaffId === subscriber.staffId;
+  }
+
+  return true;
 }
 
 /** Channel every API instance publishes dashboard events to. */
@@ -45,7 +123,7 @@ export function sendHeartbeat(reply: FastifyReply): void {
 export class SSEManager {
   private static instance: SSEManager;
 
-  private connections: Map<string, Map<string, FastifyReply>>;
+  private connections: Map<string, Map<string, SSEConnection>>;
 
   private constructor() {
     this.connections = new Map();
@@ -62,8 +140,12 @@ export class SSEManager {
    * Registers a stream. Returns null when the business is already at its
    * connection ceiling, which the caller surfaces as 429 rather than accepting
    * a socket it will not honour.
+   *
+   * `subscriber` carries the identity from the redeemed ticket. It is required
+   * rather than optional because an omitted one would default to the owner and
+   * silently restore the unfiltered broadcast.
    */
-  addConnection(businessId: string, reply: FastifyReply): string | null {
+  addConnection(businessId: string, reply: FastifyReply, subscriber: SSESubscriber): string | null {
     if (this.getConnectionCount(businessId) >= MAX_CONNECTIONS_PER_BUSINESS) {
       logger.warn(
         { businessId, limit: MAX_CONNECTIONS_PER_BUSINESS },
@@ -80,7 +162,10 @@ export class SSEManager {
 
     const businessConnections = this.connections.get(businessId);
     if (businessConnections) {
-      businessConnections.set(connectionId, reply);
+      const connection: SSEConnection = { reply };
+      if (subscriber.staffId !== undefined) connection.staffId = subscriber.staffId;
+      if (subscriber.role !== undefined) connection.role = subscriber.role;
+      businessConnections.set(connectionId, connection);
     }
 
     logger.info(
@@ -131,7 +216,14 @@ export class SSEManager {
     });
   }
 
-  /** Writes an event to the connections held by THIS instance. */
+  /**
+   * Writes an event to the connections held by THIS instance that are entitled
+   * to see it.
+   *
+   * The entitlement check is per connection, not per business: two people from
+   * the same shop can be watching the same stream with different roles, and the
+   * rider must not be shown what the manager is shown.
+   */
   deliverLocal(businessId: string, event: SSEEvent): void {
     const businessConnections = this.connections.get(businessId);
     if (!businessConnections || businessConnections.size === 0) return;
@@ -140,10 +232,14 @@ export class SSEManager {
     const data = `event: ${event.type}\ndata: ${payload}\n\n`;
 
     const deadConnections: Array<{ connectionId: string; error: unknown }> = [];
+    let recipientCount = 0;
 
-    businessConnections.forEach((reply, connectionId) => {
+    businessConnections.forEach((connection, connectionId) => {
+      if (!canReceive(connection, event)) return;
+
       try {
-        reply.raw.write(data);
+        connection.reply.raw.write(data);
+        recipientCount += 1;
       } catch (error: unknown) {
         deadConnections.push({ connectionId, error });
       }
@@ -157,9 +253,9 @@ export class SSEManager {
       this.removeConnection(businessId, dead.connectionId);
     }
 
-    if (businessConnections.size > 0) {
+    if (recipientCount > 0) {
       logger.debug(
-        { businessId, eventType: event.type, recipientCount: businessConnections.size },
+        { businessId, eventType: event.type, recipientCount },
         'SSE event broadcast',
       );
     }

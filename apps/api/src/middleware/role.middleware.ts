@@ -30,6 +30,35 @@ function roleOf(request: FastifyRequest): StaffRole | undefined {
 }
 
 /**
+ * Whether the caller holds a capability, as a plain question.
+ *
+ * `requireCapability` answers the same question but can only ever refuse the
+ * whole request, which is the wrong shape for a response that is legitimate for
+ * everyone but must carry fewer fields for some. `/orders/stats` is exactly
+ * that: every role that can read orders may see the counts, but the revenue
+ * totals belong to `revenue.read`, which only a manager or the owner holds.
+ *
+ * Same rules as `requireCapability`, so the two cannot drift: no token means
+ * no, the owner means yes, and a staff token with no resolvable role means no
+ * rather than "owner".
+ */
+export function callerHasCapability(request: FastifyRequest, capability: Capability): boolean {
+  if (!request.user) {
+    return false;
+  }
+
+  if (isOwner(request)) {
+    return true;
+  }
+
+  const role = request.user.role as StaffRole | undefined;
+
+  // A staff token with no role cannot be resolved against the matrix. Treating
+  // it as an owner would be a privilege-escalation bug, so it is refused.
+  return role !== undefined && hasCapability(role, capability);
+}
+
+/**
  * Restricts a route to callers holding a capability.
  *
  * @example requireCapability('payments.void')
@@ -44,15 +73,7 @@ export function requireCapability(capability: Capability) {
       return done(new UnauthorizedError('Authentication required'));
     }
 
-    if (isOwner(request)) {
-      return done();
-    }
-
-    const role = request.user.role as StaffRole | undefined;
-
-    // A staff token with no role cannot be resolved against the matrix. Treating
-    // it as an owner would be an privilege-escalation bug, so it is refused.
-    if (!role || !hasCapability(role, capability)) {
+    if (!callerHasCapability(request, capability)) {
       return done(new ForbiddenError('You do not have permission to perform this action'));
     }
 

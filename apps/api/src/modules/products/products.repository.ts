@@ -320,3 +320,58 @@ async function lowStockProductIds(businessId: string): Promise<string[]> {
 
   return rows.map((row) => row.id);
 }
+
+/**
+ * Puts stock back after an order that had already taken it out is cancelled.
+ *
+ * The mirror of `deductStockForOrderItems`, and deliberately written as its own
+ * function rather than a sign flag on that one: the movement type differs
+ * (RETURN, so the stock ledger says why the quantity came back), and there are
+ * no reorder alerts to raise — stock going up cannot cross a threshold
+ * downwards.
+ *
+ * Only ever called after `claimStockMovement` has won the right to run it, so
+ * a double cancellation cannot credit the same items twice.
+ */
+export async function restoreStockForOrderItems(
+  orderId: string,
+  businessId: string,
+  /** Staff id, or null when the owner cancelled it. */
+  cancelledBy: string | null,
+  items: Array<{ productId: string | null; quantity: number | Prisma.Decimal; matched: boolean }>,
+  tx?: Prisma.TransactionClient,
+): Promise<void> {
+  const db = tx ?? prisma;
+
+  for (const item of items) {
+    if (!item.productId || !item.matched) continue;
+
+    const product = await db.product.findFirst({
+      where: { id: item.productId, businessId },
+      select: { id: true, stockQuantity: true },
+    });
+
+    if (!product) continue;
+
+    const quantity = new Prisma.Decimal(item.quantity.toString());
+    const newQty = new Prisma.Decimal(product.stockQuantity.toString()).add(quantity);
+
+    await db.product.update({
+      where: { id: product.id },
+      data: { stockQuantity: newQty },
+    });
+
+    await db.stockMovement.create({
+      data: {
+        businessId,
+        productId: product.id,
+        type: 'RETURN',
+        quantity,
+        balanceAfter: newQty,
+        orderId,
+        staffId: cancelledBy,
+        note: 'Order cancelled',
+      },
+    });
+  }
+}

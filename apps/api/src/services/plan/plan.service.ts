@@ -44,7 +44,7 @@ export const PLAN_LIMITS: Record<BusinessPlan, PlanLimits> = {
 export const WARNING_THRESHOLD = 0.9;
 
 /** Grace period after the trial ends before business operations are blocked. */
-const TRIAL_GRACE_MS = 48 * 60 * 60 * 1000;
+export const TRIAL_GRACE_MS = 48 * 60 * 60 * 1000;
 
 interface BusinessPlanState {
   id: string;

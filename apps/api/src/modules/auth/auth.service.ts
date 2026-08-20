@@ -1,14 +1,19 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
-import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { prisma } from '../../config/database.js';
 import { redis } from '../../config/redis.js';
 import { ConflictError, UnauthorizedError, ValidationError } from '../../utils/errors.js';
 import { normalizeGhanaPhone } from '../../utils/phone.js';
 import { createPaystackCustomer } from '../../services/billing/paystack-customer.js';
-import { businessSubject, revokeTokensFor } from '../../services/auth/revocation.js';
+import { businessSubject, revokeTokensFor, staffSubject } from '../../services/auth/revocation.js';
+import {
+  signAccessToken as mintAccessToken,
+  signRefreshToken as mintRefreshToken,
+  verifyRefreshToken,
+  type AccessTokenClaims,
+  type RefreshTokenClaims,
+} from '../../services/auth/tokens.js';
 import type { BusinessPlan, StaffRole } from '../../types/prisma-enums.js';
 import {
   createBusiness,
@@ -23,6 +28,7 @@ import {
   createPasswordResetToken,
   consumePasswordResetToken,
   type CreateBusinessInput,
+  listStaffIdsForBusiness,
 } from './auth.repository.js';
 import type { LoginInput, RegisterInput } from './auth.schema.js';
 
@@ -66,26 +72,14 @@ export interface AuthResult extends AuthTokens {
   business: AuthenticatedBusiness;
 }
 
-interface AccessTokenPayload {
-  businessId: string;
-  plan: BusinessPlan;
-  staffId?: string;
-  role?: StaffRole;
-}
-
-interface RefreshTokenPayload {
-  businessId: string;
-  jti: string;
-}
+type AccessTokenPayload = Omit<AccessTokenClaims, 'iat'>;
 
 function signAccessToken(payload: AccessTokenPayload): string {
-  return jwt.sign(payload, env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRY });
+  return mintAccessToken(payload, ACCESS_TOKEN_EXPIRY);
 }
 
-function signRefreshToken(payload: RefreshTokenPayload): string {
-  return jwt.sign(payload, env.JWT_REFRESH_SECRET, {
-    expiresIn: `${REFRESH_TOKEN_EXPIRY_DAYS}d`,
-  });
+function signRefreshToken(payload: Omit<RefreshTokenClaims, 'iat'>): string {
+  return mintRefreshToken(payload, `${REFRESH_TOKEN_EXPIRY_DAYS}d`);
 }
 
 /** Refresh tokens are stored as SHA-256 digests so a database leak is not replayable. */
@@ -285,7 +279,12 @@ export async function requestPasswordReset(email: string): Promise<string | null
   const business = await findBusinessByEmail(email);
 
   if (!business) {
-    logger.info({ email }, 'Password reset requested for unknown email — no action taken');
+    // The address is deliberately not logged. This endpoint is unauthenticated
+    // and answers identically whether or not the account exists, so logging the
+    // input would let anyone write arbitrary strings into the production log at
+    // will — and would record the email addresses of people who are not even
+    // customers.
+    logger.info('Password reset requested for an unknown email — no action taken');
     return null;
   }
 
@@ -317,7 +316,7 @@ export async function resetPassword(rawToken: string, newPassword: string): Prom
   // already issued (they are stateless and would otherwise live out their 15
   // minutes).
   await deleteAllSessions(claim.businessId);
-  await revokeTokensFor(businessSubject(claim.businessId));
+  await revokeEveryPrincipal(claim.businessId);
 
   logger.info({ businessId: claim.businessId }, 'Password reset completed');
 }
@@ -342,7 +341,7 @@ export async function changePassword(
 
   await setBusinessPassword(businessId, await bcrypt.hash(newPassword, BCRYPT_ROUNDS));
   await deleteAllSessions(businessId);
-  await revokeTokensFor(businessSubject(businessId));
+  await revokeEveryPrincipal(businessId);
 
   logger.info({ businessId }, 'Password changed');
 }
@@ -353,9 +352,10 @@ export async function changePassword(
  * visibly rather than silently sharing the session.
  */
 export async function refreshTokens(rawRefreshToken: string): Promise<AuthTokens> {
-  try {
-    jwt.verify(rawRefreshToken, env.JWT_REFRESH_SECRET);
-  } catch {
+  // Type-asserting verification, not a bare signature check: an access token
+  // presented here would otherwise pass the signature stage and be rejected
+  // only later, by accident, when no session matched its hash.
+  if (!verifyRefreshToken(rawRefreshToken)) {
     throw new UnauthorizedError('Invalid or expired refresh token');
   }
 
@@ -412,5 +412,31 @@ export async function logout(rawRefreshToken: string): Promise<void> {
 export async function logoutAllSessions(businessId: string): Promise<void> {
   await deleteAllSessions(businessId);
   // Also invalidate access tokens already issued, not just refresh sessions.
+  await revokeEveryPrincipal(businessId);
+}
+
+/**
+ * Bumps the revocation epoch for the business AND for each of its staff.
+ *
+ * `requireAuth` picks the subject per principal: an owner's token is checked
+ * against `biz:<id>` but a staff token against `staff:<staffId>`. Revoking only
+ * the business subject therefore left every staff member's access token valid
+ * until it expired — up to fifteen minutes after the owner clicked "log out
+ * everywhere" or reset a compromised password, which is exactly the window that
+ * action exists to close.
+ *
+ * Best-effort by design: the sessions are already deleted by the caller, so a
+ * failure here shortens the guarantee to the access-token lifetime rather than
+ * leaving anyone signed in indefinitely. Failing the whole request instead
+ * would mean a password reset that could not complete.
+ */
+async function revokeEveryPrincipal(businessId: string): Promise<void> {
   await revokeTokensFor(businessSubject(businessId));
+
+  try {
+    const staff = await listStaffIdsForBusiness(businessId);
+    await Promise.all(staff.map((staffId) => revokeTokensFor(staffSubject(staffId))));
+  } catch (error: unknown) {
+    logger.error({ error, businessId }, 'Failed to revoke staff access tokens');
+  }
 }

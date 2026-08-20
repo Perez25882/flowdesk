@@ -4,13 +4,19 @@ import { env } from '../../config/env.js';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../../utils/errors.js';
 import { enqueueOutboundMessage } from '../../queues/outbound.queue.js';
 import { logger } from '../../config/logger.js';
-import { normalizeGhanaPhone } from '../../utils/phone.js';
+import { maskPhone, normalizeGhanaPhone } from '../../utils/phone.js';
 import type { InviteStaffInput, AcceptInviteInput, StaffLoginInput, UpdateStaffInput } from './staff.schema.js';
 import * as repository from './staff.repository.js';
 import { findBusinessById } from '../auth/auth.repository.js';
 import { issueTokens } from '../auth/auth.service.js';
 import { checkStaffLimit } from '../../services/plan/plan.service.js';
 import { revokeTokensFor, staffSubject } from '../../services/auth/revocation.js';
+import {
+  clearFailedLogins,
+  isLoginLocked,
+  MAX_FAILED_ATTEMPTS,
+  recordFailedLogin,
+} from '../../services/auth/login-throttle.js';
 
 const SALT_ROUNDS = 12;
 
@@ -108,6 +114,15 @@ export async function loginStaff(
   staff: PublicStaff;
 }> {
   const phone = normalizeGhanaPhone(data.phone);
+
+  // Checked before the attempt is made, so a locked-out attacker cannot keep
+  // extending their own lockout and deny the real staff member access.
+  if (await isLoginLocked(phone)) {
+    throw new UnauthorizedError(
+      'Too many failed sign-in attempts. Please try again in 15 minutes.',
+    );
+  }
+
   const candidates = await repository.findActiveStaffByPhone(phone);
 
   let matched: repository.StaffMember | null = null;
@@ -128,10 +143,20 @@ export async function loginStaff(
     if (candidates.length === 0) {
       await bcrypt.compare(data.password, DUMMY_HASH);
     }
+    const failures = await recordFailedLogin(phone);
+
+    if (failures >= MAX_FAILED_ATTEMPTS) {
+      logger.warn({ phone: maskPhone(phone) }, 'Staff sign-in locked out after repeated failures');
+    }
+
     // One message for "no such staff member" and "wrong password" alike, so the
-    // endpoint cannot be used to discover who works where.
+    // endpoint cannot be used to discover who works where. The lockout message
+    // above is the one exception, and it only ever appears to someone who has
+    // already failed five times.
     throw new UnauthorizedError('Incorrect phone number or password');
   }
+
+  await clearFailedLogins(phone);
 
   const business = await findBusinessById(matched.businessId);
 

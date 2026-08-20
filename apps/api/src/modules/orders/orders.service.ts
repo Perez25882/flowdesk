@@ -1,7 +1,6 @@
 import { Prisma, type OrderStatus } from '@prisma/client';
-import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
-import { NotFoundError, ValidationError } from '../../utils/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { extractItemsFromText } from '../../utils/item-extractor.js';
 import { notifyOrderStatus } from '../../services/notifications/customer-notifications.js';
 import { recordOrder } from '../../services/plan/plan.service.js';
@@ -10,6 +9,7 @@ import {
   createOrder,
   findOrderById,
   updateOrderStatus,
+  claimStockMovement,
   generateOrderReference,
   findOrdersByStatus,
   assignOrderToStaff,
@@ -20,6 +20,7 @@ import {
 import {
   findActiveCatalogProducts,
   deductStockForOrderItems,
+  restoreStockForOrderItems,
 } from '../products/products.repository.js';
 import type { CreateOrderInput as ManualOrderInput } from './orders.schema.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
@@ -325,18 +326,47 @@ async function transitionOrder(
   }
 
   const note = options.reason ?? `Order moved to ${next}`;
-  const order = await updateOrderStatus(orderId, next, actorId, note, undefined);
+  const order = await updateOrderStatus(
+    orderId,
+    next,
+    actorId,
+    note,
+    previousStatus,
+    options.reason ?? null,
+  );
 
-  if (next === 'CANCELLED' && options.reason) {
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { cancelReason: options.reason },
-    });
+  // Someone else moved this order between our read and our write. The work
+  // below — notifying the customer, moving stock, recomputing balances — has
+  // already been done by whoever won, so doing it again is exactly the double
+  // send and double deduction the conditional write exists to prevent.
+  //
+  // What the caller sees depends on what they asked for. If the order is now in
+  // the state they wanted, their intent was carried out and a 200 is honest. If
+  // the winner moved it somewhere else, their request genuinely did not happen
+  // and they need to know.
+  if (!order) {
+    const current = await findOrderById(orderId, businessId);
+
+    if (!current) {
+      throw new NotFoundError('Order not found');
+    }
+
+    if (current.status === next) {
+      return current;
+    }
+
+    throw new ConflictError(
+      `This order was already moved to ${current.status} by someone else.`,
+    );
   }
 
   // Stock leaves inventory at CONFIRMED, not at PENDING: an unconfirmed order
   // must not deplete stock the owner has not agreed to sell.
-  if (next === 'CONFIRMED' && !order.stockDeducted) {
+  //
+  // The claim, not `order.stockDeducted`, is what makes this happen once. The
+  // flag was read and written in two separate statements, so two concurrent
+  // confirmations both saw false and both deducted.
+  if (next === 'CONFIRMED' && (await claimStockMovement(orderId, businessId, false))) {
     const alerts = await deductStockForOrderItems(
       orderId,
       businessId,
@@ -348,14 +378,26 @@ async function transitionOrder(
       })),
     );
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { stockDeducted: true },
-    });
-
     for (const alert of alerts) {
       emitStockAlert(businessId, alert);
     }
+  }
+
+  // Cancelling an order that had already taken stock out of inventory has to
+  // put it back. Without this the shop's stock count drifts down by the size of
+  // every cancelled order and never recovers — and the reorder alerts that
+  // depend on it start firing on stock the shop still has on the shelf.
+  if (next === 'CANCELLED' && (await claimStockMovement(orderId, businessId, true))) {
+    await restoreStockForOrderItems(
+      orderId,
+      businessId,
+      actorId,
+      order.items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        matched: item.matched,
+      })),
+    );
   }
 
   // A status change moves the order in or out of the billable set, so the
