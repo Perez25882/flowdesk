@@ -164,7 +164,21 @@ const envSchema = z.object({
     (value) => value === undefined || /^https?:\/\//.test(value),
     'SENTRY_DSN must be a URL',
   ),
-});
+})
+  /**
+   * The two signing secrets must differ.
+   *
+   * `role.middleware.ts` reads the ABSENCE of a staff id as "this is the
+   * owner", and a refresh token's payload carries no staff id. Token typing
+   * (`services/auth/tokens.ts`) now stops a refresh token being replayed as a
+   * bearer token on its own, but the two secrets being equal removes an entire
+   * layer of that defence for the sake of one careless copy-paste in a
+   * deployment config. Cheaper to refuse at boot.
+   */
+  .refine((values) => values.JWT_SECRET !== values.JWT_REFRESH_SECRET, {
+    message: 'JWT_SECRET and JWT_REFRESH_SECRET must be different values',
+    path: ['JWT_REFRESH_SECRET'],
+  });
 
 export type Env = z.infer<typeof envSchema>;
 
@@ -198,8 +212,22 @@ function formatEnvError(error: z.ZodError): string {
 
 function computeFeatures(parsed: Env): Features {
   return {
+    // Flowdesk is a Meta Tech Provider: every business connects its OWN
+    // WhatsApp number through Embedded Signup, and the per-tenant phone number
+    // id and access token live encrypted on the Business row. The platform
+    // itself therefore needs only its app-level credentials.
+    //
+    // `whatsapp` used to require META_ACCESS_TOKEN and META_PHONE_NUMBER_ID,
+    // which are one specific number's credentials. Requiring them of the
+    // platform meant a production deployment could not boot without pasting one
+    // tenant's secrets into the shared environment — the exact coupling the
+    // Tech Provider model exists to remove.
     whatsapp: Boolean(
-      parsed.META_ACCESS_TOKEN && parsed.META_PHONE_NUMBER_ID && parsed.META_WEBHOOK_SECRET,
+      parsed.META_APP_ID &&
+        parsed.META_APP_SECRET &&
+        parsed.META_CONFIG_ID &&
+        parsed.META_WEBHOOK_SECRET &&
+        parsed.META_VERIFY_TOKEN,
     ),
     whatsappSignup: Boolean(parsed.META_APP_ID && parsed.META_APP_SECRET && parsed.META_CONFIG_ID),
     aiClassification:
@@ -226,10 +254,21 @@ function assertProductionIntegrations(parsed: Env, flags: Features): void {
   const missing: string[] = [];
 
   if (!flags.whatsapp) {
-    missing.push('WhatsApp (META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_WEBHOOK_SECRET)');
+    missing.push(
+      'WhatsApp platform credentials (META_APP_ID, META_APP_SECRET, META_CONFIG_ID, META_WEBHOOK_SECRET, META_VERIFY_TOKEN)',
+    );
   }
-  if (!parsed.META_VERIFY_TOKEN) {
-    missing.push('META_VERIFY_TOKEN');
+
+  // Refused rather than merely unused. These are a single WhatsApp number's
+  // credentials; in a Tech Provider deployment every number belongs to a
+  // tenant, so their presence in the shared environment means either a
+  // half-finished migration or a developer's number about to be used in
+  // production. Both are worth failing the boot for — the failure mode
+  // otherwise is one business's messages going out over another's number.
+  if (parsed.META_ACCESS_TOKEN || parsed.META_PHONE_NUMBER_ID) {
+    missing.push(
+      'META_ACCESS_TOKEN and META_PHONE_NUMBER_ID must NOT be set in production — each business supplies its own through Embedded Signup',
+    );
   }
   if (!flags.mediaStorage) {
     missing.push('media storage (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)');

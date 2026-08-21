@@ -8,6 +8,25 @@ import {
 import { toMinorUnits } from '../src/services/assistant/evidence.js';
 import type { CatalogProductWithStock } from '../src/modules/products/products.repository.js';
 
+/**
+ * The delimiters the prompt actually used for this call.
+ *
+ * They carry a per-prompt random nonce, so a test cannot hard-code them — which
+ * is the point: neither can an attacker. Reading them back out and counting
+ * occurrences is what proves the customer's text could not close the fence.
+ */
+function fenceMarkers(prompt: string): { open: string; close: string } {
+  const open = prompt.match(/<<<CUSTOMER_MESSAGE_[0-9a-f]{32}>>>/);
+  const close = prompt.match(/<<<END_CUSTOMER_MESSAGE_[0-9a-f]{32}>>>/);
+  if (!open || !close) throw new Error('prompt is not fenced');
+  return { open: open[0], close: close[0] };
+}
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+
 const catalog: CatalogProductWithStock[] = [
   { id: 'p_rice5', name: 'Rice 5kg', aliases: [], unit: 'bag', price: 80, stockQuantity: 12 },
   { id: 'p_rice25', name: 'Rice 25kg', aliases: [], unit: 'bag', price: 350, stockQuantity: 4 },
@@ -179,7 +198,8 @@ describe('assembleContext', () => {
       message: 'ok',
     });
 
-    expect(context.userPrompt.match(/<<<END_CUSTOMER_MESSAGE>>>/g)).toHaveLength(1);
+    const { close } = fenceMarkers(context.userPrompt);
+    expect(occurrences(context.userPrompt, close)).toBe(1);
   });
 
   it('frames a pending clarification so a bare reply is read as its answer', () => {

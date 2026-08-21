@@ -42,7 +42,7 @@ const MIN_FUZZY_TERM_LENGTH = 3;
 /** Digit runs at least this long are identifiers (phone numbers), not quantities. */
 const MIN_IDENTIFIER_DIGITS = 7;
 /** Defensive ceiling so a typo cannot create a multi-million-unit order. */
-const MAX_QUANTITY = 100_000;
+export const MAX_QUANTITY = 100_000;
 
 const NUMBER_WORDS: Record<string, number> = {
   half: 0.5,

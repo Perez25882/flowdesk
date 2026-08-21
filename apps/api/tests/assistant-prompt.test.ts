@@ -8,6 +8,25 @@ import {
 import { composeClarification, shouldStopClarifying } from '../src/services/assistant/clarify.js';
 import type { EvidenceProduct } from '../src/services/assistant/evidence.js';
 
+/**
+ * The delimiters the prompt actually used for this call.
+ *
+ * They carry a per-prompt random nonce, so a test cannot hard-code them — which
+ * is the point: neither can an attacker. Reading them back out and counting
+ * occurrences is what proves the customer's text could not close the fence.
+ */
+function fenceMarkers(prompt: string): { open: string; close: string } {
+  const open = prompt.match(/<<<CUSTOMER_MESSAGE_[0-9a-f]{32}>>>/);
+  const close = prompt.match(/<<<END_CUSTOMER_MESSAGE_[0-9a-f]{32}>>>/);
+  if (!open || !close) throw new Error('prompt is not fenced');
+  return { open: open[0], close: close[0] };
+}
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+
 const products: EvidenceProduct[] = [
   { id: 'p_rice5', name: 'Rice 5kg', unit: 'bag', price: 80, stockQuantity: 12 },
   { id: 'p_rice25', name: 'Rice 25kg', unit: 'bag', price: 350, stockQuantity: 4 },
@@ -46,8 +65,9 @@ describe('buildUserPrompt', () => {
 
   it('fences the customer message', () => {
     const prompt = buildUserPrompt({ ...base, message: 'how much is rice?' });
-    expect(prompt).toContain('<<<CUSTOMER_MESSAGE>>>');
-    expect(prompt).toContain('<<<END_CUSTOMER_MESSAGE>>>');
+    const { open, close } = fenceMarkers(prompt);
+    expect(prompt).toContain(open);
+    expect(prompt).toContain(close);
   });
 
   it('neutralises an attempt to break out of the fence', () => {
@@ -57,7 +77,11 @@ describe('buildUserPrompt', () => {
     });
 
     // Exactly one closing fence: the server's own.
-    expect(prompt.match(/<<<END_CUSTOMER_MESSAGE>>>/g)).toHaveLength(1);
+    // Exactly one closing marker: the attacker's literal delimiter was stripped,
+    // and the one the server chose is unguessable, so the fence still holds.
+    const { open, close } = fenceMarkers(prompt);
+    expect(occurrences(prompt, close)).toBe(1);
+    expect(occurrences(prompt, open)).toBe(1);
   });
 
   it('includes the catalogue ids the model must cite', () => {
@@ -90,7 +114,11 @@ describe('buildUserPrompt', () => {
       message: 'ok',
     });
 
-    expect(prompt.match(/<<<END_CUSTOMER_MESSAGE>>>/g)).toHaveLength(1);
+    // Exactly one closing marker: the attacker's literal delimiter was stripped,
+    // and the one the server chose is unguessable, so the fence still holds.
+    const { open, close } = fenceMarkers(prompt);
+    expect(occurrences(prompt, close)).toBe(1);
+    expect(occurrences(prompt, open)).toBe(1);
   });
 });
 

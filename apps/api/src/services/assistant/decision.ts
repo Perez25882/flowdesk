@@ -11,6 +11,7 @@ import {
 } from '@flowdesk/shared';
 import { z } from 'zod';
 import type { EvidenceSet } from './evidence.js';
+import { MAX_QUANTITY } from '../../utils/item-extractor.js';
 
 /**
  * Turning the model's JSON into a decision the server is willing to act on.
@@ -325,9 +326,15 @@ function normalizeMention(
   mention: AssistantProductMention,
   evidence: EvidenceSet,
 ): AssistantProductMention {
+  // The same ceiling the deterministic extractor applies, imported rather than
+  // restated so the two order paths cannot drift apart. Without it the model
+  // could put an arbitrary quantity on a line: `totalAmount` is Decimal(12,2),
+  // so a large enough quantity times a real price either overflows the column
+  // and throws inside the worker, or lands a multi-billion-cedi order in the
+  // owner's queue and, once confirmed, on the customer's balance.
   const quantity =
     mention.quantity !== null && Number.isFinite(mention.quantity) && mention.quantity > 0
-      ? Math.round(mention.quantity)
+      ? Math.min(Math.round(mention.quantity), MAX_QUANTITY)
       : null;
 
   return {

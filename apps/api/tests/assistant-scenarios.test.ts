@@ -9,6 +9,25 @@ import { routeDecision } from '../src/services/assistant/router.js';
 import type { CatalogProductWithStock } from '../src/modules/products/products.repository.js';
 
 /**
+ * The delimiters the prompt actually used for this call.
+ *
+ * They carry a per-prompt random nonce, so a test cannot hard-code them — which
+ * is the point: neither can an attacker. Reading them back out and counting
+ * occurrences is what proves the customer's text could not close the fence.
+ */
+function fenceMarkers(prompt: string): { open: string; close: string } {
+  const open = prompt.match(/<<<CUSTOMER_MESSAGE_[0-9a-f]{32}>>>/);
+  const close = prompt.match(/<<<END_CUSTOMER_MESSAGE_[0-9a-f]{32}>>>/);
+  if (!open || !close) throw new Error('prompt is not fenced');
+  return { open: open[0], close: close[0] };
+}
+
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+
+/**
  * The whole grounded slice, end to end, minus the network.
  *
  * These are the scenarios the plan names for live verification, run here against
@@ -293,7 +312,8 @@ describe('scenario: a prompt-injection attempt', () => {
 
   it('cannot close the fence the server opened', () => {
     const { context } = run(attack, null);
-    expect(context.userPrompt.match(/<<<END_CUSTOMER_MESSAGE>>>/g)).toHaveLength(1);
+    const { close } = fenceMarkers(context.userPrompt);
+    expect(occurrences(context.userPrompt, close)).toBe(1);
   });
 
   it('never reaches the customer even if the model complies completely', () => {
