@@ -32,6 +32,8 @@ export {
   PRICING_STANCE_LABELS,
   PROFILE_QUESTIONS,
   AI_ASSIST_MODES,
+  CATALOGUE_MODES,
+  CATALOGUE_MODE_LABELS,
   AI_ASSIST_MODE_LABELS,
   isProfileEmpty,
   countAnsweredQuestions,
@@ -45,6 +47,7 @@ export {
   type BusinessProfile,
   type ProfileQuestion,
   type AiAssistMode,
+  type CatalogueMode,
 } from './business-profile.js';
 
 export {

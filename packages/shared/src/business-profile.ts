@@ -234,3 +234,24 @@ export const AI_ASSIST_MODE_LABELS: Record<AiAssistMode, string> = {
   DRAFT_ONLY: 'Write replies for me to approve',
   GROUNDED_AUTO: 'Answer directly when it is sure, otherwise ask me',
 };
+
+/**
+ * Whether a shop keeps a product list in Flowdesk at all.
+ *
+ * Not every business can. A boutique selling second-hand clothes has stock that
+ * turns over daily and no two pieces alike; a customer asks "do you have baggy
+ * jeans?" and the only person who can answer is the owner, looking at her rail.
+ * Requiring a catalogue before the product is useful would ask that shop for a
+ * day of data entry to unlock a feature they never wanted.
+ *
+ * Deliberately a stated setting rather than "is the products table empty".
+ * A shop that has not added products YET is not the same as a shop that never
+ * will, and guessing wrong changes what every one of their customers is told.
+ */
+export const CATALOGUE_MODES = ['CATALOGUE', 'ENQUIRY_LED'] as const;
+export type CatalogueMode = (typeof CATALOGUE_MODES)[number];
+
+export const CATALOGUE_MODE_LABELS: Record<CatalogueMode, string> = {
+  CATALOGUE: 'I add my products and prices in Flowdesk',
+  ENQUIRY_LED: 'Customers ask and I tell them what I have',
+};

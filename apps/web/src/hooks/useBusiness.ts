@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
-import type { AiAssistMode, BusinessProfile, BusinessType } from '@flowdesk/shared';
+import type { AiAssistMode, BusinessProfile, BusinessType, CatalogueMode } from '@flowdesk/shared';
 import { apiFetch } from '@/lib/api';
 
 
@@ -24,6 +24,7 @@ export interface Business {
   businessPolicyNotes: string | null;
   profileUpdatedAt: string | null;
   aiAssistMode: AiAssistMode;
+  catalogueMode: CatalogueMode;
   createdAt: string;
 }
 
@@ -53,6 +54,7 @@ export interface UpdateBusinessInput {
   businessProfile?: BusinessProfile | null;
   businessPolicyNotes?: string | null;
   aiAssistMode?: AiAssistMode;
+  catalogueMode?: CatalogueMode;
 }
 
 /**

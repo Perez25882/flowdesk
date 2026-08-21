@@ -97,6 +97,15 @@ export const UpdateBusinessSchema = z
     aiAssistMode: z
       .enum(AI_ASSIST_MODES as unknown as [AiAssistMode, ...AiAssistMode[]])
       .optional(),
+    /**
+     * Whether this shop keeps a product list.
+     *
+     * Not derived from "is the catalogue empty" — a shop that has not added
+     * products YET is not the same as a shop that never will, and guessing
+     * wrong in either direction changes what every customer is told. The owner
+     * says which they are.
+     */
+    catalogueMode: z.enum(['CATALOGUE', 'ENQUIRY_LED']).optional(),
   })
   .strict();
 

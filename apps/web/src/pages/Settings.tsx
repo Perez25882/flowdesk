@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, RotateCw } from 'lucide-react';
-import type { AiAssistMode, BusinessProfile, BusinessType } from '@flowdesk/shared';
+import type { AiAssistMode, BusinessProfile, BusinessType, CatalogueMode } from '@flowdesk/shared';
 import {
   useBusiness,
   useReplyTemplates,
@@ -39,6 +39,7 @@ interface AssistantDraft {
   businessProfile: BusinessProfile;
   businessPolicyNotes: string | null;
   aiAssistMode: AiAssistMode;
+  catalogueMode: CatalogueMode;
 }
 
 function assistantDraftFrom(business: Business): AssistantDraft {
@@ -48,6 +49,7 @@ function assistantDraftFrom(business: Business): AssistantDraft {
     businessProfile: business.businessProfile ?? {},
     businessPolicyNotes: business.businessPolicyNotes,
     aiAssistMode: business.aiAssistMode,
+    catalogueMode: business.catalogueMode,
   };
 }
 
@@ -210,6 +212,7 @@ export default function SettingsPage(): React.JSX.Element {
       payload.businessProfile = draftAssistant.businessProfile;
       payload.businessPolicyNotes = draftAssistant.businessPolicyNotes;
       payload.aiAssistMode = draftAssistant.aiAssistMode;
+      payload.catalogueMode = draftAssistant.catalogueMode;
     }
 
     if (draft) {
@@ -404,6 +407,7 @@ export default function SettingsPage(): React.JSX.Element {
               profile={draftAssistant.businessProfile}
               policyNotes={draftAssistant.businessPolicyNotes}
               assistMode={draftAssistant.aiAssistMode}
+              catalogueMode={draftAssistant.catalogueMode}
               onChange={(patch) =>
                 setDraftAssistant((prev) => (prev ? { ...prev, ...patch } : prev))
               }

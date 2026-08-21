@@ -65,10 +65,18 @@ export default function ManualOrderModal(): React.JSX.Element {
 
   const total = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
 
-  const activeProducts = useMemo(
-    () => products.filter((p) => p.active && Number(p.stockQuantity) > 0),
-    [products],
-  );
+  // Stock level is deliberately NOT a filter here. Every product starts at zero
+  // and a great many shops never enter stock at all, so filtering on it hid the
+  // entire catalogue from the picker with no explanation. Selling something the
+  // count says you do not have is also an ordinary event — the PRD allows
+  // negative stock precisely because the shelf is the source of truth, not the
+  // database.
+  const activeProducts = useMemo(() => products.filter((p) => p.active), [products]);
+
+  // A shop with no catalogue is not a shop that forgot to add one. Boutiques,
+  // thrift sellers and anyone whose stock turns over daily work entirely from
+  // free-text lines, so the picker should not be the thing they see first.
+  const hasCatalogue = activeProducts.length > 0;
 
   function addItem(isFreeText = false): void {
     setItems((prev) => [
@@ -244,10 +252,16 @@ export default function ManualOrderModal(): React.JSX.Element {
             <div className="mb-2.5 flex items-center justify-between gap-3">
               <h3 className="fd-label">Items</h3>
               <div className="flex gap-1.5">
-                <Button size="sm" variant="secondary" onClick={() => addItem(false)}>
-                  From catalogue
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => addItem(true)}>
+                {hasCatalogue && (
+                  <Button size="sm" variant="secondary" onClick={() => addItem(false)}>
+                    From catalogue
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant={hasCatalogue ? 'ghost' : 'secondary'}
+                  onClick={() => addItem(true)}
+                >
                   Type it out
                 </Button>
               </div>
@@ -255,7 +269,9 @@ export default function ManualOrderModal(): React.JSX.Element {
 
             {items.length === 0 ? (
               <p className="rounded-md border border-dashed border-border px-4 py-7 text-center text-sm text-text-muted">
-                No items yet. Add one from your catalogue, or type it out if it is not listed.
+                {hasCatalogue
+                  ? 'No items yet. Add one from your catalogue, or type it out if it is not listed.'
+                  : 'No items yet. Type in what they are buying and what you agreed to charge.'}
               </p>
             ) : (
               <ul className="space-y-2">

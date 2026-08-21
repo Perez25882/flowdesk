@@ -13,6 +13,7 @@ import {
   countAnsweredQuestions,
   PROFILE_QUESTIONS,
   type AiAssistMode,
+  type CatalogueMode,
   type BusinessProfile,
   type BusinessType,
   type DayOfWeek,
@@ -41,12 +42,14 @@ interface Props {
   profile: BusinessProfile | null;
   policyNotes: string | null;
   assistMode: AiAssistMode;
+  catalogueMode: CatalogueMode;
   onChange: (patch: {
     businessType?: BusinessType | null;
     businessTypeOther?: string | null;
     businessProfile?: BusinessProfile;
     businessPolicyNotes?: string | null;
     aiAssistMode?: AiAssistMode;
+    catalogueMode?: CatalogueMode;
   }) => void;
 }
 
@@ -117,6 +120,7 @@ export default function BusinessProfileForm({
   profile,
   policyNotes,
   assistMode,
+  catalogueMode,
   onChange,
 }: Props): React.JSX.Element {
   const [areaDraft, setAreaDraft] = useState('');
@@ -443,6 +447,35 @@ export default function BusinessProfileForm({
             value={policyNotes ?? ''}
             onChange={(e) => onChange({ businessPolicyNotes: e.target.value || null })}
           />
+        </FieldShell>
+
+        <FieldShell
+          label="Do you keep a product list here?"
+          hint="Plenty of shops do not, and never need to. If your stock changes daily or every piece is different, choose the second option — the assistant will stop guessing at prices and start asking you instead."
+          htmlFor="catalogue-mode"
+        >
+          <select
+            id="catalogue-mode"
+            className={inputClass}
+            value={catalogueMode}
+            onChange={(e) => onChange({ catalogueMode: e.target.value as CatalogueMode })}
+          >
+            <option value="CATALOGUE">
+              Yes — I add my products and prices in Flowdesk
+            </option>
+            <option value="ENQUIRY_LED">
+              No — customers ask and I tell them what I have
+            </option>
+          </select>
+
+          {catalogueMode === 'ENQUIRY_LED' && (
+            <p className="mt-2 border-l-2 border-border-strong pl-3 text-sm text-text-secondary">
+              When someone asks for something, the assistant replies to hold them
+              — &ldquo;let me check on baggy jeans for you&rdquo; — and puts the question in
+              front of you. It will never tell a customer you have something, or
+              that you do not, because only you know.
+            </p>
+          )}
         </FieldShell>
 
         <FieldShell

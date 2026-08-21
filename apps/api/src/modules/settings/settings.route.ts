@@ -39,6 +39,7 @@ const BUSINESS_SELECT = {
   businessPolicyNotes: true,
   profileUpdatedAt: true,
   aiAssistMode: true,
+  catalogueMode: true,
   createdAt: true,
 } as const;
 
