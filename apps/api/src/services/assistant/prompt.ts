@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { CatalogueMode } from '@prisma/client';
 import {
   BUSINESS_TYPE_LABELS,
   DAY_LABELS,
@@ -194,6 +195,29 @@ export function renderShopFacts(
   return lines.join('\n');
 }
 
+/**
+ * What the model is told when the shop keeps no product list.
+ *
+ * The instruction it replaces — "answer only from the CATALOGUE" — is not just
+ * unhelpful here, it is actively wrong: there is no catalogue, so a model
+ * following it correctly concludes it knows nothing and produces an answer the
+ * router can only discard. Saying so explicitly, and giving it the one job it
+ * can actually do, is the difference between a customer getting a reply that
+ * names what they asked about and a customer getting a form letter.
+ */
+const ENQUIRY_LED_BRIEF = [
+  'This shop does not keep a product list in the system. Its stock changes constantly and only the owner knows what is on the shelf today.',
+  '',
+  'So: you do NOT know what this shop sells, what anything costs, or whether anything is in stock. Never say or imply otherwise, in either direction — "we have that" and "we don\'t have that" are equally wrong, because nobody has looked yet.',
+  '',
+  'When a customer asks about buying something:',
+  '- Put their own words for the item in entities.products[0].mention (e.g. "baggy jeans"). Leave productId null.',
+  '- Set escalate.needed true with reason "unknown_fact". The owner answers this one, not you.',
+  '- Leave answer.text null. The system writes the holding reply itself.',
+  '',
+  'You can still answer from SHOP FACTS — opening hours, delivery areas, delivery charge, payment methods — exactly as before. Those are on file and are yours to use.',
+].join('\n');
+
 /** Catalogue rows, with the ids the model must cite. */
 export function renderCatalogue(products: EvidenceProduct[]): string {
   if (products.length === 0) {
@@ -240,6 +264,12 @@ export interface BuildPromptInput {
   profile: BusinessProfile | null;
   policyNotes: string | null;
   products: EvidenceProduct[];
+  /**
+   * Whether this shop keeps a product list. Defaults to CATALOGUE so an omitted
+   * value cannot silently turn a catalogue shop into one that refuses to quote
+   * its own prices.
+   */
+  catalogueMode?: CatalogueMode;
   openOrders: EvidenceOrder[];
   history: ConversationTurn[];
   /** Pending clarification, so a bare "2 bags" is read as the answer to it. */
@@ -258,8 +288,9 @@ export function buildUserPrompt(input: BuildPromptInput): string {
       input.policyNotes,
     ),
     '',
-    'CATALOGUE (only these products exist)',
-    renderCatalogue(input.products),
+    ...(input.catalogueMode === 'ENQUIRY_LED'
+      ? ['HOW THIS SHOP SELLS', ENQUIRY_LED_BRIEF]
+      : ['CATALOGUE (only these products exist)', renderCatalogue(input.products)]),
     '',
     "THIS CUSTOMER'S OPEN ORDERS",
     renderOpenOrders(input.openOrders),

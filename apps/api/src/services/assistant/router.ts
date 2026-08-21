@@ -5,8 +5,9 @@ import {
   type BusinessProfile,
   type ClarificationField,
 } from '@flowdesk/shared';
-import type { AiAssistMode } from '@prisma/client';
+import type { AiAssistMode, CatalogueMode } from '@prisma/client';
 import { composeClarification, shouldStopClarifying } from './clarify.js';
+import { composeEnquiryHold, isOwnerOnlyEnquiry } from './enquiry.js';
 import { escalationRequired, isKnownEvidence } from './decision.js';
 import type { EvidenceProduct, EvidenceSet } from './evidence.js';
 import { validateGrounding, type GroundingFailure } from './grounding.js';
@@ -43,6 +44,12 @@ const AUTO_SENDABLE_INTENTS: ReadonlySet<IntentType> = new Set([
 
 export interface RouteInput {
   mode: AiAssistMode;
+  /**
+   * Whether this shop keeps a product list. A shop that does not cannot have
+   * its product questions answered from records that do not exist, so they are
+   * held and handed to the owner instead of drafted into silence.
+   */
+  catalogueMode: CatalogueMode;
   decision: AssistantDecision | null;
   evidence: EvidenceSet;
   /** The catalogue rows rendered into the prompt, for composing a clarification. */
@@ -54,6 +61,8 @@ export interface RouteInput {
   clarificationCount: number;
   /** False when the 24-hour service window has closed — nothing may be sent. */
   canDeliver: boolean;
+  /** The customer's message, for composing a reply that names what they asked about. */
+  message: string;
 }
 
 export interface RouteResult {
@@ -277,6 +286,41 @@ export function routeDecision(input: RouteInput): RouteResult {
     if (question && input.canDeliver && !escalated) {
       return { action: 'clarify', text: question, validationFailures: [], escalated, groundedOn };
     }
+  }
+
+  // A shop with no product list cannot answer "do you have baggy jeans?" from
+  // anything, and neither can the assistant. Rather than falling through to a
+  // generic template — which tells the customer nothing and tells the owner
+  // nothing either — hold the customer with a reply that names what they asked
+  // about, and escalate so the owner is asked the one question only they can
+  // answer.
+  //
+  // Escalated on purpose: this is not the assistant answering, it is the
+  // assistant buying the owner a minute. The message lands in the review queue
+  // either way.
+  if (input.catalogueMode === 'ENQUIRY_LED' && isOwnerOnlyEnquiry(decision)) {
+    const hold = composeEnquiryHold({ decision, message: input.message });
+
+    if (hold && input.canDeliver) {
+      return {
+        action: 'clarify',
+        text: hold,
+        validationFailures: [],
+        escalated: true,
+        groundedOn,
+      };
+    }
+
+    // Cannot say anything safely, or cannot send at all. Still escalate — a
+    // silent drop is the one outcome that loses the sale without telling
+    // anybody.
+    return {
+      action: 'template_reply',
+      text: null,
+      validationFailures: [],
+      escalated: true,
+      groundedOn,
+    };
   }
 
   // Nothing to say. The template still goes out so the customer is not ignored.

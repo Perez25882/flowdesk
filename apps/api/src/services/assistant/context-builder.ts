@@ -1,4 +1,4 @@
-import type { AiAssistMode, BusinessType, Prisma } from '@prisma/client';
+import type { AiAssistMode, BusinessType, CatalogueMode, Prisma } from '@prisma/client';
 import type { BusinessProfile } from '@flowdesk/shared';
 import { prisma } from '../../config/database.js';
 import { findCandidateProducts } from '../../utils/item-extractor.js';
@@ -55,6 +55,7 @@ export interface AssistantBusiness {
   businessProfile: BusinessProfile | null;
   businessPolicyNotes: string | null;
   aiAssistMode: AiAssistMode;
+  catalogueMode: CatalogueMode;
   waDisplayNumber: string | null;
 }
 
@@ -155,6 +156,7 @@ export function assembleContext(input: AssembleContextInput): AssistantContext {
     profile: business.businessProfile,
     policyNotes: business.businessPolicyNotes,
     products,
+    catalogueMode: business.catalogueMode,
     openOrders: input.openOrders,
     history: input.history,
     awaitingClarification: input.awaitingClarification,
@@ -187,6 +189,7 @@ const BUSINESS_CONTEXT_SELECT = {
   businessProfile: true,
   businessPolicyNotes: true,
   aiAssistMode: true,
+  catalogueMode: true,
   waDisplayNumber: true,
 } satisfies Prisma.BusinessSelect;
 
@@ -219,6 +222,7 @@ export async function loadAssistantBusiness(
     businessProfile: readProfile(business.businessProfile),
     businessPolicyNotes: business.businessPolicyNotes,
     aiAssistMode: business.aiAssistMode,
+    catalogueMode: business.catalogueMode,
     waDisplayNumber: business.waDisplayNumber,
   };
 }

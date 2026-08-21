@@ -91,6 +91,8 @@ async function main(): Promise<void> {
       serverEscalation: false,
       clarificationCount: 0,
       canDeliver: true,
+    catalogueMode: 'CATALOGUE',
+    message: '',
     });
 
     bump(tally, route.action);

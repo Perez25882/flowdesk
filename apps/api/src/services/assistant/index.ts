@@ -148,6 +148,8 @@ async function runAssistantLocked(input: RunAssistantInput): Promise<RunAssistan
     serverEscalation: input.serverEscalation ?? false,
     clarificationCount: pending?.clarificationCount ?? 0,
     canDeliver: delivery.allowed,
+    catalogueMode: context.business.catalogueMode,
+    message: input.body,
   });
 
   await recordAssistantReply(input.messageId, route, decision, result);
