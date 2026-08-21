@@ -55,3 +55,6 @@ apps/api/prisma/*.db
 .vscode/*
 !.vscode/extensions.json
 Thumbs.db
+
+# Redis snapshot, written if a local redis-server is started from the repo root
+dump.rdb
