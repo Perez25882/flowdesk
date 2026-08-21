@@ -1,4 +1,14 @@
-import { useDroppable, useDraggable, DndContext, type DragEndEvent } from '@dnd-kit/core';
+import {
+  useDroppable,
+  useDraggable,
+  useSensor,
+  useSensors,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  type DragEndEvent,
+} from '@dnd-kit/core';
 import { useMemo } from 'react';
 import type { OrderWithRelations, OrderStatus } from '@/types/order';
 import { useOrdersByStatus, useUpdateOrderStatus } from '@/hooks/useOrders';
@@ -194,6 +204,30 @@ interface OrderBoardProps {
 export default function OrderBoard({ onSelectOrder, staffId }: OrderBoardProps): React.JSX.Element {
   const updateStatus = useUpdateOrderStatus();
 
+  /**
+   * Sensors with activation constraints, because the defaults make the board
+   * unusable.
+   *
+   * dnd-kit's default PointerSensor begins a drag on pointerdown with no
+   * threshold, and a drag suppresses the click that follows. The cards are
+   * buttons whose click opens the order — so with the defaults, clicking an
+   * order on the board did nothing at all. The only way into an order was the
+   * dashboard's list. Tapping on a phone was worse: the tap started a drag, and
+   * on mobile the board is a tabbed list with nothing to drag to.
+   *
+   * A pointer has to travel 8px before it counts as a drag, which is under the
+   * distance a hand moves during a deliberate drag and over the distance it
+   * moves during a click. Touch gets a hold instead of a distance: a distance
+   * threshold on touch would capture the vertical swipe that scrolls the
+   * column, so a quarter-second hold is what separates "I am moving this card"
+   * from "I am scrolling" or "I am opening this".
+   */
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+    useSensor(KeyboardSensor),
+  );
+
   const handleDragEnd = (event: DragEndEvent): void => {
     const { active, over } = event;
     if (!over) return;
@@ -210,7 +244,7 @@ export default function OrderBoard({ onSelectOrder, staffId }: OrderBoardProps):
   };
 
   return (
-    <DndContext onDragEnd={handleDragEnd}>
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div
         className={cn(
           'grid min-h-0 flex-1 gap-3 md:grid-cols-2 lg:grid-cols-3',

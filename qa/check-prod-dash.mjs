@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const ctx = await b.newContext({ viewport: { width: 390, height: 844 } });
+await ctx.addInitScript(() => { try { localStorage.setItem('flowdesk.session','1'); } catch {} });
+const p = await ctx.newPage();
+p.on('console', m => { if (m.type()==='error') console.log('ERR:', m.text().slice(0,140)); });
+await p.goto('http://127.0.0.1:4174/dashboard', { waitUntil: 'domcontentloaded' });
+await p.waitForTimeout(3500);
+console.log('URL:', p.url());
+console.log('TEXT:', (await p.evaluate(()=>document.body.innerText)).slice(0,500).replace(/\n+/g,' | '));
+await b.close();

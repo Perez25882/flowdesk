@@ -1,0 +1,77 @@
+[
+  {
+    "name": "orders board shows a pending order",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "clicking an order opens its detail drawer",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "order drawer offers a cancel action",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "cancelling opens a dialog rather than firing a doomed request",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "an empty reason is refused with an explanation",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "cancelling with a reason succeeds and closes the dialog",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "dashboard is readable within 4s on throttled 3G",
+    "passed": false,
+    "detail": "123579ms to a usable screen (63571ms to first content)"
+  },
+  {
+    "name": "the dashboard is navigable by keyboard",
+    "passed": true,
+    "detail": "24/25 tab stops landed on a focusable element"
+  },
+  {
+    "name": "landing page offers a signup route",
+    "passed": true,
+    "detail": "0 link(s), 5 button(s)"
+  },
+  {
+    "name": "signup CTA is a real link, not a button",
+    "passed": false,
+    "detail": "CTAs are <button onClick>, not crawlable or openable in a new tab"
+  },
+  {
+    "name": "landing page shows the real Starter price",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "no \"nothing reaches a customer without you\" claim",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "no \"matches the payment\" claim",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "no \"every chat, searchable\" claim",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "name": "pricing table does not sell broadcasts",
+    "passed": true,
+    "detail": ""
+  }
+]
