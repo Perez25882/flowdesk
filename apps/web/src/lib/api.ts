@@ -220,6 +220,59 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   return parse<T>(response);
 }
 
+/**
+ * Fetches a binary response — an image, not JSON — through the same auth and
+ * refresh path as everything else.
+ *
+ * This exists because the access token lives in memory rather than in a cookie
+ * the browser would attach on its own. A payment screenshot dropped into
+ * `<img src="/api/v1/payments/…/screenshot">` therefore arrives with no
+ * Authorization header at all and comes back 401, showing the owner a broken
+ * image where the proof of payment should be. Reading the bytes here and
+ * handing back a Blob lets the caller build an object URL the `<img>` can use.
+ *
+ * The caller owns the object URL and must revoke it: a Blob URL is held by the
+ * document until it is, and this queue can be scrolled through dozens of
+ * screenshots in a sitting on a phone with very little memory to spare.
+ */
+export async function apiFetchBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  let response = await send(path, options, getAccessToken());
+
+  if (response.status === 401 && !options.anonymous) {
+    const refreshed = await ensureRefresh();
+
+    if (!refreshed) {
+      redirectToLogin();
+      throw new ApiError('Your session has expired. Please sign in again.', 401, 'UNAUTHORIZED');
+    }
+
+    response = await send(path, options, getAccessToken());
+
+    if (response.status === 401) {
+      redirectToLogin();
+    }
+  }
+
+  if (!response.ok) {
+    // An error from these routes is still the JSON envelope, so the server's
+    // own sentence is preferred over a status code the owner cannot read.
+    let message = `Request failed (${response.status})`;
+    let code = 'REQUEST_FAILED';
+
+    try {
+      const payload = (await response.json()) as ApiEnvelope<unknown>;
+      if (payload.error) message = payload.error;
+      if (payload.code) code = payload.code;
+    } catch {
+      /* Not JSON. The status-derived message above stands. */
+    }
+
+    throw new ApiError(message, response.status, code);
+  }
+
+  return response.blob();
+}
+
 /** Builds a query string, omitting empty values so filters stay clean. */
 export function toQuery(params: Record<string, unknown>): string {
   const search = new URLSearchParams();
