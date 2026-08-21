@@ -67,6 +67,10 @@ interface ClassifiedMessage {
   body: string | null;
   businessId: string;
   customerId: string | null;
+  /** True once this message has been carried through the pipeline. */
+  processed: boolean;
+  /** Prisma types this as a string union, and the SSE payload takes a string. */
+  intent: string;
   customer: { id: string; waNumber: string; name: string | null; blacklisted: boolean } | null;
 }
 
@@ -78,6 +82,8 @@ async function fetchMessageWithCustomer(messageId: string): Promise<ClassifiedMe
       body: true,
       businessId: true,
       customerId: true,
+      processed: true,
+      intent: true,
       customer: {
         select: { id: true, waNumber: true, name: true, blacklisted: true },
       },
@@ -156,7 +162,7 @@ async function handleAutoReplyIntent(
   templateKey: TemplateKey,
 ): Promise<void> {
   if (!message.customer) return;
-  await notifyIntentReply(message.businessId, message.customer.id, templateKey);
+  await notifyIntentReply(message.businessId, message.customer.id, templateKey, message.id);
 }
 
 const INTENT_TEMPLATE: Partial<Record<IntentType, TemplateKey>> = {
@@ -166,8 +172,58 @@ const INTENT_TEMPLATE: Partial<Record<IntentType, TemplateKey>> = {
   [IntentType.COMPLAINT]: 'complaint',
 };
 
+/**
+ * The one thing this worker must never do twice: answer the same message.
+ *
+ * `runAssistant` sends from inside itself — `deliverText` runs before this
+ * function has finished its own bookkeeping — so any write after it can throw,
+ * fail the job, and hand BullMQ a retry that starts again from the top:
+ * reclassify, re-run the assistant, ask the customer the identical question a
+ * second time with the clarification counter now reading two. There was nothing
+ * on the row saying it had already been answered, and the outbound job carried
+ * no key, so both copies went out.
+ *
+ * `processed` is that marker. It is written in the same update as the
+ * classification and the provisional review flag, which is BEFORE anything is
+ * sent, so a retry that finds it set knows the first attempt got at least as far
+ * as deciding what to do — and that whatever happened after, doing it again
+ * means talking to the customer twice. An attempt that died earlier leaves it
+ * false and is retried in full, which is what the retry budget is for.
+ *
+ * The message is flagged for review on the way out. A retry only happens because
+ * something failed mid-flight, and from here there is no way to tell whether the
+ * customer was answered before it did. Putting the message in front of a person
+ * is the only resolution that does not quietly gamble on one of the two.
+ */
+async function abandonRetryOfHandledMessage(message: ClassifiedMessage): Promise<void> {
+  logger.warn(
+    { messageId: message.id, businessId: message.businessId, intent: message.intent },
+    'Intent classification retried for a message already handled — not answering it again',
+  );
+
+  await prisma.message
+    .update({ where: { id: message.id }, data: { requiresReview: true } })
+    .catch((error: unknown) => {
+      logger.error(
+        { error, messageId: message.id },
+        'Failed to flag a retried message for review',
+      );
+    });
+
+  emitMessageFlagged(message.businessId, {
+    messageId: message.id,
+    requiresReview: true,
+    intent: message.intent,
+  });
+}
+
 async function processIntentClassification(jobData: IntentClassificationJobData): Promise<void> {
   const message = await fetchMessageWithCustomer(jobData.messageId);
+
+  if (message.processed) {
+    await abandonRetryOfHandledMessage(message);
+    return;
+  }
 
   // A message with no text (media, sticker) still has to be marked processed,
   // otherwise it sits in the queue view as "pending" forever.
@@ -190,6 +246,16 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
 
   const result = await classifyMessage(message.body, message.businessId, { catalogTerms });
 
+  // The review flag is written here, with the classification, rather than only
+  // after the assistant has run. It used to be the last statement in the
+  // function, which meant the single failure this whole guard exists for — a
+  // write dying after the customer had already been answered — also lost the
+  // flag, and a message that needed a person never appeared in the review
+  // queue. Computed from the rule engine alone, with the action `none` because
+  // nothing has been done to the message yet; the call below refines it once
+  // the assistant has had its say.
+  const provisionalReview = requiresReview(result.intent, result.confidence, 'none', false);
+
   await prisma.message.update({
     where: { id: jobData.messageId },
     data: {
@@ -198,8 +264,17 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
       classifiedBy: result.source as ClassificationSource,
       processed: true,
       processedAt: new Date(),
+      requiresReview: provisionalReview,
     },
   });
+
+  if (provisionalReview) {
+    emitMessageFlagged(jobData.businessId, {
+      messageId: jobData.messageId,
+      requiresReview: true,
+      intent: result.intent,
+    });
+  }
 
   // Blacklist is enforced again inside the notification layer, but short-
   // circuiting here also avoids creating orders — and spending model calls —
@@ -209,12 +284,10 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
       { messageId: jobData.messageId, customerId: message.customer.id },
       'Skipping intent side effects: customer is blacklisted',
     );
-    await flagIfNeeded(jobData, result.intent, result.confidence, 'none', false);
     return;
   }
 
   if (result.intent === IntentType.STATUS_CHECK) {
-    await flagIfNeeded(jobData, result.intent, result.confidence, 'none', false);
     await handleStatusCheckIntent(message);
     return;
   }
@@ -245,6 +318,7 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
     finalConfidence,
     assisted.action,
     assisted.escalated,
+    provisionalReview,
   );
 
   logger.info(
@@ -277,11 +351,15 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
 }
 
 /**
- * Records whether a person needs to look at this, and tells the dashboard.
+ * Refines the review flag once the assistant's answer is known.
  *
- * Split out because it now depends on what the assistant did, which is only
- * known after it has run — the flag can no longer be written in the same update
- * as the classification.
+ * A separate write from the classification because it depends on what the
+ * assistant did, which is only known after it has run — and because the
+ * assistant has already spoken to the customer by then, this write failing must
+ * not be allowed to re-send anything. That is what the guard at the top of
+ * `processIntentClassification` is for, and why a provisional flag was written
+ * before the assistant ran: if this write never lands, the row still carries the
+ * rule engine's verdict rather than nothing at all.
  */
 async function flagIfNeeded(
   jobData: IntentClassificationJobData,
@@ -289,6 +367,7 @@ async function flagIfNeeded(
   confidence: number,
   action: AssistantAction,
   escalated: boolean,
+  alreadyFlagged: boolean,
 ): Promise<void> {
   const needsReview = requiresReview(intent, confidence, action, escalated);
 
@@ -297,7 +376,10 @@ async function flagIfNeeded(
     data: { intent, intentConfidence: confidence, requiresReview: needsReview },
   });
 
-  if (needsReview) {
+  // Only on the transition. The dashboard was already told when the provisional
+  // flag went on, and a second identical event just makes the review queue
+  // flicker.
+  if (needsReview && !alreadyFlagged) {
     emitMessageFlagged(jobData.businessId, {
       messageId: jobData.messageId,
       requiresReview: true,

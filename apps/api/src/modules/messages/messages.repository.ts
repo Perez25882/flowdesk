@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database.js';
 import { Prisma, IntentType, ClassificationSource } from '@prisma/client';
+import { NotFoundError } from '../../utils/errors.js';
 import type { ListMessagesQueryInput, UpdateMessageIntentInput } from './messages.schema.js';
 
 /**
@@ -59,7 +60,10 @@ export async function updateMessageIntent(
     where: { id, businessId },
     include: { customer: { select: { id: true, name: true, waNumber: true } } },
   });
-  if (!message) throw new Error('Message not found');
+  // A bare Error here reached the owner as "Internal server error", because the
+  // handler only maps `AppError`. The id being absent is the ordinary case of
+  // another tenant's message id, which is a 404, not a fault.
+  if (!message) throw new NotFoundError('Message not found');
 
   await prisma.intentCorrection.create({
     data: {

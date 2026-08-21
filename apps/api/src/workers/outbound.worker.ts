@@ -3,7 +3,13 @@ import { MessageDirection, MessageType } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
-import { loadTenantCredentials, sendText } from '../services/whatsapp/client.js';
+import {
+  loadTenantCredentials,
+  sendTemplate,
+  sendText,
+  type SendResult,
+  type TenantCredentials,
+} from '../services/whatsapp/client.js';
 import { WhatsAppSendError, describeForOwner } from '../services/whatsapp/meta-errors.js';
 import { recordOutboundConversation } from '../services/plan/plan.service.js';
 import {
@@ -59,6 +65,40 @@ async function recordSentMessage(
 }
 
 /**
+ * Sends the job through the channel Meta will accept for it.
+ *
+ * The branch is the whole point of `template` being on the job. Inside the
+ * 24-hour window a free-form text is cheaper, carries the owner's own wording,
+ * and needs no approval. Outside it Meta rejects free-form outright, so a job
+ * queued there used to be enqueued, rejected as non-retryable and dead-lettered
+ * — or, before that, dropped at the gate with nothing but a log line while the
+ * owner believed the customer had been told.
+ */
+async function send(
+  credentials: TenantCredentials,
+  data: OutboundJobData,
+): Promise<SendResult> {
+  if (!data.template) {
+    return sendText(credentials, data.to, data.body);
+  }
+
+  return sendTemplate(
+    credentials,
+    data.to,
+    data.template.name,
+    data.template.language,
+    data.template.parameters.length > 0
+      ? [
+          {
+            type: 'body',
+            parameters: data.template.parameters.map((text) => ({ type: 'text', text })),
+          },
+        ]
+      : undefined,
+  );
+}
+
+/**
  * True when the owner started answering from their own phone after this job was
  * queued.
  *
@@ -101,8 +141,13 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
   }
 
   try {
-    const result = await sendText(credentials, data.to, data.body);
+    const result = await send(credentials, data);
 
+    // Both channels are recorded identically. Meta bills a template
+    // conversation exactly as it bills a free-form one, so an accounting path
+    // that only counted `sendText` would under-report the tenant's usage — and
+    // a conversation log missing the template sends would show the customer
+    // being ignored for a day when they had in fact been told.
     await Promise.all([
       recordSentMessage(data, result.waMessageId),
       recordOutboundConversation(data.businessId),
@@ -113,6 +158,8 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
         businessId: data.businessId,
         waMessageId: result.waMessageId,
         template: data.templateKey,
+        channel: data.template ? 'template' : 'text',
+        metaTemplate: data.template?.name,
       },
       'Outbound WhatsApp message delivered',
     );
@@ -120,11 +167,20 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
     if (error instanceof WhatsAppSendError && !error.failure.retryable) {
       // Revoked token, closed 24h window, unreachable recipient — all permanent
       // for this message. Retrying wastes quota and delays other tenants.
-      logger.warn(
+      // A missing or paused template is the one permanent failure an operator
+      // can actually fix, and the one that hits every newly onboarded tenant,
+      // so it is logged at error with the template named rather than folded in
+      // with unreachable recipients. It still dead-letters below: this message
+      // is lost, and the record of it has to say so rather than imply the
+      // customer was reached.
+      const level = error.failure.kind === 'TEMPLATE_UNAVAILABLE' ? 'error' : 'warn';
+
+      logger[level](
         {
           businessId: data.businessId,
           kind: error.failure.kind,
           code: error.failure.code,
+          metaTemplate: data.template?.name,
           guidance: describeForOwner(error.failure.kind),
         },
         'Outbound message permanently failed',

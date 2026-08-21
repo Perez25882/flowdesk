@@ -86,11 +86,34 @@ function orderRow(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-/** The last set of template body parameters handed to Meta. */
+/**
+ * The last outbound job, and the template attached to it.
+ *
+ * Owner alerts used to call `sendTemplate` inline. They now go through the
+ * outbound queue like everything else, so the assertion moved from the Graph
+ * call to the job — same claim, one layer earlier.
+ */
+interface QueuedJob {
+  body: string;
+  template?: { name: string; language: string; parameters: string[] };
+}
+
+function lastJob(): QueuedJob {
+  const call = mocks.enqueueOutboundMessage.mock.calls.at(-1);
+  return call?.[0] as QueuedJob;
+}
+
+/** A stand-in for the old `sendTemplate` spy: was the last job a template send? */
+const sentTemplate = {
+  get calls(): unknown[][] {
+    return mocks.enqueueOutboundMessage.mock.calls.filter(
+      (call) => (call[0] as QueuedJob)?.template !== undefined,
+    );
+  },
+};
+
 function templateParameters(): string[] {
-  const call = mocks.sendTemplate.mock.calls.at(-1);
-  const components = call?.[4] as Array<{ parameters: Array<{ text: string }> }>;
-  return components[0]!.parameters.map((parameter) => parameter.text);
+  return lastJob().template!.parameters;
 }
 
 beforeEach(() => {
@@ -120,7 +143,6 @@ describe('owner preference gating', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
 
@@ -136,7 +158,6 @@ describe('owner preference gating', () => {
 
     await notifyOwnerLowStock('prod_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
 
@@ -152,7 +173,6 @@ describe('owner preference gating', () => {
 
     await notifyOwnerPaymentRecorded('pay_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
 
@@ -161,7 +181,7 @@ describe('owner preference gating', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(sentTemplate.calls).toHaveLength(1);
   });
 });
 
@@ -171,7 +191,6 @@ describe('owner phone and plan gating', () => {
 
     await expect(notifyOwnerNewOrder('order_1')).resolves.toBeUndefined();
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
 
@@ -180,7 +199,7 @@ describe('owner phone and plan gating', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
+    expect(sentTemplate.calls).toHaveLength(0);
   });
 
   it('sends nothing when the plan allowance is exhausted or the business is suspended', async () => {
@@ -188,7 +207,6 @@ describe('owner phone and plan gating', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
 
@@ -199,7 +217,7 @@ describe('owner phone and plan gating', () => {
     mocks.canSendOutbound.mockResolvedValue(true);
     await notifyOwnerNewOrder('order_2');
 
-    expect(mocks.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(sentTemplate.calls).toHaveLength(1);
   });
 });
 
@@ -207,13 +225,12 @@ describe('channel selection against Meta’s 24-hour window', () => {
   it('uses an approved template when the owner has never messaged the shop', async () => {
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
-    expect(mocks.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(sentTemplate.calls).toHaveLength(1);
 
-    const [, to, name, language] = mocks.sendTemplate.mock.calls[0]!;
-    expect(to).toBe('233244123456');
-    expect(name).toBe(OWNER_TEMPLATES.new_order.name);
-    expect(language).toBe(OWNER_TEMPLATES.new_order.language);
+    const job = lastJob() as QueuedJob & { to: string };
+    expect(job.to).toBe('233244123456');
+    expect(job.template!.name).toBe(OWNER_TEMPLATES.new_order.name);
+    expect(job.template!.language).toBe(OWNER_TEMPLATES.new_order.language);
     expect(templateParameters()).toEqual([
       'FD-01042',
       'Ama Provisions',
@@ -237,7 +254,7 @@ describe('channel selection against Meta’s 24-hour window', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
+    expect(sentTemplate.calls).toHaveLength(0);
     expect(mocks.enqueueOutboundMessage).toHaveBeenCalledTimes(1);
 
     const job = mocks.enqueueOutboundMessage.mock.calls[0]![0] as {
@@ -258,16 +275,18 @@ describe('channel selection against Meta’s 24-hour window', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
-    expect(mocks.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(sentTemplate.calls).toHaveLength(1);
   });
 
-  it('does not attempt a template send when the tenant has no usable connection', async () => {
+  it('still queues the alert when the tenant connection is unusable', async () => {
     mocks.loadTenantCredentials.mockResolvedValue(null);
 
     await expect(notifyOwnerNewOrder('order_1')).resolves.toBeUndefined();
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
+    // The connection is no longer checked here. The outbound worker owns that
+    // decision, and it records the failure against the business so the owner
+    // sees it in Settings — where a silent return from this function did not.
+    expect(sentTemplate.calls).toHaveLength(1);
   });
 });
 
@@ -282,7 +301,7 @@ describe('a failing notification never breaks its trigger', () => {
     mocks.orderFindUnique.mockRejectedValue(new Error('connection terminated'));
 
     await expect(notifyOwnerNewOrder('order_1')).resolves.toBeUndefined();
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
+    expect(sentTemplate.calls).toHaveLength(0);
   });
 
   it('does nothing when the record has vanished', async () => {
@@ -290,7 +309,7 @@ describe('a failing notification never breaks its trigger', () => {
 
     await notifyOwnerNewOrder('order_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
+    expect(sentTemplate.calls).toHaveLength(0);
   });
 });
 
@@ -346,7 +365,6 @@ describe('per-kind message contents', () => {
 
     await notifyOwnerPaymentRecorded('pay_1');
 
-    expect(mocks.sendTemplate).not.toHaveBeenCalled();
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
 

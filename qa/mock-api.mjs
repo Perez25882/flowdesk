@@ -30,6 +30,7 @@ const business = {
   waVerifiedName: "Ama's Provisions",
   waConnectionState: 'CONNECTED',
   aiAssistMode: 'GROUNDED_AUTO',
+  catalogueMode: 'ENQUIRY_LED',
   businessType: 'GROCERY',
   notifyOnNewOrder: true,
   notifyOnLowStock: true,

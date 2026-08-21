@@ -23,6 +23,12 @@ export type MetaFailureKind =
   | 'REENGAGEMENT_REQUIRED'
   /** This recipient cannot be reached (not on WhatsApp, blocked us). */
   | 'RECIPIENT_UNAVAILABLE'
+  /**
+   * The approved template this send needed is missing, paused or does not match
+   * what was sent. Permanent until an operator fixes it in Meta Business
+   * Manager — a template does not appear part-way through a retry budget.
+   */
+  | 'TEMPLATE_UNAVAILABLE'
   /** Meta-side fault or network problem. Retry. */
   | 'TRANSIENT'
   /** Anything unrecognised. Treated as transient but surfaced for review. */
@@ -48,6 +54,15 @@ const RATE_LIMIT_CODES = new Set([4, 80007, 130429, 131048, 131056]);
 /** Outside the customer service window. */
 const REENGAGEMENT_CODES = new Set([131047, 131051]);
 const RECIPIENT_CODES = new Set([131026, 131052, 131053]);
+/**
+ * Template problems. 132001 — "template does not exist in this language or has
+ * not been approved" — is the one that matters in practice: templates are
+ * created and approved per WhatsApp Business Account, so every newly onboarded
+ * tenant hits it until an operator creates them. Retrying cannot help, and the
+ * old classification (UNKNOWN, therefore retryable) spent five attempts and
+ * fifteen minutes of backoff before admitting it.
+ */
+const TEMPLATE_CODES = new Set([132001, 132005, 132007, 132012, 132015, 132016]);
 /** Meta-side faults. */
 const TRANSIENT_CODES = new Set([1, 2, 131000, 131016, 131021, 132000]);
 
@@ -75,6 +90,7 @@ function classifyCode(code: number | null, httpStatus: number): MetaFailureKind 
     if (RATE_LIMIT_CODES.has(code)) return 'RATE_LIMITED';
     if (REENGAGEMENT_CODES.has(code)) return 'REENGAGEMENT_REQUIRED';
     if (RECIPIENT_CODES.has(code)) return 'RECIPIENT_UNAVAILABLE';
+    if (TEMPLATE_CODES.has(code)) return 'TEMPLATE_UNAVAILABLE';
     if (TRANSIENT_CODES.has(code)) return 'TRANSIENT';
   }
 
@@ -139,6 +155,8 @@ export function describeForOwner(kind: MetaFailureKind): string {
       return 'This customer last messaged over 24 hours ago, so WhatsApp only allows an approved template message.';
     case 'RECIPIENT_UNAVAILABLE':
       return 'This customer could not be reached on WhatsApp.';
+    case 'TEMPLATE_UNAVAILABLE':
+      return 'This message needed an approved WhatsApp template, because the customer last messaged over 24 hours ago, and that template is not approved on your WhatsApp account yet. It has to be created and approved in Meta Business Manager before these messages can go out.';
     default:
       return 'WhatsApp reported a temporary problem. We will keep retrying.';
   }

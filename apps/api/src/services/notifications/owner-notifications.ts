@@ -5,7 +5,6 @@ import { enqueueOutboundMessage } from '../../queues/outbound.queue.js';
 import { maskPhone, normalizeGhanaPhone } from '../../utils/phone.js';
 import { canSendOutbound } from '../plan/plan.service.js';
 import { shouldSendAutoReply } from '../templates/template-engine.js';
-import { loadTenantCredentials, sendTemplate } from '../whatsapp/client.js';
 
 /**
  * The single entry point for every message Flowdesk sends to a business OWNER.
@@ -325,42 +324,46 @@ async function deliver(
   const values = [...variables, activityPhrase(kind, decision.coalesced)];
   const to = context.ownerPhone!;
 
-  if (shouldSendAutoReply(context.ownerLastInboundAt).withinWindow) {
-    await enqueueOutboundMessage({
-      businessId: context.businessId,
-      // Not attributed to a customer: an owner alert is not part of anyone's
-      // conversation, and threading it into one would put a message the
-      // customer never received into their history.
-      customerId: null,
-      to,
-      body: renderBody(template.body, values),
-    });
+  const withinWindow = shouldSendAutoReply(context.ownerLastInboundAt).withinWindow;
 
-    logger.info({ businessId: context.businessId, kind }, 'Owner alert queued as free-form text');
-    return decision;
-  }
-
-  const credentials = await loadTenantCredentials(context.businessId);
-
-  if (!credentials) {
-    // Not connected, or a connection Meta has rejected. `loadTenantCredentials`
-    // has already logged and recorded the state the owner sees in Settings.
-    return decision;
-  }
-
-  const result = await sendTemplate(credentials, to, template.name, template.language, [
-    { type: 'body', parameters: values.map((text) => ({ type: 'text', text })) },
-  ]);
+  // One job either way. The template send used to happen inline, because the
+  // queue could only carry free-form text — which put a Graph call that can
+  // take fifteen seconds inside the request that created the order, and gave
+  // the alert none of the retries, none of the sent-message record and none of
+  // the conversation accounting the queued path has. Now that
+  // `OutboundJobData` carries a template, the two branches differ only in
+  // whether one is attached.
+  await enqueueOutboundMessage({
+    businessId: context.businessId,
+    // Not attributed to a customer: an owner alert is not part of anyone's
+    // conversation, and threading it into one would put a message the
+    // customer never received into their history.
+    customerId: null,
+    to,
+    // Set on both paths. It is what the conversation log shows, and outside
+    // the window it is the readable form of what the template will render.
+    body: renderBody(template.body, values),
+    ...(withinWindow
+      ? {}
+      : {
+          template: {
+            name: template.name,
+            language: template.language,
+            parameters: values,
+          },
+        }),
+  });
 
   logger.info(
     {
       businessId: context.businessId,
       kind,
-      template: template.name,
       to: maskPhone(to),
-      waMessageId: result.waMessageId,
+      ...(withinWindow ? {} : { template: template.name }),
     },
-    'Owner alert sent as an approved template',
+    withinWindow
+      ? 'Owner alert queued as free-form text'
+      : 'Owner alert queued as an approved template',
   );
 
   return decision;
