@@ -6,6 +6,15 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+
+  // Migrations need a direct connection. A pooled Supabase URL goes through
+  // PgBouncer in transaction mode, which does not support the prepared
+  // statements and advisory locks the migration engine relies on — `migrate
+  // deploy` against the pooler fails, and the failure looks like a connection
+  // problem rather than a configuration one.
+  //
+  // In development both point at the same local database, so nothing changes.
+  directUrl = env("DIRECT_URL")
 }
 
 /// The top-level tenant. Every other record belongs to a Business.
