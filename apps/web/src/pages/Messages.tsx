@@ -10,7 +10,7 @@ import { Tabs, type TabOption } from '@/components/ui/Tabs';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import { Badge, type BadgeTone } from '@/components/ui/Badge';
 import { useTabParam } from '@/hooks/useTabParam';
-import { timeAgo, cn } from '@/lib/utils';
+import { timeAgo, cn, customerLabel } from '@/lib/utils';
 
 type MessageTab = 'all' | 'review';
 const MESSAGE_TABS = ['all', 'review'] as const;
@@ -140,8 +140,7 @@ export default function MessagesPage(): React.JSX.Element {
                 const justSaved =
                   correctIntent.isSuccess && correctIntent.variables?.id === msg.id;
                 const failed = correctIntent.isError && correctIntent.variables?.id === msg.id;
-                const customerLabel =
-                  msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown number';
+                const displayName = customerLabel(msg.customer);
 
                 return (
                   <li
@@ -161,7 +160,7 @@ export default function MessagesPage(): React.JSX.Element {
                       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                         <span className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-semibold text-text-primary">
-                            {customerLabel}
+                            {displayName}
                           </span>
                           <Badge tone={INTENT_TONE[msg.intent] ?? 'neutral'}>
                             {INTENT_LABEL[msg.intent] ?? msg.intent}

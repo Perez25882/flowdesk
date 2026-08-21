@@ -15,7 +15,7 @@ import { SkeletonRows } from '@/components/ui/Skeleton';
 import { Tabs, type TabOption } from '@/components/ui/Tabs';
 import { Badge } from '@/components/ui/Badge';
 import { useTabParam } from '@/hooks/useTabParam';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, customerLabel } from '@/lib/utils';
 
 type PaymentTab = 'all' | 'review';
 const PAYMENT_TABS = ['all', 'review'] as const;
@@ -104,7 +104,7 @@ export default function PaymentsPage(): React.JSX.Element {
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium text-text-primary">
-                          {payment.customer.name ?? payment.customer.waNumber}
+                          {customerLabel(payment.customer)}
                         </span>
                         {isRefund && <Badge tone="info">Refund</Badge>}
                         {payment.voidedAt ? (
@@ -179,8 +179,8 @@ export default function PaymentsPage(): React.JSX.Element {
                               onClick={() => attest.mutate(payment.id)}
                               aria-label={
                                 isRefund
-                                  ? `Confirm the ${formatCurrency(payment.amount)} refund to ${payment.customer.name ?? payment.customer.waNumber} was sent`
-                                  : `Confirm ${formatCurrency(payment.amount)} from ${payment.customer.name ?? payment.customer.waNumber} landed`
+                                  ? `Confirm the ${formatCurrency(payment.amount)} refund to ${customerLabel(payment.customer)} was sent`
+                                  : `Confirm ${formatCurrency(payment.amount)} from ${customerLabel(payment.customer)} landed`
                               }
                               className="flex h-11 items-center gap-1.5 rounded-md border border-success-border bg-success-muted px-2.5 text-xs font-bold text-success transition-transform duration-instant ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success sm:h-8 sm:px-2"
                             >
@@ -195,8 +195,8 @@ export default function PaymentsPage(): React.JSX.Element {
                               onClick={() => setConfirmingId(payment.id)}
                               aria-label={
                                 isRefund
-                                  ? `Void the ${formatCurrency(payment.amount)} refund to ${payment.customer.name ?? payment.customer.waNumber}`
-                                  : `Void the ${formatCurrency(payment.amount)} payment from ${payment.customer.name ?? payment.customer.waNumber}`
+                                  ? `Void the ${formatCurrency(payment.amount)} refund to ${customerLabel(payment.customer)}`
+                                  : `Void the ${formatCurrency(payment.amount)} payment from ${customerLabel(payment.customer)}`
                               }
                               className="flex h-11 w-11 items-center justify-center rounded-md text-text-muted transition-colors duration-fast ease-out hover:bg-danger-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:h-8 sm:w-8"
                             >

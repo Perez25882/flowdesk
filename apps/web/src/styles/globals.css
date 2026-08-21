@@ -614,3 +614,33 @@ summary,
     }
   }
 }
+
+
+/*
+ * Scroll-reveal, as progressive enhancement.
+ *
+ * The visible state is the default, so a page whose JavaScript never arrives
+ * still reads. Only a document that has announced itself as script-capable
+ * (`.fd-js`, set inline in index.html) starts an unrevealed element hidden.
+ */
+.fd-reveal {
+  transition:
+    opacity 600ms ease-out,
+    transform 600ms ease-out;
+}
+
+.fd-js .fd-reveal[data-shown='false'] {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fd-reveal {
+    transition: none;
+  }
+
+  .fd-js .fd-reveal[data-shown='false'] {
+    opacity: 1;
+    transform: none;
+  }
+}

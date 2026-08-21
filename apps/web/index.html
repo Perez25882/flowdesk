@@ -36,7 +36,23 @@
       rel="stylesheet"
     />
   </head>
-  <body>
+  <script>
+      /*
+       * Marks the document as JavaScript-capable before anything renders.
+       *
+       * The scroll-reveal on the marketing page starts elements at opacity 0
+       * and shows them when an IntersectionObserver fires. That is fine when
+       * the script has run — and leaves a blank page when it has not: a slow
+       * 3G connection, a blocked bundle, a reader mode, a print, or a crawler
+       * that does not execute JavaScript all see nothing at all.
+       *
+       * Setting the flag here inverts the default: content is visible unless
+       * JavaScript is present and about to animate it. Inline and synchronous
+       * so there is no frame in which the wrong state is painted.
+       */
+      document.documentElement.classList.add('fd-js');
+    </script>
+    <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

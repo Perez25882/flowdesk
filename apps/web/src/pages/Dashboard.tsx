@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, MessageSquare, Package, Users } from 'lucide-react';
 import { useOrdersByStatus, useOrderStats } from '@/hooks/useOrders';
 import { useCustomers } from '@/hooks/useCustomers';
-import { usePayments } from '@/hooks/usePayments';
+import { usePayments, useRevenueStats } from '@/hooks/usePayments';
 import { useMessages } from '@/hooks/useMessages';
 import { useLowStockProducts } from '@/hooks/useProducts';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
@@ -12,7 +12,7 @@ import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import EmptyState from '@/components/shared/EmptyState';
-import { formatCurrency, timeAgo } from '@/lib/utils';
+import { formatCurrency, timeAgo, customerLabel } from '@/lib/utils';
 
 /**
  * The morning screen.
@@ -38,6 +38,7 @@ export default function DashboardPage(): React.JSX.Element {
   const { data: stats } = useOrderStats('today');
   const { data: customers } = useCustomers(undefined, undefined, true);
   const { data: unconfirmedPayments } = usePayments(false);
+  const { data: revenueStats } = useRevenueStats();
   const { data: reviewMessages } = useMessages(true);
   const { data: lowStockProducts } = useLowStockProducts();
 
@@ -45,7 +46,16 @@ export default function DashboardPage(): React.JSX.Element {
 
   const pendingCount = stats?.byStatus?.PENDING ?? pendingOrders?.length ?? 0;
   const pendingValue = pendingOrders?.reduce((sum, o) => sum + (o.totalAmount ?? 0), 0) ?? 0;
-  const revenue = stats?.totalRevenue ?? 0;
+  // Money actually received today, from attested payments — NOT the sum of
+  // today's order values, which is what `stats.totalRevenue` returns. That
+  // figure counts orders that are still pending and orders that were cancelled,
+  // so it reads high and it reads high in the owner's favour. Abena's stated
+  // job is "know at end of day how much came in"; showing her what was ordered
+  // and calling it revenue answers a different question badly.
+  const revenue = revenueStats?.today ?? 0;
+
+  // Kept, but labelled for what it is.
+  const orderedValue = stats?.totalRevenue ?? 0;
   const reviewCount = unconfirmedPayments?.length ?? 0;
 
   const topDebtors = [...(customers ?? [])]
@@ -71,9 +81,15 @@ export default function DashboardPage(): React.JSX.Element {
           gets the wider column and the larger figure. */}
       <MetricStrip>
         <Metric
-          label="Revenue today"
+          label="Money in today"
           value={formatCurrency(revenue)}
-          detail={stats?.totalOrders ? `across ${stats.totalOrders} orders` : 'no orders yet'}
+          detail={
+            orderedValue > revenue
+              ? `${formatCurrency(orderedValue)} ordered`
+              : stats?.totalOrders
+                ? `across ${stats.totalOrders} orders`
+                : 'no orders yet'
+          }
           emphasis
         />
         <Metric
@@ -85,7 +101,7 @@ export default function DashboardPage(): React.JSX.Element {
         <Metric
           label="Payments to verify"
           value={reviewCount}
-          detail={reviewCount > 0 ? 'not yet matched' : 'all matched'}
+          detail={reviewCount > 0 ? 'waiting on you' : 'all confirmed'}
           tone={reviewCount > 0 ? 'danger' : 'default'}
         />
         <Metric
@@ -133,7 +149,7 @@ export default function DashboardPage(): React.JSX.Element {
                       {order.referenceNumber}
                     </span>
                     <span className="truncate text-sm text-text-primary">
-                      {order.customer.name ?? order.customer.waNumber}
+                      {customerLabel(order.customer)}
                     </span>
                   </span>
 
@@ -171,7 +187,7 @@ export default function DashboardPage(): React.JSX.Element {
               {topDebtors.map((customer) => (
                 <Row key={customer.id} onClick={() => navigate(`/customers/${customer.id}`)}>
                   <span className="truncate text-sm text-text-primary">
-                    {customer.name ?? customer.waNumber}
+                    {customerLabel(customer)}
                   </span>
                   <span className="fd-figure shrink-0 text-sm font-semibold text-danger">
                     {formatCurrency(customer.outstandingBalance)}
@@ -212,7 +228,7 @@ export default function DashboardPage(): React.JSX.Element {
                 <Row key={msg.id} onClick={() => navigate('/messages')} className="items-start">
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="truncate text-sm font-medium text-text-primary">
-                      {msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown number'}
+                      {customerLabel(msg.customer)}
                     </span>
                     <span className="line-clamp-1 text-xs text-text-secondary">
                       {msg.body ?? 'No text in this message'}
