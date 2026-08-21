@@ -138,6 +138,24 @@ const ROUTES = {
     return ok(review === 'true' ? messages.filter((m) => m.requiresReview) : messages);
   },
   'GET /staff': () => ok(staff),
+  'GET /billing/state': () => ok({
+    plan: 'BUSINESS', effectivePlan: 'BUSINESS', planLabel: 'Business', suspended: false, suspendReason: null,
+    trial: { active: true, stage: 'prompt', daysRemaining: 4, endsAt: new Date(now + 4*86400_000).toISOString(), graceEndsAt: new Date(now + 6*86400_000).toISOString() },
+    subscription: null, scheduledChange: null,
+    usage: { periodEndsAt: new Date(now + 9*86400_000).toISOString(),
+      conversations: { used: 1840, limit: 2000, remaining: 160, nearLimit: true, overLimit: false },
+      orders: { used: 88, limit: null, remaining: null, nearLimit: false, overLimit: false },
+      staff: { used: 2, limit: 5, remaining: 3, nearLimit: false, overLimit: false },
+      products: { used: 5, limit: null, remaining: null, nearLimit: false, overLimit: false } },
+    warnings: [{ resource: 'conversations', level: 'near', used: 1840, limit: 2000, blocking: true,
+      message: 'You have used 1,840 of 2,000 conversations this month. Automatic replies pause when you reach the limit.' }],
+  }),
+  'GET /payments/review-queue': () => ok([
+    { paymentId: 'pay4', kind: 'SCREENSHOT', amount: null, method: 'OTHER', direction: 'IN', confidence: 'CLAIMED',
+      reference: null, notes: 'Payment screenshot sent on WhatsApp, flagged automatically.', createdAt: ago(8),
+      customer: { id: 'c4', name: null, waNumber: '233201847733' }, order: null,
+      screenshot: { available: false, viewUrl: '/payments/pay4/screenshot', unavailableReason: 'NOT_ARCHIVED', caption: 'I have paid', receivedAt: ago(8), messageId: 'm4' } },
+  ]),
   'GET /dashboard/badges': () => ok({ messagesNeedingReview: 2, paymentsToVerify: 1, pendingOrders: 2, lowStock: 2 }),
   'GET /dashboard/summary': () => ok({
     orders: { today: 2, pending: 2, pendingValue: 1372 },
