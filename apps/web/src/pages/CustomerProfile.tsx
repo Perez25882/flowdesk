@@ -75,6 +75,18 @@ export default function CustomerProfilePage(): React.JSX.Element {
     setEditing(true);
   }
 
+  /**
+   * Flips a flag on its own rather than through the edit form.
+   *
+   * Both take effect the moment they are set — there is nothing to review and
+   * nothing to save — and putting them behind "Edit details / Save changes"
+   * would mean an owner blocking a difficult customer has to find and open a
+   * form first.
+   */
+  function setFlag(data: { vip?: boolean; blacklisted?: boolean }): void {
+    updateCustomer.mutate({ id: customer.id, data });
+  }
+
   function handleSave(): void {
     updateCustomer.mutate(
       {
@@ -145,6 +157,59 @@ export default function CustomerProfilePage(): React.JSX.Element {
           tone={owes > 0 ? 'danger' : 'success'}
         />
       </MetricStrip>
+
+      <Panel>
+        <PanelHead title="How we treat them" />
+        <div className="flex flex-col gap-3 p-4">
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+              checked={customer.vip}
+              disabled={updateCustomer.isPending}
+              onChange={(e) => setFlag({ vip: e.target.checked })}
+            />
+            <span>
+              <span className="block text-sm font-medium text-text-primary">Regular customer</span>
+              <span className="block text-xs text-text-secondary">
+                Marks them on every order so whoever is packing knows.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-danger)]"
+              checked={customer.blacklisted}
+              disabled={updateCustomer.isPending}
+              onChange={(e) => {
+                // Blocking is not a label — it stops the assistant replying to
+                // this person at all. Saying so is the difference between a
+                // deliberate act and a switch someone flicked to see what it did.
+                if (e.target.checked && !window.confirm(
+                  `Block ${customer.name ?? 'this customer'}?\n\nTheir messages will still be saved, but Flowdesk will stop replying to them automatically. You can undo this at any time.`,
+                )) {
+                  return;
+                }
+                setFlag({ blacklisted: e.target.checked });
+              }}
+            />
+            <span>
+              <span className="block text-sm font-medium text-text-primary">Blocked</span>
+              <span className="block text-xs text-text-secondary">
+                Their messages are still recorded. Flowdesk stops replying automatically.
+              </span>
+            </span>
+          </label>
+
+          {updateCustomer.isError && (
+            <p role="alert" className="text-sm font-medium text-danger">
+              {(updateCustomer.error as Error).message}
+            </p>
+          )}
+        </div>
+      </Panel>
 
       {editing ? (
         <Panel>

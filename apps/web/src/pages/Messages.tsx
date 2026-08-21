@@ -1,3 +1,4 @@
+import { IntentType } from '@flowdesk/shared';
 import { useMemo, useState } from 'react';
 import { CheckCircle2, MessageSquare } from 'lucide-react';
 import { useMessages, useCorrectMessageIntent } from '@/hooks/useMessages';
@@ -15,14 +16,24 @@ import { timeAgo, cn, customerLabel } from '@/lib/utils';
 type MessageTab = 'all' | 'review';
 const MESSAGE_TABS = ['all', 'review'] as const;
 
-const INTENT_OPTIONS: { value: string; label: string }[] = [
+/**
+ * Exactly the intents the classifier can hold — no more, no fewer.
+ *
+ * This list used to offer "A cancellation" and "Thanks", neither of which is a
+ * member of `IntentType`. Picking either sent a value Prisma refused, and the
+ * resulting validation error is not a `PrismaClientKnownRequestError`, so it
+ * fell through to the generic handler and the owner was shown "Internal server
+ * error" for doing exactly what the page invited them to do. `STATUS_CHECK` is
+ * a real intent and was missing, so a message the assistant misread as an order
+ * could not be corrected to it at all.
+ */
+const INTENT_OPTIONS: { value: `${IntentType}`; label: string }[] = [
   { value: 'ORDER', label: 'An order' },
   { value: 'INQUIRY', label: 'A question' },
   { value: 'PAYMENT', label: 'A payment' },
+  { value: 'STATUS_CHECK', label: 'Asking about an order' },
   { value: 'COMPLAINT', label: 'A complaint' },
-  { value: 'CANCEL', label: 'A cancellation' },
   { value: 'GREETING', label: 'A greeting' },
-  { value: 'THANKS', label: 'Thanks' },
   { value: 'OTHER', label: 'Something else' },
   { value: 'UNCLASSIFIED', label: 'Cannot tell' },
 ];
