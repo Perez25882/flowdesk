@@ -1,5 +1,10 @@
 import { Check, Minus } from 'lucide-react';
-import { BILLABLE_PLAN_CODES, PLANS, PLAN_COMPARISON } from '@/config/plans';
+import {
+  BILLABLE_PLAN_CODES,
+  CONVERSATION_UNIT_NOTE,
+  PLANS,
+  PLAN_COMPARISON,
+} from '@/config/plans';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 
@@ -14,6 +19,10 @@ import { cn } from '@/lib/utils';
  * for someone weighing three tiers, but a four-column table at 375px is
  * either unreadable or needs a horizontal scroll that hides the column you
  * are comparing against. So phones get stacked cards, desktops get the table.
+ *
+ * The note under both presentations says what a "conversation" is and what
+ * happens at the ceiling. A monthly allowance whose unit is unstated is the
+ * kind of number a customer only understands on the day it runs out.
  */
 
 const PLAN_LIST = BILLABLE_PLAN_CODES.map((code) => PLANS[code]);
@@ -178,6 +187,10 @@ export default function PricingTable({
           </tr>
         </tfoot>
       </table>
+
+      <p className="mt-6 max-w-prose text-sm leading-relaxed text-text-secondary">
+        {CONVERSATION_UNIT_NOTE}
+      </p>
     </>
   );
 }

@@ -6,7 +6,7 @@ import CaptureDemo from '@/components/marketing/CaptureDemo';
 import PricingTable from '@/components/marketing/PricingTable';
 import Logo from '@/components/shared/Logo';
 import { Button } from '@/components/ui/Button';
-import { PLANS } from '@/config/plans';
+import { PLANS, TRIAL_DAYS, TRIAL_GRACE_HOURS } from '@/config/plans';
 import { cn } from '@/lib/utils';
 
 /**
@@ -20,6 +20,12 @@ import { cn } from '@/lib/utils';
  * Structurally it follows the operations-landing pattern — product first,
  * proof second, mechanism third, price fourth — with one inverted band to
  * give the page a spine.
+ *
+ * A third rule, added after a pre-launch audit found four claims the product
+ * does not honour: every sentence on this page has to be checkable against the
+ * API. Not "defensible" — checkable, by opening the file that implements it.
+ * The claims that failed that test are noted where they were replaced, because
+ * a copy change with no reason attached is a copy change someone reverts.
  */
 
 const NAV_LINKS = [
@@ -68,7 +74,7 @@ function Nav(): React.JSX.Element {
             <a
               key={l.href}
               href={l.href}
-              className="text-sm font-medium text-text-secondary transition-colors duration-fast ease-out hover:text-text-primary"
+              className="rounded-sm text-sm font-medium text-text-secondary transition-colors duration-fast ease-out hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               {l.label}
             </a>
@@ -103,7 +109,7 @@ function Nav(): React.JSX.Element {
                 key={l.href}
                 href={l.href}
                 onClick={() => setOpen(false)}
-                className="border-b border-border-subtle py-4 text-base font-medium"
+                className="border-b border-border-subtle py-4 text-base font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
               >
                 {l.label}
               </a>
@@ -143,8 +149,14 @@ function Hero(): React.JSX.Element {
               <br className="hidden sm:block" /> your chats.
             </h1>
 
+            {/* "…and matches the payment" was the old third clause. Nothing in
+                the product matches a payment: there is no telco or bank feed,
+                and every payment is recorded and confirmed by a person. What
+                Flowdesk actually does with a payment is refuse to let it stay
+                buried in a chat thread. */}
             <p className="mt-5 max-w-prose text-md leading-relaxed text-text-secondary sm:text-lg">
-              Flowdesk reads your WhatsApp, builds the order, and matches the payment.
+              Flowdesk reads your WhatsApp, builds the order, and puts the payment in front of
+              you to confirm.
             </p>
 
             <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
@@ -157,7 +169,7 @@ function Hero(): React.JSX.Element {
                 Start free
               </Button>
               <span className="text-sm text-text-muted">
-                14 days. No card.
+                {TRIAL_DAYS} days. No card.
               </span>
             </div>
           </Reveal>
@@ -178,12 +190,24 @@ function Hero(): React.JSX.Element {
  * what stops a long light page reading as flat — and every figure in it is
  * checkable, rather than the invented traction numbers ("10,000+ businesses")
  * that this kind of band usually carries.
+ *
+ * Two of the four used to fail their own test. "Every feature" was untrue: the
+ * trial runs on a real plan with real ceilings, so the honest version of that
+ * line is about the card, not the feature set. And "2 minutes to connect your
+ * number" was a number nobody had measured — replaced with the one thing about
+ * the assistant a shop owner most needs to believe, which the grounding
+ * validator and `resolveOrderItems` both enforce: a price the customer is
+ * quoted comes out of the catalogue, never out of the model.
  */
 const FACTS = [
-  { figure: '14', unit: 'days free', note: 'Every feature. No card.' },
-  { figure: '2', unit: 'minutes', note: 'To connect your number.' },
-  { figure: PLANS.STARTER.price.replace('GHS ', ''), unit: 'cedis after', note: 'Starter, per month.' },
+  { figure: String(TRIAL_DAYS), unit: 'days free', note: 'No card to start.' },
   { figure: '0', unit: 'apps to install', note: 'Customers keep WhatsApp.' },
+  {
+    figure: PLANS.STARTER.price.replace('GHS ', ''),
+    unit: 'cedis after',
+    note: 'Starter, per month.',
+  },
+  { figure: '1', unit: 'source for prices', note: 'Your catalogue. Never the model.' },
 ];
 
 function Facts(): React.JSX.Element {
@@ -193,6 +217,8 @@ function Facts(): React.JSX.Element {
         aria-hidden="true"
         className="fd-ruled-ink pointer-events-none absolute inset-0 opacity-80 [mask-image:radial-gradient(120%_100%_at_50%_0%,#000,transparent_78%)]"
       />
+
+      <h2 className="sr-only">Flowdesk in four figures</h2>
 
       <div className="relative mx-auto grid max-w-shell grid-cols-2 gap-x-6 gap-y-9 px-5 py-14 md:grid-cols-4 lg:gap-x-10 lg:px-8 lg:py-18">
         {FACTS.map((f, i) => (
@@ -210,10 +236,26 @@ function Facts(): React.JSX.Element {
 }
 
 const STEPS = [
-  { n: '01', title: 'Connect your number', body: 'The one you already give customers.' },
-  { n: '02', title: 'Messages become orders', body: 'Items, quantities, price. Anything unclear waits for you.' },
-  { n: '03', title: 'Confirm and assign', body: 'Move it across the board as it is packed.' },
-  { n: '04', title: 'Payment closes it', body: 'Log the momo. The balance updates. The receipt goes back.' },
+  {
+    n: '01',
+    title: 'Connect your number',
+    body: 'The one you already give customers, through Meta’s own setup in Settings.',
+  },
+  {
+    n: '02',
+    title: 'Messages become orders',
+    body: 'Items and quantities from the message, prices from your catalogue. Anything ambiguous gets a question back rather than a guess.',
+  },
+  {
+    n: '03',
+    title: 'Confirm and assign',
+    body: 'Drag it along the board and hand it to a rider. Stock comes off the count when you confirm, not before.',
+  },
+  {
+    n: '04',
+    title: 'Payment closes it',
+    body: 'Record the momo and confirm it landed. The balance moves and the customer gets the receipt.',
+  },
 ];
 
 function HowItWorks(): React.JSX.Element {
@@ -246,13 +288,21 @@ function HowItWorks(): React.JSX.Element {
   );
 }
 
+/**
+ * Six things, each one a screen in the product.
+ *
+ * "Every chat, searchable" and "Matched payments" are both gone. Search on the
+ * Messages page filters the page of results already loaded — there is no search
+ * parameter on the messages endpoint at all — and no payment is matched to
+ * anything. What survives is what the screens actually do.
+ */
 const FEATURES = [
-  { title: 'One inbox', body: 'Every chat, searchable.' },
+  { title: 'One inbox', body: 'Every message kept, and the ones needing you marked.' },
   { title: 'Order board', body: 'Pending to delivered, by drag.' },
-  { title: 'Matched payments', body: 'Momo, transfer and cash against the order.' },
-  { title: 'Customer balances', body: 'What they bought. What they owe.' },
-  { title: 'Stock warnings', body: 'Before you sell what you no longer have.' },
-  { title: 'Staff limits', body: 'Riders see orders. You see money.' },
+  { title: 'Payments you confirm', body: 'Momo, transfer and cash, recorded against the order.' },
+  { title: 'Customer balances', body: 'What they bought. What they still owe.' },
+  { title: 'Stock that moves itself', body: 'Confirmed orders come off the count. Low stock is flagged.' },
+  { title: 'Staff limits', body: 'Riders see the orders given to them. You see the money.' },
 ];
 
 function Features(): React.JSX.Element {
@@ -293,8 +343,12 @@ function Pricing(): React.JSX.Element {
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <Reveal>
           <h2 className="text-display-sm font-extrabold tracking-tighter">Pricing.</h2>
+          {/* "Everything unlocked" was not true — a trial runs on a real plan
+              with that plan's ceilings — and "cancel from Settings" described a
+              button the billing screen does not have. */}
           <p className="mt-3 max-w-prose text-base text-text-secondary">
-            Start on the trial with everything unlocked. Cancel from Settings.
+            The {TRIAL_DAYS} days are free and need no card. Every plan runs the whole product;
+            what changes is how much you send and how many people you let in.
           </p>
         </Reveal>
 
@@ -306,11 +360,43 @@ function Pricing(): React.JSX.Element {
   );
 }
 
+/**
+ * The four hardest questions, plus the two the old version dodged.
+ *
+ * "It flags it instead of guessing. Nothing reaches a customer without you"
+ * was false in every configuration — order confirmations, status answers,
+ * clarifying questions and the standing templates all go out unattended, which
+ * is the product working as designed and as the rest of this page describes.
+ * Pretending otherwise sold a different, worse product to anyone who read
+ * carefully, so the real safety story is spelled out instead: grounded in the
+ * shop's own rows, priced from the database, drafted when it cannot be checked,
+ * escalated when the question is about money or judgement.
+ */
 const QUESTIONS = [
-  { q: 'Do I need a new number?', a: 'No. Flowdesk connects to the WhatsApp Business number you already publish.' },
-  { q: 'Can it see my personal chats?', a: 'No. Only the business number you connect.' },
-  { q: 'What if it reads an order wrong?', a: 'It flags it instead of guessing. Nothing reaches a customer without you.' },
-  { q: 'What happens after the trial?', a: 'The account goes read-only. Nothing is deleted.' },
+  {
+    q: 'Do I need a new number?',
+    a: 'No. You connect the WhatsApp Business number you already publish, through Meta’s own setup flow in Settings.',
+  },
+  {
+    q: 'Can it see my personal chats?',
+    a: 'No. Only the business number you connect.',
+  },
+  {
+    q: 'Does it reply to customers by itself?',
+    a: 'Yes — that is the job. Order confirmations with the reference number, answers to “where is my order”, your own standing replies and any question it needs to ask before it can build an order all go out on their own. Replies the assistant writes in its own words stay off until you turn them on.',
+  },
+  {
+    q: 'What if it reads an order wrong?',
+    a: 'It answers out of your records or not at all. Prices come from the catalogue row, never from the model, and any reply carrying a figure that does not match your own data is held back as a draft for you. Where the message is ambiguous it asks the customer rather than choosing for them, and bargaining, complaints and policy questions go straight to you.',
+  },
+  {
+    q: 'Can I still reply from my own phone?',
+    a: 'Yes. What you send from the WhatsApp Business app is recorded here too, and while you are answering a customer yourself the assistant stays out of that conversation.',
+  },
+  {
+    q: 'What happens after the trial?',
+    a: `Writes stop ${TRIAL_GRACE_HOURS} hours after it ends. You can still sign in, read every order, customer and message, and pay for a plan. Nothing is deleted.`,
+  },
 ];
 
 function Questions(): React.JSX.Element {
@@ -359,6 +445,10 @@ function CallToAction(): React.JSX.Element {
   );
 }
 
+/** Written once: three links that must focus identically. */
+const FOOTER_LINK =
+  'rounded-sm text-sm text-text-secondary transition-colors duration-fast ease-out hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+
 function Footer(): React.JSX.Element {
   return (
     <footer className="py-10">
@@ -368,16 +458,13 @@ function Footer(): React.JSX.Element {
           <Logo title="Flowdesk" />
 
           <nav aria-label="Footer" className="flex flex-wrap gap-x-7 gap-y-2">
-            <a
-              href="mailto:hello@flowdesk.gh"
-              className="text-sm text-text-secondary hover:text-text-primary"
-            >
+            <a href="mailto:hello@flowdesk.gh" className={FOOTER_LINK}>
               Contact
             </a>
-            <Link to="/privacy" className="text-sm text-text-secondary hover:text-text-primary">
+            <Link to="/privacy" className={FOOTER_LINK}>
               Privacy
             </Link>
-            <Link to="/terms" className="text-sm text-text-secondary hover:text-text-primary">
+            <Link to="/terms" className={FOOTER_LINK}>
               Terms
             </Link>
           </nav>

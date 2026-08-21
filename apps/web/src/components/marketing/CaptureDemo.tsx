@@ -10,6 +10,13 @@ import { cn } from '@/lib/utils';
  *
  * Stacks on a phone. The thread sits above the order rather than beside it,
  * because two 160px columns are unreadable at 375px.
+ *
+ * Two details are load-bearing and were previously wrong. The reference is
+ * zero-padded to five digits, because that is what `padReference` in
+ * `orders.repository.ts` produces. And the payment reads as a claim waiting on
+ * the owner, not as a match: no telco or bank matching exists anywhere in the
+ * product, every payment is recorded and confirmed by a person, and a green
+ * "Matched" here promised a feature the dashboard cannot deliver.
  */
 
 const THREAD = [
@@ -34,7 +41,7 @@ export default function CaptureDemo({ className }: { className?: string }): Reac
         className,
       )}
       role="img"
-      aria-label="A WhatsApp thread on the left and, on the right, the order Flowdesk built from it: reference FD-2214, two bags of 5kg jasmine rice and one crate of eggs, GHS 242.50 total, paid by mobile money."
+      aria-label="A WhatsApp thread on the left and, on the right, the order Flowdesk built from it: reference FD-02214, two bags of 5kg jasmine rice and one crate of eggs, GHS 242.50 in total, still pending. Underneath, the customer's mobile money payment is listed as claimed but not yet confirmed, waiting for the shop owner to confirm it landed."
     >
       <div className="flex flex-col border-b border-border bg-surface-sunken sm:border-b-0 sm:border-r">
         <div className="flex items-center gap-2.5 border-b border-border-subtle px-3.5 py-2.5">
@@ -74,7 +81,7 @@ export default function CaptureDemo({ className }: { className?: string }): Reac
 
       <div className="flex flex-col">
         <div className="flex items-center justify-between border-b border-border-subtle px-3.5 py-2.5">
-          <span className="fd-figure text-sm font-semibold text-primary">FD-2214</span>
+          <span className="fd-figure text-sm font-semibold text-primary">FD-02214</span>
           <span className="inline-flex items-center gap-1.5 rounded-sm border border-warning-border bg-warning-muted px-1.5 py-[3px] text-2xs font-bold uppercase tracking-wide text-warning">
             <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warning" />
             Pending
@@ -100,11 +107,18 @@ export default function CaptureDemo({ className }: { className?: string }): Reac
           <span className="fd-figure text-lg font-bold">GHS {total.toFixed(2)}</span>
         </div>
 
-        <div className="flex items-center justify-between gap-3 border-t border-border-subtle bg-surface-sunken px-3.5 py-2.5">
-          <span className="text-xs text-text-secondary">MTN mobile money</span>
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success">
-            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-success" />
-            Matched
+        {/* The wording here is the dashboard's own: `PAYMENT_CONFIDENCE_LABELS`
+            in the shared package calls an unconfirmed payment "Customer says
+            they paid", and the Payments screen puts a Confirm button beside it. */}
+        <div className="flex items-center justify-between gap-2 border-t border-border-subtle bg-surface-sunken px-3.5 py-2.5">
+          <span className="flex min-w-0 flex-col leading-tight">
+            <span className="truncate text-xs font-medium text-text-primary">
+              MTN mobile money
+            </span>
+            <span className="truncate text-2xs text-text-muted">Customer says they paid</span>
+          </span>
+          <span className="shrink-0 rounded-sm border border-primary-border bg-primary-light px-2 py-1 text-2xs font-bold uppercase tracking-wide text-primary">
+            Confirm
           </span>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { NotFoundError, ValidationError } from '../../utils/errors.js';
 import { notifyPaymentReceived } from '../../services/notifications/customer-notifications.js';
+import { notifyOwnerPaymentRecorded } from '../../services/notifications/owner-notifications.js';
 import { emitPaymentConfirmed } from '../../services/sse/sse.events.js';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
 import * as repository from './payments.repository.js';
@@ -44,6 +45,7 @@ export async function logPayment(
       });
 
       await notifyPaymentReceived(payment.id);
+      await notifyOwnerPaymentRecorded(payment.id);
     }
 
     await logActivity({
@@ -97,6 +99,7 @@ export async function attestPayment(
 
   if (attested.direction === 'IN') {
     await notifyPaymentReceived(attested.id);
+    await notifyOwnerPaymentRecorded(attested.id);
   }
 
   return attested;

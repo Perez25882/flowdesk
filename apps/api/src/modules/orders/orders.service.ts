@@ -4,6 +4,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../../utils/error
 import { extractItemsFromText } from '../../utils/item-extractor.js';
 import { notifyOrderStatus } from '../../services/notifications/customer-notifications.js';
 import { recordOrder } from '../../services/plan/plan.service.js';
+import { notifyOwnerLowStock, notifyOwnerNewOrder } from '../../services/notifications/owner-notifications.js';
 import { emitOrderCreated, emitOrderUpdated, emitStockAlert } from '../../services/sse/sse.events.js';
 import {
   createOrder,
@@ -108,7 +109,19 @@ async function emitCreated(order: OrderWithRelations): Promise<void> {
     referenceNumber: order.referenceNumber,
     customerName: order.customer?.name ?? null,
     totalAmount: Number(order.totalAmount),
+    // Carried so the realtime fan-out can make the same assignment-scoped
+    // decision the HTTP layer makes; without it a delivery rider is either sent
+    // every order in the shop or none of them.
+    assignedStaffId: order.assignedStaffId ?? null,
   });
+
+  // The owner is on WhatsApp, not on a dashboard. The PRD rates "owner never
+  // checks the dashboard" as the highest product risk and names this as the
+  // mitigation. A manual order was typed by the owner a moment ago, so telling
+  // them about it is noise.
+  if (!order.isManual) {
+    await notifyOwnerNewOrder(order.id);
+  }
 }
 
 /**
@@ -380,6 +393,10 @@ async function transitionOrder(
 
     for (const alert of alerts) {
       emitStockAlert(businessId, alert);
+      // Stock most often falls low through selling, not through a manual
+      // adjustment, so this is the path that matters. The owner-notification
+      // cooldown is what keeps a busy morning from becoming forty messages.
+      await notifyOwnerLowStock(alert.productId);
     }
   }
 
