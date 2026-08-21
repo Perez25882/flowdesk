@@ -13,6 +13,16 @@ import {
   SheetFooter,
 } from '@/components/ui/Sheet';
 import { Button } from '@/components/ui/Button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogBody,
+  DialogFooter,
+} from '@/components/ui/Dialog';
+import { TextAreaField } from '@/components/ui/Field';
 import { OrderStatusBadge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { formatCurrency, timeAgo, cn } from '@/lib/utils';
@@ -116,6 +126,9 @@ export default function OrderDetailDrawer({
   const { data: staffList = [] } = useStaff();
 
   const [assignStaffId, setAssignStaffId] = useState('');
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('MOMO_MTN');
   const [paymentRef, setPaymentRef] = useState('');
@@ -133,6 +146,38 @@ export default function OrderDetailDrawer({
   function handleStatusChange(nextStatus: OrderStatus): void {
     if (!order) return;
     updateStatus.mutate({ orderId: order.id, data: { status: nextStatus } });
+  }
+
+  /**
+   * Cancelling asks for a reason first.
+   *
+   * The API requires one — it ends up on the order, in the status history, and
+   * in the message the customer receives, so "cancelled, no reason given" is not
+   * something the server will accept. The button used to send the status with no
+   * note at all, which came back 400 and was never rendered anywhere: the
+   * spinner stopped, the optimistic update rolled back, and nothing happened.
+   * There was no working way to cancel an order anywhere in the product.
+   */
+  function handleConfirmCancel(): void {
+    if (!order) return;
+
+    const reason = cancelReason.trim();
+    if (reason.length === 0) {
+      setCancelError('Please give a reason — the customer is told why.');
+      return;
+    }
+
+    updateStatus.mutate(
+      { orderId: order.id, data: { status: 'CANCELLED', note: reason } },
+      {
+        onSuccess: () => {
+          setCancelOpen(false);
+          setCancelReason('');
+          setCancelError(null);
+        },
+        onError: (error: Error) => setCancelError(error.message),
+      },
+    );
   }
 
   function handleAssign(): void {
@@ -424,7 +469,10 @@ export default function OrderDetailDrawer({
                   <Button
                     variant="secondary"
                     className={cn('shrink-0 text-danger', !action && 'flex-1')}
-                    onClick={() => handleStatusChange('CANCELLED')}
+                    onClick={() => {
+                      setCancelError(null);
+                      setCancelOpen(true);
+                    }}
                     disabled={updateStatus.isPending}
                   >
                     Cancel
@@ -435,6 +483,55 @@ export default function OrderDetailDrawer({
           </>
         )}
       </SheetContent>
+
+      <Dialog
+        open={cancelOpen}
+        onOpenChange={(next) => {
+          setCancelOpen(next);
+          if (!next) setCancelError(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel {order?.referenceNumber}?</DialogTitle>
+            <DialogDescription>
+              {order?.customer.name ?? 'The customer'} will be sent a WhatsApp message telling them
+              the order is cancelled, and the reason you give here.
+            </DialogDescription>
+          </DialogHeader>
+
+          <DialogBody>
+            <TextAreaField
+              label="Reason"
+              rows={3}
+              value={cancelReason}
+              placeholder="Out of stock, customer changed their mind…"
+              onChange={(event) => {
+                setCancelReason(event.target.value);
+                if (cancelError) setCancelError(null);
+              }}
+              {...(cancelError ? { error: cancelError } : {})}
+            />
+          </DialogBody>
+
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              onClick={() => setCancelOpen(false)}
+              disabled={updateStatus.isPending}
+            >
+              Keep the order
+            </Button>
+            <Button
+              className="text-danger"
+              onClick={handleConfirmCancel}
+              isLoading={updateStatus.isPending}
+            >
+              Cancel the order
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Sheet>
   );
 }
