@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
 import { recalculateCustomerTotals } from '../customers/customers.repository.js';
+import type { ConfirmPaymentInput } from './payments.schema.js';
 
 /**
  * What counts as money, as a Prisma filter.
@@ -26,6 +27,8 @@ export interface PaymentWithCustomer {
   voidedAt: Date | null;
   voidReason: string | null;
   screenshotUrl: string | null;
+  /** The archive key of the screenshot this claim came from, if any. */
+  screenshotKey: string | null;
   customer: { id: string; name: string | null; waNumber: string };
   orderId: string | null;
   order?: { id: string; referenceNumber: string; amountPaid: Prisma.Decimal; totalAmount: Prisma.Decimal } | null;
@@ -116,8 +119,13 @@ export async function listPayments(
     where.voidedAt = null;
     if (!filters.confidence) where.confidence = 'CLAIMED';
   }
+  // Keyed on the archive key, not the URL. The key is written for every
+  // screenshot claim the moment it is recorded; the URL only appears once the
+  // image has actually reached the bucket, which it never does when media
+  // storage is unconfigured. Filtering on the URL — as this used to — hid every
+  // screenshot claim on a deployment without S3, which is all of them today.
   if (filters.hasScreenshot) {
-    where.screenshotUrl = { not: null };
+    where.screenshotKey = { not: null };
   }
   if (filters.dateFrom || filters.dateTo) {
     where.createdAt = {};
@@ -287,4 +295,198 @@ export async function getRevenueStats(businessId: string): Promise<{
   }
 
   return { totalRevenue, today, thisWeek, thisMonth, byMethod };
+}
+
+
+/**
+ * One thing waiting for the owner's judgement.
+ *
+ * Every unvoided CLAIMED payment qualifies, whichever way it got there: a
+ * screenshot the detector flagged, or an amount counter staff wrote down and
+ * cannot attest to themselves. Both are the same question — did this money
+ * actually arrive — and answering it is the same tap.
+ */
+export interface ReviewQueueItem {
+  paymentId: string;
+  kind: 'SCREENSHOT' | 'LOGGED';
+  /** Null when nobody has read the amount off the screenshot yet. */
+  amount: number | null;
+  method: string;
+  direction: PaymentDirection;
+  confidence: PaymentConfidence;
+  reference: string | null;
+  notes: string | null;
+  createdAt: Date;
+  customer: { id: string; name: string | null; waNumber: string };
+  order: {
+    id: string;
+    referenceNumber: string;
+    totalAmount: number;
+    amountPaid: number;
+    outstanding: number;
+  } | null;
+  screenshot: {
+    /** False when the image could not be archived. The claim still stands. */
+    available: boolean;
+    /** Path to fetch the image bytes from, relative to the API base. */
+    viewUrl: string | null;
+    unavailableReason: 'NOT_ARCHIVED' | null;
+    caption: string | null;
+    receivedAt: Date | null;
+    messageId: string | null;
+  } | null;
+}
+
+/**
+ * Everything the owner has to check, newest first.
+ *
+ * Decimals are converted to numbers here rather than handed out raw: a Prisma
+ * Decimal serialises as its own internal shape, and a dashboard reading
+ * `amount` off it gets an object where it expected money.
+ */
+export async function listReviewQueue(
+  businessId: string,
+  limit: number,
+): Promise<ReviewQueueItem[]> {
+  const claims = await prisma.payment.findMany({
+    where: { businessId, confidence: 'CLAIMED', voidedAt: null },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    include: {
+      customer: { select: { id: true, name: true, waNumber: true } },
+      order: {
+        select: { id: true, referenceNumber: true, totalAmount: true, amountPaid: true },
+      },
+    },
+  });
+
+  // The message the screenshot arrived on carries the caption and the time the
+  // customer sent it — the context that makes a bare image interpretable. It is
+  // fetched in one query for the whole page rather than one per row.
+  const screenshotKeys = claims
+    .map((claim) => claim.screenshotKey)
+    .filter((key): key is string => key !== null);
+
+  const messages =
+    screenshotKeys.length > 0
+      ? await prisma.message.findMany({
+          where: { businessId, mediaKey: { in: screenshotKeys } },
+          select: { id: true, mediaKey: true, body: true, createdAt: true },
+        })
+      : [];
+
+  const messageByKey = new Map(messages.map((message) => [message.mediaKey, message]));
+
+  return claims.map((claim) => {
+    const message = claim.screenshotKey ? messageByKey.get(claim.screenshotKey) : undefined;
+    const amount = Number(claim.amount);
+
+    return {
+      paymentId: claim.id,
+      kind: claim.screenshotKey ? 'SCREENSHOT' : 'LOGGED',
+      amount: amount === 0 ? null : amount,
+      method: claim.method,
+      direction: claim.direction as PaymentDirection,
+      confidence: claim.confidence as PaymentConfidence,
+      reference: claim.reference,
+      notes: claim.notes,
+      createdAt: claim.createdAt,
+      customer: claim.customer,
+      order: claim.order
+        ? {
+            id: claim.order.id,
+            referenceNumber: claim.order.referenceNumber,
+            totalAmount: Number(claim.order.totalAmount),
+            amountPaid: Number(claim.order.amountPaid),
+            outstanding: Number(claim.order.totalAmount) - Number(claim.order.amountPaid),
+          }
+        : null,
+      screenshot: claim.screenshotKey
+        ? {
+            available: claim.screenshotUrl !== null,
+            viewUrl: claim.screenshotUrl !== null ? `/payments/${claim.id}/screenshot` : null,
+            unavailableReason: claim.screenshotUrl === null ? 'NOT_ARCHIVED' : null,
+            caption: message?.body ?? null,
+            receivedAt: message?.createdAt ?? null,
+            messageId: message?.id ?? null,
+          }
+        : null,
+    };
+  });
+}
+
+/** The archive key of a payment's screenshot, for serving the image back. */
+export async function findScreenshotKey(
+  paymentId: string,
+  businessId: string,
+): Promise<{ key: string; archived: boolean } | null> {
+  const payment = await prisma.payment.findFirst({
+    where: { id: paymentId, businessId },
+    select: { screenshotKey: true, screenshotUrl: true },
+  });
+
+  if (!payment?.screenshotKey) return null;
+
+  return { key: payment.screenshotKey, archived: payment.screenshotUrl !== null };
+}
+
+/**
+ * Fills in what the owner read off the screenshot and attests it in one write.
+ *
+ * Same conditional `updateMany` as `attestPaymentWithSideEffects`, for the same
+ * reason: the row moves out of CLAIMED exactly once, so a double-tap on a slow
+ * connection confirms one payment rather than two. The amount and method are set
+ * in the same statement as the confidence, so there is no window in which an
+ * attested payment carries the placeholder figures.
+ *
+ * Returns null when the claim had already been taken or voided.
+ */
+export async function confirmClaimWithSideEffects(
+  paymentId: string,
+  businessId: string,
+  data: ConfirmPaymentInput,
+  attestedBy: string,
+): Promise<PaymentWithCustomer | null> {
+  return prisma.$transaction(async (tx) => {
+    const previous = await tx.payment.findFirst({
+      where: { id: paymentId, businessId },
+      select: { orderId: true },
+    });
+
+    const claimed = await tx.payment.updateMany({
+      where: { id: paymentId, businessId, confidence: 'CLAIMED', voidedAt: null },
+      data: {
+        amount: new Prisma.Decimal(data.amount),
+        method: data.method,
+        confidence: 'SELLER_ATTESTED',
+        attestedBy,
+        attestedAt: new Date(),
+        ...(data.orderId !== undefined ? { orderId: data.orderId } : {}),
+        ...(data.reference !== undefined ? { reference: data.reference } : {}),
+      },
+    });
+
+    if (claimed.count !== 1) return null;
+
+    const updated = await tx.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+      include: {
+        customer: { select: { id: true, name: true, waNumber: true } },
+        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
+      },
+    });
+
+    // A claim can be attached to an order at the moment it is confirmed, so the
+    // order it left has to be recomputed too — otherwise the old order keeps
+    // credit for money that has just been moved onto a different one.
+    if (previous?.orderId && previous.orderId !== updated.orderId) {
+      await recalculateOrderPaid(previous.orderId, tx);
+    }
+    if (updated.orderId) {
+      await recalculateOrderPaid(updated.orderId, tx);
+    }
+    await recalculateCustomerTotals(updated.customerId, tx);
+
+    return updated as unknown as PaymentWithCustomer;
+  });
 }

@@ -35,6 +35,21 @@ export const CreatePaymentSchema = z.object({
   attested: z.boolean().default(true),
 });
 
+/**
+ * Confirming a claim: the owner reads the screenshot and states what it says.
+ *
+ * `amount` and `method` are required with no defaults. A claim recorded from a
+ * screenshot carries a zero amount and a method of OTHER until a person supplies
+ * the real ones, and defaulting either of them here would let a placeholder be
+ * attested into the revenue figures with one tap.
+ */
+export const ConfirmPaymentSchema = z.object({
+  amount: z.coerce.number().positive().max(10_000_000),
+  method: PaymentMethodSchema,
+  orderId: z.string().optional(),
+  reference: z.string().max(200).optional(),
+});
+
 /** A void must say why. An unexplained reversal is not evidence of anything. */
 export const VoidPaymentSchema = z.object({
   reason: z.string().min(3).max(500),
@@ -65,6 +80,16 @@ export const ListPaymentsQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(100).default(20),
 });
 
+/**
+ * The review queue is a working list, not an archive: an owner with hundreds of
+ * unchecked claims has a different problem than pagination solves.
+ */
+export const ReviewQueueQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(100).default(50),
+});
+
 export type CreatePaymentInput = z.infer<typeof CreatePaymentSchema>;
+export type ConfirmPaymentInput = z.infer<typeof ConfirmPaymentSchema>;
+export type ReviewQueueQueryInput = z.infer<typeof ReviewQueueQuerySchema>;
 export type VoidPaymentInput = z.infer<typeof VoidPaymentSchema>;
 export type ListPaymentsQueryInput = z.infer<typeof ListPaymentsQuerySchema>;

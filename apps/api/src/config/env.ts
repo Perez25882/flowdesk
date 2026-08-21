@@ -157,6 +157,20 @@ const envSchema = z.object({
 
   // ── Billing ─────────────────────────────────────────────────────────────
   PAYSTACK_SECRET_KEY: optionalString,
+  /**
+   * Paystack plan codes, one per tier.
+   *
+   * Without a plan code `initializeTransaction` creates a ONE-OFF CHARGE:
+   * Paystack makes no subscription, `charge.success` carries no
+   * subscription_code, `paystackSubCode` stays null — and a customer who has
+   * paid still reads as a lapsed trial 48 hours later. Cancel, pause and
+   * downgrade also have nothing to act on. Optional so development works
+   * without them; a production deployment that wants recurring billing must
+   * set all three.
+   */
+  PAYSTACK_PLAN_STARTER: optionalString,
+  PAYSTACK_PLAN_BUSINESS: optionalString,
+  PAYSTACK_PLAN_GROWTH: optionalString,
   PAYSTACK_PUBLIC_KEY: optionalString,
 
   // ── Monitoring ──────────────────────────────────────────────────────────

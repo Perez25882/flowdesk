@@ -86,6 +86,34 @@ model Business {
   profileUpdatedAt   DateTime?
   /// How much this business lets the assistant do unsupervised.
   aiAssistMode       AiAssistMode       @default(DRAFT_ONLY)
+
+  /// Whether this shop keeps a product list in Flowdesk at all.
+  ///
+  /// A great many Ghanaian SMEs do not, and never will. A boutique selling
+  /// second-hand jeans has one-off stock that changes daily; a customer asks
+  /// "do you have baggy jeans?" and only the owner can answer. Forcing that
+  /// shop to enumerate a catalogue before the product is useful to them is
+  /// asking them to do data entry to earn a feature they did not want.
+  ///
+  /// The assistant behaves differently in each mode. With a catalogue it
+  /// answers price and availability itself. Without one it still recognises
+  /// what is being asked, replies to hold the customer, and puts a one-tap
+  /// question in front of the owner — which is the part that actually saves
+  /// them time.
+  catalogueMode      CatalogueMode      @default(CATALOGUE)
+
+  /// A plan change that has been agreed but does not take effect yet.
+  ///
+  /// A downgrade or cancellation applies at the end of the period already paid
+  /// for — cutting someone off the day they ask is taking money for a service
+  /// then withdrawing it. There is no scheduler in this service, so the change
+  /// is written through on the next plan read, the same lazy pattern the
+  /// conversation counters use.
+  pendingPlan        BusinessPlan?
+  planChangeAt       DateTime?
+  /// downgrade | cancel | pause | payment_failed — what the owner asked for,
+  /// so the message they see when it lands describes what they actually did.
+  pendingPlanKind    String?
   notifyOnNewOrder   Boolean            @default(true)
   notifyOnLowStock   Boolean            @default(true)
   notifyOnPayment    Boolean            @default(true)
@@ -337,6 +365,14 @@ model Payment {
   reference     String?
   screenshotUrl String?
   screenshotKey String?
+
+  /// The inbound message this payment was raised from, when it was raised
+  /// automatically from a screenshot rather than typed by a person.
+  ///
+  /// Unique per business so two workers racing the same Meta redelivery cannot
+  /// both insert a claim — a read-then-write leaves a window that a constraint
+  /// does not.
+  sourceMessageId String?
   confidence    PaymentConfidence @default(CLAIMED)
   direction     PaymentDirection  @default(IN)
   attestedBy    String?
@@ -357,8 +393,10 @@ model Payment {
   @@index([businessId])
   @@index([businessId, customerId])
   @@index([businessId, orderId])
+  @@unique([businessId, sourceMessageId])
   @@index([businessId, confidence])
   @@index([businessId, voidedAt])
+  @@index([businessId, screenshotKey])
   @@index([businessId, createdAt(sort: Desc)])
   @@map("payments")
 }
@@ -644,6 +682,14 @@ enum BusinessType {
 }
 
 /// How much the assistant may do without the owner. Mirrors `AI_ASSIST_MODES`.
+enum CatalogueMode {
+  /// The shop maintains a product list; the assistant answers from it.
+  CATALOGUE
+  /// The shop does not keep a list. The assistant recognises the enquiry and
+  /// routes it to the owner rather than answering from nothing.
+  ENQUIRY_LED
+}
+
 enum AiAssistMode {
   /// Fixed templates only — the assistant writes nothing.
   OFF

@@ -23,6 +23,18 @@ export interface PendingTransaction {
   businessId: string;
   plan: PlanKey;
   expectedAmount: number;
+  /**
+   * The subscription this checkout replaces, when the owner is moving up a tier
+   * while already paying for one.
+   *
+   * Recorded here rather than acted on at checkout time because the old
+   * subscription must survive a payment that never completes: cancelling it
+   * before the new card is charged would leave someone who abandoned the
+   * Paystack page with no plan at all. The webhook disables it once the new
+   * charge has actually settled, and the record is consumed atomically, so it
+   * happens exactly once.
+   */
+  previousSubscriptionCode?: string;
 }
 
 function keyFor(reference: string): string {

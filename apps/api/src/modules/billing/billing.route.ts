@@ -1,9 +1,16 @@
+import type { BusinessPlan } from '@prisma/client';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
 import { redis } from '../../config/redis.js';
 import { success } from '../../utils/response.js';
-import { verifyWebhookSignature } from '../../services/billing/paystack.js';
+import { disableSubscription, fetchSubscription, verifyWebhookSignature } from '../../services/billing/paystack.js';
+import {
+  applyDueScheduledChange,
+  clearSchedule,
+  readSchedule,
+  startPaymentGrace,
+} from '../../services/billing/plan-schedule.js';
 import { consumePendingTransaction } from './pending-transaction.js';
 
 interface PaystackWebhookBody {
@@ -49,6 +56,11 @@ async function claimEvent(key: string): Promise<boolean> {
     logger.warn({ error, key }, 'Paystack dedupe unavailable — processing anyway');
     return true;
   }
+}
+
+/** The subscription an event is about, whichever shape it arrived in. */
+function subscriptionCodeOf(data: PaystackWebhookBody['data']): string | null {
+  return data.subscription?.subscription_code ?? data.subscription_code ?? null;
 }
 
 export default async function billingRoutes(app: FastifyInstance): Promise<void> {
@@ -114,6 +126,13 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         await applyChargeSuccess(data);
       }
 
+      // Paystack does not retry a failed subscription charge, so this is the
+      // whole warning a customer gets. It starts the PRD's 3-day grace rather
+      // than stopping the account, and it arrives before the disable does.
+      if (event === 'invoice.payment_failed') {
+        await applyPaymentFailed(data);
+      }
+
       if (event === 'subscription.disable' || event === 'subscription.not_renew') {
         await applySubscriptionEnded(data);
       }
@@ -139,9 +158,16 @@ async function applyChargeSuccess(data: PaystackWebhookBody['data']): Promise<vo
   const pending = await consumePendingTransaction(data.reference);
 
   if (!pending) {
-    logger.warn(
+    // A renewal, not a checkout: Paystack charged an existing subscription, so
+    // there is no pending record and no plan to move. The one thing worth doing
+    // is calling off a payment-failure grace, because the payment we were
+    // waiting for has now arrived. That can only ever restore service, never
+    // grant a plan, so it does not need the pending-transaction guarantee.
+    await clearPaymentGraceForSubscription(subscriptionCodeOf(data));
+
+    logger.info(
       { reference: data.reference },
-      'charge.success with no matching pending checkout — ignored',
+      'charge.success with no matching pending checkout — treated as a renewal',
     );
     return;
   }
@@ -170,7 +196,7 @@ async function applyChargeSuccess(data: PaystackWebhookBody['data']): Promise<vo
     return;
   }
 
-  const subscriptionCode = data.subscription?.subscription_code ?? data.subscription_code ?? null;
+  const subscriptionCode = subscriptionCodeOf(data);
 
   await prisma.business.update({
     where: { id: businessId },
@@ -184,15 +210,118 @@ async function applyChargeSuccess(data: PaystackWebhookBody['data']): Promise<vo
     },
   });
 
+  // Paying supersedes anything that was queued: a pause the owner changed their
+  // mind about, a downgrade they no longer want, a grace period they have just
+  // settled. Leaving it in place would downgrade or lapse the plan they have
+  // this moment paid for.
+  await clearSchedule(businessId);
+
   logger.info(
     { businessId, plan, reference: data.reference },
     'Business upgraded after successful payment',
   );
+
+  // Only now that the new charge has actually settled is it safe to stop the
+  // old subscription. Doing it at checkout would have left an owner who
+  // abandoned the Paystack page with no plan at all. The pending record is
+  // consumed atomically above, so a replayed delivery never reaches this.
+  if (pending.previousSubscriptionCode && pending.previousSubscriptionCode !== subscriptionCode) {
+    await stopSupersededSubscription(businessId, pending.previousSubscriptionCode);
+  }
 }
 
-/** Suspends the business whose subscription ended. */
+/**
+ * Disables the subscription an upgrade replaced.
+ *
+ * Best effort and loudly logged: the customer already has what they paid for,
+ * and the failure mode of leaving this undone is a second charge next month,
+ * which is exactly the thing worth being told about while it can still be
+ * fixed by hand.
+ */
+async function stopSupersededSubscription(businessId: string, code: string): Promise<void> {
+  const previous = await fetchSubscription(code).catch((error: unknown) => {
+    logger.error({ error, businessId, code }, 'Could not read the superseded subscription');
+    return null;
+  });
+
+  const stopped = previous
+    ? await disableSubscription(previous.subscriptionCode, previous.emailToken)
+    : false;
+
+  if (!stopped) {
+    logger.error(
+      { businessId, code },
+      'Superseded subscription is still live — cancel it in Paystack to avoid a second charge',
+    );
+    return;
+  }
+
+  logger.info({ businessId, code }, 'Superseded subscription disabled after upgrade');
+}
+
+/** Calls off a payment-failure grace once the money arrives. */
+async function clearPaymentGraceForSubscription(subscriptionCode: string | null): Promise<void> {
+  if (!subscriptionCode) return;
+
+  const business = await prisma.business.findFirst({
+    where: { paystackSubCode: subscriptionCode },
+    select: { id: true },
+  });
+
+  if (!business) return;
+
+  const schedule = await readSchedule(business.id);
+
+  if (!schedule || schedule.kind !== 'payment_failed' || schedule.appliedAt) return;
+
+  await clearSchedule(business.id);
+
+  logger.info(
+    { businessId: business.id },
+    'Renewal succeeded — payment-failure grace period cancelled',
+  );
+}
+
+/** Starts the 3-day grace the PRD gives a failed renewal. */
+async function applyPaymentFailed(data: PaystackWebhookBody['data']): Promise<void> {
+  const subscriptionCode = subscriptionCodeOf(data);
+
+  if (!subscriptionCode) {
+    logger.warn({ reference: data.reference }, 'Payment failure without a subscription code — ignored');
+    return;
+  }
+
+  const business = await prisma.business.findFirst({
+    where: { paystackSubCode: subscriptionCode },
+    select: { id: true, plan: true },
+  });
+
+  if (!business) {
+    logger.warn({ subscriptionCode }, 'Payment failure for an unknown subscription — ignored');
+    return;
+  }
+
+  await beginGrace(business.id, business.plan, subscriptionCode);
+}
+
+/**
+ * Handles a subscription ending.
+ *
+ * Two very different things arrive as the same event. One is the end we asked
+ * for — the owner downgraded, cancelled or paused, and Paystack is confirming
+ * on the day. The other is a subscription dying on its own, which in practice
+ * means the renewal did not go through.
+ *
+ * They are told apart by whether a change is already scheduled for this
+ * business. A scheduled change is written before Paystack is ever asked to stop
+ * the subscription, precisely so this branch cannot mistake one for the other.
+ *
+ * Suspending on the spot — which is what this did — broke the PRD's promise of
+ * a 3-day grace and cut off shops whose card had simply expired, in the middle
+ * of a working day, with no warning.
+ */
 async function applySubscriptionEnded(data: PaystackWebhookBody['data']): Promise<void> {
-  const subscriptionCode = data.subscription?.subscription_code ?? data.subscription_code ?? null;
+  const subscriptionCode = subscriptionCodeOf(data);
 
   // A null code previously fell through to `where: { paystackSubCode: null }`,
   // which matched an arbitrary business — every row had a null column — and
@@ -207,7 +336,7 @@ async function applySubscriptionEnded(data: PaystackWebhookBody['data']): Promis
 
   const business = await prisma.business.findFirst({
     where: { paystackSubCode: subscriptionCode },
-    select: { id: true },
+    select: { id: true, plan: true },
   });
 
   if (!business) {
@@ -215,13 +344,40 @@ async function applySubscriptionEnded(data: PaystackWebhookBody['data']): Promis
     return;
   }
 
-  await prisma.business.update({
-    where: { id: business.id },
-    data: {
-      suspendedAt: new Date(),
-      suspendReason: 'Subscription cancelled or payment failed',
-    },
-  });
+  const scheduled = await readSchedule(business.id);
 
-  logger.info({ businessId: business.id }, 'Business suspended due to subscription issue');
+  if (scheduled && !scheduled.appliedAt) {
+    // Expected. If the paid period has run out this writes the new plan through
+    // now instead of waiting for the next read; if it has not, the schedule
+    // stands and the customer keeps what they paid for.
+    await applyDueScheduledChange(business.id);
+    logger.info(
+      { businessId: business.id, kind: scheduled.kind },
+      'Subscription ended as scheduled',
+    );
+    return;
+  }
+
+  await beginGrace(business.id, business.plan, subscriptionCode);
+}
+
+/** Shared entry point for the grace period, with the Redis-outage path spelled out. */
+async function beginGrace(
+  businessId: string,
+  plan: BusinessPlan,
+  subscriptionCode: string,
+): Promise<void> {
+  try {
+    await startPaymentGrace(businessId, plan, subscriptionCode);
+  } catch (error: unknown) {
+    // The grace record could not be written. The delivery has already been
+    // marked seen, so Paystack retrying will not help — and the alternative,
+    // suspending immediately, is the behaviour being fixed. So the account
+    // keeps running and this is logged as something a human must settle: a shop
+    // left working for free is recoverable, a shop wrongly shut is not.
+    logger.error(
+      { error, businessId, subscriptionCode },
+      'Could not record the payment-failure grace period — account left running, needs manual review',
+    );
+  }
 }
