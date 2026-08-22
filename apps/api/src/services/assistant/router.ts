@@ -10,7 +10,7 @@ import { composeClarification, shouldStopClarifying } from './clarify.js';
 import { composeEnquiryHold, isOwnerOnlyEnquiry } from './enquiry.js';
 import { escalationRequired, isKnownEvidence } from './decision.js';
 import type { EvidenceProduct, EvidenceSet } from './evidence.js';
-import { validateGrounding, type GroundingFailure } from './grounding.js';
+import { assertsCheckableFact, validateGrounding, type GroundingFailure } from './grounding.js';
 
 /**
  * What the server does with a decision.
@@ -41,6 +41,17 @@ const AUTO_SENDABLE_INTENTS: ReadonlySet<IntentType> = new Set([
   IntentType.INQUIRY,
   IntentType.STATUS_CHECK,
 ]);
+
+/**
+ * Intents whose reply may be sent only while it asserts nothing checkable.
+ *
+ * A customer who says "good morning" and waits for the owner to approve
+ * "morning!" has been served worse than by a shop with no software at all. The
+ * reply is zero-risk precisely because there is nothing in it to be wrong
+ * about — and the moment there is (a price, a stock level, an "we have that"),
+ * `assertsCheckableFact` sends it down the normal grounded path instead.
+ */
+const SOCIAL_INTENTS: ReadonlySet<IntentType> = new Set([IntentType.GREETING]);
 
 export interface RouteInput {
   mode: AiAssistMode;
@@ -215,6 +226,11 @@ function isAutoSendable(
   if (!decision.answer.canAnswer || !decision.answer.text) return false;
   if (decision.clarification.needed) return false;
   if (decision.confidence < AUTO_SEND_CONFIDENCE) return false;
+
+  // A pleasantry that claims nothing is safe to send. Everything below this
+  // point verifies assertions, and there are none to verify.
+  if (isBarePleasantry(decision)) return true;
+
   if (!AUTO_SENDABLE_INTENTS.has(decision.intent)) return false;
 
   // Re-checked here even though the invariant pass already filtered them: this
@@ -238,6 +254,19 @@ function isAutoSendable(
   if (citedProducts.size > 1) return false;
 
   return true;
+}
+
+/**
+ * A social reply with nothing in it to be wrong about.
+ *
+ * Both halves matter. The intent keeps this to greetings and thanks, and the
+ * claim test keeps it honest when the model answers a greeting with a price
+ * anyway — which it does, given a catalogue and an opening.
+ */
+function isBarePleasantry(decision: AssistantDecision): boolean {
+  if (!SOCIAL_INTENTS.has(decision.intent)) return false;
+  if (!decision.answer.text) return false;
+  return !assertsCheckableFact(decision.answer.text);
 }
 
 export function routeDecision(input: RouteInput): RouteResult {
@@ -339,6 +368,10 @@ export function routeDecision(input: RouteInput): RouteResult {
     evidence: input.evidence,
     groundedOn: decision.answer.groundedOn.map((ref) => ref.id),
     citedStock: citedStockLevels(decision, input.products),
+    // A greeting has no row behind it. Requiring one turned every "Morning!"
+    // into something the owner had to approve, which is worse service than
+    // having no assistant at all.
+    requireCitation: !isBarePleasantry(decision),
   });
 
   if (isAutoSendable(input, decision, validation.failures, escalated)) {

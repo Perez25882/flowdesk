@@ -166,6 +166,34 @@ export function typeNumbers(text: string): TypedNumber[] {
   return found;
 }
 
+/**
+ * Whether this text asserts anything a customer could be misled by.
+ *
+ * The citation rule exists because a price or a stock level has to come from a
+ * row. "Morning!" and "You're welcome" come from nowhere and need to — there is
+ * no row behind a greeting, so demanding one meant the friendliest replies the
+ * assistant produced were the ones held back for approval. Once the prompt
+ * started asking for warmth, that turned into most of them.
+ *
+ * So the question is not "did it cite something" but "did it claim something".
+ * Anything with money, a stock count, an order reference or an availability
+ * affirmation in it is a claim and still needs its evidence. A bare pleasantry
+ * is not.
+ */
+export function assertsCheckableFact(text: string): boolean {
+  const lowered = text.toLowerCase();
+
+  if (AVAILABILITY_AFFIRMATIONS.some((phrase) => lowered.includes(phrase))) return true;
+  if (ORDER_REF_PATTERN.test(text)) return true;
+
+  // Reset: both patterns are /g and carry lastIndex between calls.
+  ORDER_REF_PATTERN.lastIndex = 0;
+
+  return typeNumbers(text).some(
+    (number) => number.kind === 'currency' || number.kind === 'stock',
+  );
+}
+
 export interface ValidateInput {
   text: string;
   evidence: EvidenceSet;
@@ -173,6 +201,11 @@ export interface ValidateInput {
   groundedOn: string[];
   /** Stock levels of the products actually cited, for the affirmation check. */
   citedStock: number[];
+  /**
+   * Whether this reply must cite evidence. Defaults to true. Cleared only for
+   * a reply the router has already established asserts nothing checkable.
+   */
+  requireCitation?: boolean;
 }
 
 /**
@@ -238,7 +271,13 @@ export function validateGrounding(input: ValidateInput): GroundingResult {
   }
 
   // An answer resting on nothing is not grounded, however plausible it reads.
-  if (input.groundedOn.length === 0) {
+  // "Sure, that should be fine" carries no number and is still a commitment.
+  //
+  // The one exception is decided by the caller, not here: a reply the router
+  // has established is a bare pleasantry has nothing to cite, and the caller
+  // says so by clearing `requireCitation`. Keeping the default strict means a
+  // new call site has to opt out deliberately.
+  if (input.requireCitation !== false && input.groundedOn.length === 0) {
     failures.push('ungrounded_claim');
   }
 

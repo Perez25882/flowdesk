@@ -60,6 +60,35 @@ const MAX_VOICE_EXAMPLE_LENGTH = 220;
 /** Open orders are the ones a customer might ask about; older ones are noise. */
 const MAX_OPEN_ORDERS = 5;
 
+/**
+ * Number words a customer plausibly uses for a quantity.
+ *
+ * Stops at twelve on purpose: past that people reach for digits, and every
+ * extra word widens the set of amounts the validator will accept.
+ */
+const QUANTITY_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  // Common in Ghanaian English and Twi-English mixes.
+  couple: 2,
+  dozen: 12,
+};
+
+const WORD_QUANTITY_PATTERN = new RegExp(
+  `\\b(${Object.keys(QUANTITY_WORDS).join('|')})\\b`,
+  'gi',
+);
+
 /** Quantities above this are not real orders, and deriving totals for them is waste. */
 const MAX_PLAUSIBLE_QUANTITY = 100;
 
@@ -108,11 +137,24 @@ export interface AssistantContext {
 export function extractMentionedQuantities(text: string): number[] {
   const found = new Set<number>();
 
-  for (const match of text.matchAll(/\b(\d{1,3})\b/g)) {
-    const value = Number(match[1]);
+  const add = (value: number): void => {
     if (Number.isInteger(value) && value > 0 && value <= MAX_PLAUSIBLE_QUANTITY) {
       found.add(value);
     }
+  };
+
+  for (const match of text.matchAll(/\b(\d{1,3})\b/g)) {
+    add(Number(match[1]));
+  }
+
+  // "two crates" is the same order as "2 crates", and people write it both
+  // ways. Reading only digits meant the evidence set held no quantity for the
+  // worded form, so the correct subtotal the model then derived — GHS 264 for
+  // two crates at GHS 132 — failed validation as an unverified amount and a
+  // right answer was held back for approval.
+  for (const match of text.matchAll(WORD_QUANTITY_PATTERN)) {
+    const word = match[1]?.toLowerCase();
+    if (word) add(QUANTITY_WORDS[word] ?? 0);
   }
 
   return [...found];

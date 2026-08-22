@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildEvidenceSet, type EvidenceProduct } from '../src/services/assistant/evidence.js';
-import { typeNumbers, validateGrounding } from '../src/services/assistant/grounding.js';
+import { assertsCheckableFact, typeNumbers, validateGrounding } from '../src/services/assistant/grounding.js';
 
 /**
  * The guardrail that stands between the model and a customer.
@@ -268,5 +268,53 @@ describe('evidence set', () => {
 
     expect(set.factKeys.has('deliveryFee')).toBe(true);
     expect(set.factKeys.has('minimumOrder')).toBe(false);
+  });
+});
+
+describe('assertsCheckableFact — what actually needs evidence', () => {
+  it('a bare greeting claims nothing', () => {
+    expect(assertsCheckableFact('Morning! How can I help you today?')).toBe(false);
+    expect(assertsCheckableFact('You welcome!')).toBe(false);
+    expect(assertsCheckableFact('Ah wo ho te sen?')).toBe(false);
+  });
+
+  it('a price is a claim even inside a friendly sentence', () => {
+    expect(assertsCheckableFact('Morning! The rice is GHS 620 a bag.')).toBe(true);
+  });
+
+  it('an availability affirmation is a claim with no number in it', () => {
+    expect(assertsCheckableFact('Yes we have it, come through')).toBe(true);
+  });
+
+  it('an order reference is a claim', () => {
+    expect(assertsCheckableFact('Your order FD-00042 is on the way')).toBe(true);
+  });
+
+  it('a plain quantity is not a claim about money or stock', () => {
+    expect(assertsCheckableFact('Ok, 2 of them — see you tomorrow')).toBe(false);
+  });
+});
+
+describe('requireCitation — the narrow exception', () => {
+  it('still blocks an uncited commitment by default', () => {
+    const result = check('Sure, that should be fine.', { grounded: [] });
+    expect(result.failures).toContain('ungrounded_claim');
+  });
+
+  it('lets a pleasantry through when the caller clears it', () => {
+    const result = validateGrounding({
+      text: 'Morning! How can I help you today?',
+      evidence: buildEvidenceSet({
+        products: [],
+        profile: null,
+        openOrders: [],
+        mentionedQuantities: [],
+        businessPhones: [],
+      }),
+      groundedOn: [],
+      citedStock: [],
+      requireCitation: false,
+    });
+    expect(result.ok).toBe(true);
   });
 });
