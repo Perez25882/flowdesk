@@ -40,6 +40,23 @@ const SMALL_CATALOGUE_LIMIT = 25;
 /** Turns of history. Enough to resolve "the same again", short enough to stay cheap. */
 const MAX_HISTORY_TURNS = 6;
 
+/**
+ * Owner-written replies used as tone exemplars.
+ *
+ * Six is enough to establish a register and short enough not to crowd the
+ * catalogue out of the prompt.
+ */
+const MAX_VOICE_EXAMPLES = 6;
+
+/**
+ * Below this a reply carries no style — "ok", "yes", "noted" tell the model
+ * nothing about how the shop talks, and they would crowd out ones that do.
+ */
+const MIN_VOICE_EXAMPLE_LENGTH = 25;
+
+/** Long enough to show phrasing, short enough that six of them stay cheap. */
+const MAX_VOICE_EXAMPLE_LENGTH = 220;
+
 /** Open orders are the ones a customer might ask about; older ones are noise. */
 const MAX_OPEN_ORDERS = 5;
 
@@ -66,6 +83,8 @@ export interface AssembleContextInput {
   history: ConversationTurn[];
   /** A question we already asked and are waiting on, so a bare reply is read as its answer. */
   awaitingClarification: string | null;
+  /** Replies the owner wrote themselves, shown to the model as tone only. */
+  voiceExamples: string[];
   message: string;
 }
 
@@ -160,6 +179,7 @@ export function assembleContext(input: AssembleContextInput): AssistantContext {
     openOrders: input.openOrders,
     history: input.history,
     awaitingClarification: input.awaitingClarification,
+    voiceExamples: input.voiceExamples,
     message: input.message,
   });
 
@@ -260,6 +280,54 @@ export async function loadConversationHistory(
     }));
 }
 
+/**
+ * The shop's own voice: replies the owner typed on their own phone.
+ *
+ * `sentFromApp` marks messages that arrived as echoes from the WhatsApp
+ * Business app — the owner writing to their own customer, unmediated. Those are
+ * the only messages in the table guaranteed not to have been written by this
+ * assistant, so training the tone on them cannot feed the model its own output
+ * back and flatten every shop towards the same voice.
+ *
+ * Not scoped to one customer on purpose: how a shop talks is a property of the
+ * shop, and a new customer is exactly the conversation with no history to learn
+ * from.
+ */
+export async function loadOwnerVoice(businessId: string): Promise<string[]> {
+  const rows = await prisma.message.findMany({
+    where: {
+      businessId,
+      direction: 'OUTBOUND',
+      sentFromApp: true,
+      body: { not: null },
+    },
+    orderBy: { createdAt: 'desc' },
+    // Over-fetch: the length filter below discards "ok" and "noted", and
+    // fetching exactly six would leave the prompt with one usable example.
+    take: MAX_VOICE_EXAMPLES * 4,
+    select: { body: true },
+  });
+
+  const seen = new Set<string>();
+  const examples: string[] = [];
+
+  for (const row of rows) {
+    const body = row.body?.trim();
+    if (!body || body.length < MIN_VOICE_EXAMPLE_LENGTH) continue;
+
+    // A shop that answers "we open at 8" twenty times a day would otherwise
+    // fill every slot with the same sentence.
+    const key = body.slice(0, 40).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    examples.push(body.slice(0, MAX_VOICE_EXAMPLE_LENGTH));
+    if (examples.length >= MAX_VOICE_EXAMPLES) break;
+  }
+
+  return examples;
+}
+
 /** Orders this customer could plausibly be asking about. */
 export async function loadOpenOrders(
   businessId: string,
@@ -312,11 +380,12 @@ export interface LoadedContext extends AssistantContext {
 export async function loadAssistantContext(
   input: LoadContextInput,
 ): Promise<LoadedContext | null> {
-  const [business, catalog, history, openOrders] = await Promise.all([
+  const [business, catalog, history, openOrders, voiceExamples] = await Promise.all([
     loadAssistantBusiness(input.businessId),
     findCatalogProductsWithStock(input.businessId),
     loadConversationHistory(input.businessId, input.customerId, input.messageId),
     loadOpenOrders(input.businessId, input.customerId),
+    loadOwnerVoice(input.businessId),
   ]);
 
   if (!business) return null;
@@ -327,6 +396,7 @@ export async function loadAssistantContext(
     openOrders,
     history,
     awaitingClarification: input.awaitingClarification ?? null,
+    voiceExamples,
     message: input.message,
   });
 

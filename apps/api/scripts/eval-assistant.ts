@@ -31,6 +31,21 @@ import type { BusinessProfile, BusinessType } from '@flowdesk/shared';
  * contains — are replicated here against the same pure helpers it uses, so what
  * the model receives is byte-for-byte what it receives in production.
  */
+/**
+ * Stand-ins for the replies this shop's owner has actually sent.
+ *
+ * In production these come from `loadOwnerVoice` — messages the owner typed on
+ * their own phone. The harness needs its own copy so a prompt change can be
+ * judged against the same voice every run.
+ */
+const OWNER_VOICE = [
+  'Yes we have it, GHS 620 for the 50kg bag. How many you want?',
+  'Morning! We open 8am till 6pm, Monday to Saturday.',
+  'Ok I go set am aside for you. You dey come today or tomorrow?',
+  'Sorry oo, that one finish. The 25kg dey though if you want.',
+  'We deliver Suame and around there, GHS 25. Send me your location.',
+];
+
 const MAX_CANDIDATE_PRODUCTS = 8;
 const SMALL_CATALOGUE_LIMIT = 25;
 
@@ -108,6 +123,7 @@ function assembleContext(input: {
     openOrders: [],
     history: [],
     awaitingClarification: null,
+    voiceExamples: OWNER_VOICE,
     message: input.message,
   });
   return { systemPrompt: ASSISTANT_SYSTEM_PROMPT, userPrompt, evidence, products };

@@ -79,6 +79,10 @@ async function main(): Promise<void> {
       openOrders: [],
       history: [],
       awaitingClarification: null,
+      // Replaying a stored decision reconstructs what the model saw; the shop's
+      // voice is not part of that record, so the tone section stays empty
+      // rather than being filled from today's messages.
+      voiceExamples: [],
       message: message.body ?? '',
     });
 

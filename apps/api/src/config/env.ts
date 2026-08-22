@@ -133,6 +133,12 @@ const envSchema = z.object({
   // Unset means "the provider's default", resolved below rather than here so the
   // right default follows AI_PROVIDER instead of being pinned to one vendor.
   ASSISTANT_MODEL: optionalString,
+  /**
+   * Sampling temperature for the assistant. Warm enough that two customers
+   * asking the same question do not get a byte-identical sentence, low enough
+   * that the model still fills the decision contract reliably.
+   */
+  ASSISTANT_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.6),
   // Anthropic only. Ignored by other providers.
   ASSISTANT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
   ASSISTANT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(20_000),

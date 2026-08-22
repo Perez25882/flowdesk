@@ -60,7 +60,16 @@ interface ChatCompletionResponse {
 function schemaInstruction(schema: Record<string, unknown>): string {
   return [
     'Reply with a single JSON object and nothing else — no prose, no markdown fences.',
-    'It must match this JSON Schema exactly:',
+    // "It must match this schema exactly" was, to an 8B model, an instruction it
+    // could satisfy by printing the schema. It did, on 10 of 22 messages in the
+    // eval — and a decision that fails to parse falls through to the canned
+    // template, so nearly half of all customers were answered by a form letter
+    // while the logs showed the assistant "running". Naming the distinction
+    // between a schema and an instance of one fixes it.
+    'Output an INSTANCE of the schema below — the filled-in object with real values.',
+    'Do NOT output the schema itself. A reply containing "type", "properties" or',
+    '"required" as top-level keys is wrong.',
+    'The schema:',
     JSON.stringify(schema),
   ].join('\n');
 }
@@ -121,10 +130,16 @@ export class NvidiaAssistantProvider implements AssistantProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       max_tokens: env.ASSISTANT_MAX_TOKENS,
-      // Deterministic: this is an extraction task, not a creative one, and a
-      // reply that varies between retries is how a customer gets two different
-      // answers to the same question.
-      temperature: 0,
+      // Not zero. This call does two jobs at once — it extracts a decision and
+      // it writes the sentence a customer reads — and greedy decoding optimises
+      // for the first at the expense of the second: the same flat clause every
+      // time, "A bag of rice costs GHS 450.00", no matter who asked or how.
+      //
+      // The facts are not protected by determinism anyway. They are protected
+      // by the grounding validator, which checks the figures in the finished
+      // text against the rows that were retrieved, and by `applyServerInvariants`
+      // before it. Sampling changes the wording, not what may be asserted.
+      temperature: env.ASSISTANT_TEMPERATURE,
       stream: false,
       messages: [
         { role: 'system', content: `${input.systemPrompt}\n\n${schemaInstruction(input.schema)}` },
