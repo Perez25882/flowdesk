@@ -37,6 +37,7 @@ import {
 import { book } from '../../modules/bookings/bookings.service.js';
 import { beginDeliveryCapture, handleDeliveryReply } from './delivery-flow.js';
 import { autonomyDisclosureFor } from './disclosure.js';
+import { requestPaymentForOpenOrder } from './autonomous-checkout.js';
 
 /**
  * One inbound message, end to end.
@@ -245,6 +246,33 @@ async function runAssistantLocked(input: RunAssistantInput): Promise<RunAssistan
 
   if (orderOutcome) return orderOutcome;
 
+  // The customer asked to pay. Raise the link for what they owe, and let that
+  // message BE the reply.
+  //
+  // Nothing did this before. A payment link was raised only at the moment an
+  // order was created, so "how do I pay?" about an existing order produced four
+  // turns of payment-method talk ending in "just wait for the link to pop up
+  // here" — for a link nothing could ever raise.
+  //
+  // When the link goes out, the model's own reply is dropped rather than sent
+  // alongside it. The link message already carries the amount, the order
+  // reference and the disclosure, and the model's text was written without
+  // knowing whether a link would exist, so it can only restate the link or
+  // contradict it. When no link could be raised, the model's reply stands.
+  if (
+    decision?.intent === 'PAYMENT' &&
+    context.business.aiAssistMode === 'AUTONOMOUS' &&
+    (await requestPaymentForOpenOrder(input.businessId, input.customerId))
+  ) {
+    return {
+      action: 'auto_send',
+      escalated: false,
+      intent: decision.intent,
+      confidence: decision.confidence,
+      holdingText: null,
+    };
+  }
+
   if (route.action === 'auto_send' || route.action === 'clarify') {
     // The link is appended here rather than being part of `route.text`,
     // because `route.text` is what gets stored as the assistant's reply and
@@ -339,9 +367,7 @@ async function settlePendingOrder(args: SettleInput): Promise<RunAssistantResult
     return null;
   }
 
-  // The customer moved on. Left open, the draft would swallow an unrelated
-  // message later as though it answered a question about something else.
-  if (pending && !decision.order.isOrder) {
+  if (pending && shouldAbandonDraft(decision)) {
     await abandonPendingOrder(pending.id);
     return null;
   }
@@ -524,6 +550,37 @@ export function resolveOrderItems(
   }
 
   return items;
+}
+
+/**
+ * Whether an unanswered draft order should be thrown away on this turn.
+ *
+ * The draft exists because the shop asked the customer something — which size,
+ * how many, which area — and is waiting for the answer. The question is whether
+ * THIS message is that answer, a continuation of the same purchase, or the
+ * customer starting on something else.
+ *
+ * This used to be `!decision.order.isOrder`, which threw the draft away on any
+ * turn the model did not label an order. That lost a real sale in testing:
+ *
+ *   shop      Which area should we deliver to?
+ *   customer  Do you deliver to Ashaiman?
+ *
+ * — classified INQUIRY, draft destroyed. The customer had answered the shop's
+ * own question with a question, which is what people do while buying, and
+ * everything after it was someone trying to pay for an order that no longer
+ * existed.
+ *
+ * The asymmetry decides the rule. A draft wrongly KEPT costs one confusing
+ * reply, and `expiresAt` clears it up shortly after. A draft wrongly ABANDONED
+ * costs the sale, silently, and the owner never learns there was one. So only
+ * the turns that genuinely read as a change of subject end it: a fresh greeting
+ * (someone starting again) and a complaint (the order is no longer what this is
+ * about). Questions, payment talk, status chases and turns the model could not
+ * classify all leave the draft standing.
+ */
+export function shouldAbandonDraft(decision: AssistantDecision): boolean {
+  return decision.intent === 'GREETING' || decision.intent === 'COMPLAINT';
 }
 
 /**

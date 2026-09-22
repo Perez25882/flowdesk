@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
 import { createPaymentLink } from '../../modules/payments/payment-links.service.js';
+import { findOpenRequestForOrder } from '../../modules/payments/payment-links.repository.js';
 import { autonomyDisclosureFor } from './disclosure.js';
 
 /**
@@ -30,20 +31,20 @@ export async function requestPaymentForOrder(
   businessId: string,
   customerId: string,
   orderId: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const order = await prisma.order.findFirst({
       where: { id: orderId, businessId },
       select: { totalAmount: true, amountPaid: true, referenceNumber: true },
     });
 
-    if (!order) return;
+    if (!order) return false;
 
     const outstanding = Number(order.totalAmount) - Number(order.amountPaid);
 
     // Nothing owed, nothing to ask for. Also covers an order the assistant
     // priced at zero, where a payment link would be a charge for nothing.
-    if (outstanding <= 0) return;
+    if (outstanding <= 0) return false;
 
     // Reaching here means AUTONOMOUS mode: nobody read this before it went to
     // a stranger. This is the message the disclosure exists for — an AI asking
@@ -89,6 +90,7 @@ export async function requestPaymentForOrder(
       { businessId, orderId, reference: link.reference, amount: outstanding },
       'Assistant sent a payment link without approval (autonomous mode)',
     );
+    return true;
   } catch (error: unknown) {
     // The commonest cause is payouts not being connected, which is a setup gap
     // rather than a fault: the order stands and the owner can collect however
@@ -97,5 +99,60 @@ export async function requestPaymentForOrder(
       { error, businessId, orderId },
       'Autonomous payment link could not be sent — the order stands unpaid',
     );
+    return false;
+  }
+}
+
+/**
+ * The customer asked to pay. Send the link for what they owe, if they owe.
+ *
+ * `requestPaymentForOrder` above runs only when an order is CREATED. That left
+ * no path at all for the commonest case — a customer who ordered earlier and
+ * now says "how do I pay?". In testing the assistant discussed payment methods
+ * across four turns and finished with "just wait for the link to pop up here in
+ * the chat", for a link nothing could ever raise. A promise the system cannot
+ * keep is worse than a refusal, so the caller uses the return value to decide
+ * what it may truthfully say:
+ *
+ *   true   a link is on its way, or one was already sent and is still valid
+ *   false  there is nothing to pay for, or the link could not be raised
+ *
+ * An open link is not raised a second time. A customer who asks twice and
+ * receives two links pays one of them, and the shop then chases the other.
+ */
+export async function requestPaymentForOpenOrder(
+  businessId: string,
+  customerId: string,
+): Promise<boolean> {
+  try {
+    // The most recent order still owed on. Cancelled orders are not owed, and
+    // an old settled order is not what "how do I pay" is asking about.
+    const order = await prisma.order.findFirst({
+      where: { businessId, customerId, status: { not: 'CANCELLED' } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, referenceNumber: true, totalAmount: true, amountPaid: true },
+    });
+
+    if (!order) return false;
+
+    const outstanding = Number(order.totalAmount) - Number(order.amountPaid);
+    if (outstanding <= 0) return false;
+
+    const open = await findOpenRequestForOrder(businessId, order.id, outstanding);
+    if (open) {
+      logger.info(
+        { businessId, orderId: order.id, reference: open.reference },
+        'Customer asked to pay; a link for this order is already open',
+      );
+      return true;
+    }
+
+    return await requestPaymentForOrder(businessId, customerId, order.id);
+  } catch (error: unknown) {
+    logger.warn(
+      { error, businessId, customerId },
+      'Could not raise a payment link for the customer on request',
+    );
+    return false;
   }
 }
