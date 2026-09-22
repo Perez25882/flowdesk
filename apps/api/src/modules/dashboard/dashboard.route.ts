@@ -4,6 +4,7 @@ import { assignedStaffScope, isOwner, requireCapability } from '../../middleware
 import { success } from '../../utils/response.js';
 import { prisma } from '../../config/database.js';
 import { buildReport, reportToCsv, type ReportWindow } from './reports.service.js';
+import { countConversationsNeedingYou } from '../messages/conversations.js';
 
 export interface DashboardBadges {
   pendingOrders: number;
@@ -40,9 +41,10 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
             ...(scopedStaffId ? { assignedStaffId: scopedStaffId } : {}),
           },
         }),
-        canReadMessages
-          ? prisma.message.count({ where: { businessId, requiresReview: true } })
-          : Promise.resolve(0),
+        // People waiting on the owner, by the same definition the inbox uses.
+        // This used to count every message ever flagged — outbound ones too,
+        // answered or not — and read 39 in a shop with nobody waiting.
+        canReadMessages ? countConversationsNeedingYou(businessId) : Promise.resolve(0),
         // Broadly: low-stock = stockQuantity <= reorderThreshold (and threshold > 0)
         canReadProducts
           ? prisma.product

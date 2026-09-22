@@ -2,13 +2,35 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { requireCapability } from '../../middleware/role.middleware.js';
 import { success } from '../../utils/response.js';
 import {
+  ListConversationsQuerySchema,
   ListMessagesQuerySchema,
   SendReplySchema,
   UpdateMessageIntentSchema,
 } from './messages.schema.js';
 import * as service from './messages.service.js';
+import { getThread, listConversations } from './conversations.js';
 
 export default async function messageRoutes(app: FastifyInstance): Promise<void> {
+  // The inbox: one row per customer rather than one per message. Same
+  // capability as reading messages — it is the same data, grouped.
+  app.get(
+    '/conversations',
+    { preHandler: requireCapability('messages.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = ListConversationsQuerySchema.parse(request.query);
+      return success(reply, await listConversations(request.business!.id, query));
+    },
+  );
+
+  app.get(
+    '/conversations/:customerId',
+    { preHandler: requireCapability('messages.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { customerId } = request.params as { customerId: string };
+      return success(reply, await getThread(request.business!.id, customerId));
+    },
+  );
+
   app.get(
     '/messages',
     { preHandler: requireCapability('messages.read') },

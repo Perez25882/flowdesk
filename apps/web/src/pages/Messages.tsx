@@ -1,255 +1,237 @@
-import { IntentType } from '@flowdesk/shared';
 import { useMemo, useState } from 'react';
-import { CheckCircle2, MessageSquare } from 'lucide-react';
-import { useMessages, useCorrectMessageIntent } from '@/hooks/useMessages';
-import ReplyEditor from '@/components/messages/ReplyEditor';
-import EmptyState from '@/components/shared/EmptyState';
+import { useSearchParams } from 'react-router-dom';
+import { MessagesSquare } from 'lucide-react';
 import PageHeader from '@/components/shared/PageHeader';
+import EmptyState from '@/components/shared/EmptyState';
 import SearchInput from '@/components/ui/SearchInput';
-import { Panel } from '@/components/ui/Panel';
 import { Tabs, type TabOption } from '@/components/ui/Tabs';
 import { SkeletonRows } from '@/components/ui/Skeleton';
-import { Badge, type BadgeTone } from '@/components/ui/Badge';
-import { useTabParam } from '@/hooks/useTabParam';
-import { timeAgo, cn, customerLabel } from '@/lib/utils';
+import { Button } from '@/components/ui/Button';
+import ConversationList from '@/components/messages/ConversationList';
+import ConversationThread from '@/components/messages/ConversationThread';
+import {
+  useConversations,
+  useInboxRealtime,
+  useThread,
+  type ConversationRow,
+  type InboxFilter,
+  type Thread,
+} from '@/hooks/useConversations';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { cn } from '@/lib/utils';
 
-type MessageTab = 'all' | 'review';
-const MESSAGE_TABS = ['all', 'review'] as const;
-
-/**
- * Exactly the intents the classifier can hold, no more, no fewer.
- *
- * This list used to offer "A cancellation" and "Thanks", neither of which is a
- * member of `IntentType`. Picking either sent a value Prisma refused, and the
- * resulting validation error is not a `PrismaClientKnownRequestError`, so it
- * fell through to the generic handler and the owner was shown "Internal server
- * error" for doing exactly what the page invited them to do. `STATUS_CHECK` is
- * a real intent and was missing, so a message the assistant misread as an order
- * could not be corrected to it at all.
- */
-const INTENT_OPTIONS: { value: `${IntentType}`; label: string }[] = [
-  { value: 'ORDER', label: 'An order' },
-  { value: 'INQUIRY', label: 'A question' },
-  { value: 'PAYMENT', label: 'A payment' },
-  { value: 'STATUS_CHECK', label: 'Asking about an order' },
-  { value: 'COMPLAINT', label: 'A complaint' },
-  { value: 'GREETING', label: 'A greeting' },
-  { value: 'OTHER', label: 'Something else' },
-  { value: 'UNCLASSIFIED', label: 'Cannot tell' },
+const FILTERS: readonly TabOption<InboxFilter>[] = [
+  { value: 'all', label: 'All' },
+  { value: 'needs_you', label: 'Needs you' },
 ];
 
-const INTENT_TONE: Record<string, BadgeTone> = {
-  ORDER: 'success',
-  PAYMENT: 'info',
-  COMPLAINT: 'danger',
-  CANCEL: 'danger',
-  INQUIRY: 'neutral',
-  GREETING: 'neutral',
-  THANKS: 'neutral',
-  OTHER: 'neutral',
-  UNCLASSIFIED: 'warning',
-};
-
-const INTENT_LABEL: Record<string, string> = {
-  ORDER: 'Order',
-  INQUIRY: 'Question',
-  PAYMENT: 'Payment',
-  COMPLAINT: 'Complaint',
-  CANCEL: 'Cancellation',
-  GREETING: 'Greeting',
-  THANKS: 'Thanks',
-  OTHER: 'Other',
-  UNCLASSIFIED: 'Unclear',
-};
-
 /**
- * The review queue.
+ * The inbox.
  *
- * This screen exists because Flowdesk sometimes cannot tell what a message
- * meant, and the correction the owner makes here is training data. The
- * previous version presented that as a bare dropdown labelled "Correct intent"
- * listing nine engineering enum names.
+ * This page used to be one list of every message ever received and sent,
+ * newest first, each in its own card. Two things were wrong with that at any
+ * volume: the shop's own replies appeared as though customers had sent them,
+ * and a busy afternoon was a single wall of cards with no way to see who was
+ * actually waiting. It is now one row per customer on the left and their
+ * conversation on the right — the shape of every messaging app an owner
+ * already knows how to use.
  *
- * Now the question is asked in words a shop owner uses, "What was this
- * message actually about?", and the options are phrases, not enum labels. The
- * confidence score is spelled out too, since "62% conf" means nothing to
- * someone who has never seen a classifier.
+ * The open conversation lives in the URL (`?c=`), so refreshing keeps it open,
+ * the back button returns to the list on a phone, and a conversation can be
+ * linked to directly.
  */
 export default function MessagesPage(): React.JSX.Element {
-  const [tab, setTab] = useTabParam<MessageTab>('view', MESSAGE_TABS, 'all');
+  const [params, setParams] = useSearchParams();
+  const [filter, setFilter] = useState<InboxFilter>('all');
   const [search, setSearch] = useState('');
-  const { data: allMessages, isLoading: allLoading } = useMessages();
-  const { data: reviewMessages, isLoading: reviewLoading } = useMessages(true);
-  const correctIntent = useCorrectMessageIntent();
+  const query = useDebouncedValue(search, 250);
 
-  const messages = tab === 'review' ? reviewMessages : allMessages;
-  const isLoading = tab === 'review' ? reviewLoading : allLoading;
+  const selectedId = params.get('c');
 
-  const filtered = useMemo(() => {
-    if (!messages) return [];
-    if (!search.trim()) return messages;
-    const q = search.toLowerCase();
-    return messages.filter((m) => {
-      const name = (m.customer?.name ?? '').toLowerCase();
-      const phone = m.customer?.waNumber ?? '';
-      const body = (m.body ?? '').toLowerCase();
-      return name.includes(q) || phone.includes(q) || body.includes(q);
-    });
-  }, [messages, search]);
+  useInboxRealtime();
+  const list = useConversations(filter, query);
+  const thread = useThread(selectedId);
 
-  const tabOptions: readonly TabOption<MessageTab>[] = [
-    { value: 'all', label: 'All messages' },
-    { value: 'review', label: 'Needs you', count: reviewMessages?.length ?? 0 },
-  ];
+  const rows = useMemo(
+    () => list.data?.pages.flatMap((page) => page.conversations) ?? [],
+    [list.data],
+  );
+
+  function select(customerId: string | null): void {
+    const next = new URLSearchParams(params);
+    if (customerId) next.set('c', customerId);
+    else next.delete('c');
+    setParams(next);
+  }
 
   return (
-    <div className="flex flex-col gap-5">
-      <PageHeader
-        title="Messages"
-        description="What came in, and what needs a decision."
-        actions={
-          <SearchInput
-            label="Search messages by customer, number or text"
-            placeholder="Search messages"
-            value={search}
-            onChange={setSearch}
-            className="w-full sm:w-64"
+    <div className="flex h-full flex-col gap-4">
+      <PageHeader title="Messages" description="Every customer who has written, newest first." />
+
+      <div
+        className={cn(
+          'grid min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface',
+          // A fixed height is what lets each pane scroll on its own. Without it
+          // the whole page scrolls and the reply box drifts off-screen.
+          'h-[calc(100dvh-13rem)] min-h-[28rem] lg:grid-cols-[22rem_1fr]',
+        )}
+      >
+        <aside
+          className={cn(
+            'min-h-0 flex-col border-border lg:border-r',
+            // On a phone the list and the thread take turns filling the screen.
+            selectedId ? 'hidden lg:flex' : 'flex',
+          )}
+          aria-label="Conversations"
+        >
+          <div className="space-y-3 border-b border-border px-4 pt-3">
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Search by name or number"
+              label="Search conversations"
+            />
+            <Tabs
+              options={FILTERS}
+              value={filter}
+              onChange={setFilter}
+              label="Filter conversations"
+            />
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ListBody
+              filter={filter}
+              query={query}
+              isLoading={list.isLoading}
+              error={list.error}
+              onRetry={() => void list.refetch()}
+              rows={rows}
+              selectedId={selectedId}
+              onSelect={select}
+            />
+
+            {list.hasNextPage && (
+              <div className="border-t border-border p-3 text-center">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void list.fetchNextPage()}
+                  disabled={list.isFetchingNextPage}
+                >
+                  {list.isFetchingNextPage ? 'Loading…' : 'Show older conversations'}
+                </Button>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <section
+          className={cn('min-h-0 flex-col', selectedId ? 'flex' : 'hidden lg:flex')}
+          aria-label="Conversation"
+        >
+          <ThreadBody
+            selectedId={selectedId}
+            isLoading={thread.isLoading}
+            error={thread.error}
+            onRetry={() => void thread.refetch()}
+            data={thread.data}
+            onBack={() => select(null)}
           />
-        }
-      />
-
-      <div>
-        <Tabs label="Filter messages" options={tabOptions} value={tab} onChange={setTab} />
-
-        <div className="mt-4">
-          {isLoading && (
-            <Panel>
-              <SkeletonRows count={5} />
-            </Panel>
-          )}
-
-          {!isLoading && filtered.length === 0 && (
-            <Panel>
-              <EmptyState
-                icon={MessageSquare}
-                title={search ? 'No matches' : tab === 'review' ? 'Nothing needs you' : 'No messages yet'}
-                description={
-                  search
-                    ? 'Try a name, a number, or a word from the message.'
-                    : tab === 'review'
-                      ? 'Flowdesk understood every message.'
-                      : 'Messages appear as customers write to you.'
-                }
-              />
-            </Panel>
-          )}
-
-          {!isLoading && filtered.length > 0 && (
-            <ul className="space-y-2.5">
-              {filtered.map((msg) => {
-                const isPending = correctIntent.isPending && correctIntent.variables?.id === msg.id;
-                const justSaved =
-                  correctIntent.isSuccess && correctIntent.variables?.id === msg.id;
-                const failed = correctIntent.isError && correctIntent.variables?.id === msg.id;
-                const displayName = customerLabel(msg.customer);
-
-                return (
-                  <li
-                    key={msg.id}
-                    className={cn(
-                      'relative overflow-hidden rounded-lg border border-border bg-surface',
-                      // A rule on the leading edge, so a flagged message is
-                      // findable while scanning without tinting the whole card.
-                      msg.requiresReview && 'border-warning-border',
-                    )}
-                  >
-                    {msg.requiresReview && (
-                      <span aria-hidden="true" className="absolute inset-y-0 left-0 w-[3px] bg-warning" />
-                    )}
-
-                    <div className="px-4 py-3">
-                      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                        <span className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-text-primary">
-                            {displayName}
-                          </span>
-                          <Badge tone={INTENT_TONE[msg.intent] ?? 'neutral'}>
-                            {INTENT_LABEL[msg.intent] ?? msg.intent}
-                          </Badge>
-                          {typeof msg.intentConfidence === 'number' && (
-                            <span className="text-2xs text-text-muted">
-                              {Math.round(msg.intentConfidence * 100)}% sure
-                            </span>
-                          )}
-                        </span>
-
-                        <span className="text-xs text-text-muted">{timeAgo(msg.createdAt)}</span>
-                      </div>
-
-                      <p className="mt-1.5 max-w-prose text-sm leading-relaxed text-text-secondary">
-                        {msg.body ?? 'This message had no text in it.'}
-                      </p>
-
-                      {msg.requiresReview && (
-                        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3">
-                          <label
-                            htmlFor={`intent-${msg.id}`}
-                            className="text-xs font-medium text-text-primary"
-                          >
-                            What was this actually about?
-                          </label>
-
-                          <select
-                            id={`intent-${msg.id}`}
-                            disabled={isPending}
-                            defaultValue=""
-                            onChange={(e) => {
-                              const intent = e.target.value;
-                              if (!intent) return;
-                              correctIntent.mutate({ id: msg.id, intent });
-                              e.target.value = '';
-                            }}
-                            className="fd-input fd-select fd-input-compact h-9 w-auto py-0"
-                          >
-                            <option value="" disabled>
-                              Choose
-                            </option>
-                            {INTENT_OPTIONS.map((o) => (
-                              <option key={o.value} value={o.value}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </select>
-
-                          {justSaved && (
-                            <span
-                              role="status"
-                              className="inline-flex items-center gap-1 text-xs font-medium text-success"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
-                              Saved
-                            </span>
-                          )}
-
-                          {failed && (
-                            <span role="alert" className="text-xs font-medium text-danger">
-                              {(correctIntent.error as Error).message}
-                            </span>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Inbound only, there is nothing to reply to on a
-                          message the business itself sent. */}
-                      {msg.direction === 'INBOUND' && <ReplyEditor message={msg} />}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+        </section>
       </div>
     </div>
   );
+}
+
+function LoadError({ what, onRetry }: { what: string; onRetry: () => void }): React.JSX.Element {
+  return (
+    <div className="m-4 rounded-md border border-danger/25 bg-danger/5 px-3 py-2.5">
+      <p className="text-xs font-medium text-text-primary">{what} didn&apos;t load.</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-1.5 text-2xs font-semibold text-danger underline-offset-2 hover:underline"
+      >
+        Try again
+      </button>
+    </div>
+  );
+}
+
+function ListBody({
+  filter,
+  query,
+  isLoading,
+  error,
+  onRetry,
+  rows,
+  selectedId,
+  onSelect,
+}: {
+  filter: InboxFilter;
+  query: string;
+  isLoading: boolean;
+  error: Error | null;
+  onRetry: () => void;
+  rows: ConversationRow[];
+  selectedId: string | null;
+  onSelect: (customerId: string) => void;
+}): React.JSX.Element {
+  if (isLoading) return <SkeletonRows count={6} className="p-4" />;
+  if (error) return <LoadError what="Conversations" onRetry={onRetry} />;
+
+  if (rows.length === 0) {
+    if (query.trim()) {
+      return (
+        <p className="px-4 py-8 text-center text-sm text-text-muted">
+          No one matches &ldquo;{query}&rdquo;.
+        </p>
+      );
+    }
+    return filter === 'needs_you' ? (
+      <EmptyState
+        icon={MessagesSquare}
+        title="Nothing is waiting on you"
+        description="Your assistant is handling every conversation right now."
+      />
+    ) : (
+      <EmptyState
+        icon={MessagesSquare}
+        title="No conversations yet"
+        description="They show up here as soon as a customer messages your WhatsApp number."
+      />
+    );
+  }
+
+  return <ConversationList rows={rows} selectedId={selectedId} onSelect={onSelect} />;
+}
+
+function ThreadBody({
+  selectedId,
+  isLoading,
+  error,
+  onRetry,
+  data,
+  onBack,
+}: {
+  selectedId: string | null;
+  isLoading: boolean;
+  error: Error | null;
+  onRetry: () => void;
+  data: Thread | undefined;
+  onBack: () => void;
+}): React.JSX.Element {
+  if (!selectedId) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-8">
+        <p className="text-sm text-text-muted">Choose a conversation to read it.</p>
+      </div>
+    );
+  }
+
+  if (isLoading) return <SkeletonRows count={5} className="p-4" />;
+  if (error || !data) return <LoadError what="This conversation" onRetry={onRetry} />;
+
+  return <ConversationThread thread={data} onBack={onBack} />;
 }
