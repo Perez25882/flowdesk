@@ -9,6 +9,9 @@ import {
   MessageSquare,
   UserCog,
   Settings2,
+  BarChart3,
+  CalendarDays,
+  Circle,
   PanelLeftClose,
   PanelLeftOpen,
   LogOut,
@@ -20,6 +23,15 @@ import { useBadges } from '@/hooks/useBadges';
 import { useBusiness } from '@/hooks/useBusiness';
 import { cn } from '@/lib/utils';
 
+/**
+ * Nav icons, keyed by the name `config/navigation` stores.
+ *
+ * Every item in that file must have an entry here. It is a `Record<string, …>`
+ * rather than a key-checked map, so adding a nav item with no icon here is not
+ * a build error — it used to be a blank white screen instead, because the
+ * lookup returned `undefined` and React was handed `undefined` as a component
+ * type. `Bookings` and `Reports` shipped that way.
+ */
 const iconMap: Record<string, LucideIcon> = {
   LayoutDashboard,
   ShoppingCart,
@@ -29,6 +41,8 @@ const iconMap: Record<string, LucideIcon> = {
   MessageSquare,
   UserCog,
   Settings2,
+  BarChart3,
+  CalendarDays,
 };
 
 interface SidebarProps {
@@ -108,7 +122,11 @@ function SidebarItem({
   onClick: () => void;
   badgeCount: number;
 }): React.JSX.Element {
-  const Icon = iconMap[item.icon]!;
+  // No `!` here. That assertion claimed a lookup could not miss, and when it
+  // did, React was handed `undefined` as a component type and took down the
+  // whole authenticated shell — every page, not just this row. A nav item whose
+  // icon is missing should cost the shop a grey dot, not the dashboard.
+  const Icon = iconMap[item.icon] ?? Circle;
 
   return (
     <button
@@ -171,7 +189,8 @@ export default function Sidebar({
   const location = useLocation();
   const navigate = useNavigate();
   const role = getUserRole();
-  const groups = getGroupedNavItems(role);
+  const { data: business } = useBusiness();
+  const groups = getGroupedNavItems(role, { bookings: business?.bookingsEnabled ?? false });
   const { data: badges } = useBadges();
   const logout = useLogout();
 

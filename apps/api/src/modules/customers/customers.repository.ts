@@ -7,8 +7,12 @@ import type { UpdateCustomerInput, ListCustomersQueryInput } from './customers.s
 /**
  * Order statuses that represent a real financial obligation. A PENDING order is
  * not yet owed — the owner has not accepted it — and a CANCELLED one never was.
+ *
+ * DISPATCHED belongs here for the obvious reason: goods that have left the shop
+ * are the most owed they will ever be. It was missing when the status was
+ * added, so sending an order out quietly erased it from what the customer owed.
  */
-const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'FULFILLED'] as const;
+const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] as const;
 
 /**
  * Recomputes a customer's denormalised totals from the underlying orders and

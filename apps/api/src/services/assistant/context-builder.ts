@@ -4,7 +4,17 @@ import { prisma } from '../../config/database.js';
 import { findCandidateProducts } from '../../utils/item-extractor.js';
 import type { CatalogProductWithStock } from '../../modules/products/products.repository.js';
 import { findCatalogProductsWithStock } from '../../modules/products/products.repository.js';
-import { buildEvidenceSet, type EvidenceOrder, type EvidenceProduct, type EvidenceSet } from './evidence.js';
+import { buildLadder } from '../pricing/ladder.js';
+import { findSlots, listServices } from '../../modules/bookings/bookings.service.js';
+import { describeImageForReply } from './describe-image.js';
+import { resolveRepliedTo } from './status-context.js';
+import {
+  buildEvidenceSet,
+  type EvidenceOrder,
+  type EvidenceProduct,
+  type EvidenceService,
+  type EvidenceSet,
+} from './evidence.js';
 import {
   ASSISTANT_SYSTEM_PROMPT,
   buildUserPrompt,
@@ -36,6 +46,22 @@ const MAX_CANDIDATE_PRODUCTS = 8;
  * says it does not know instead.
  */
 const SMALL_CATALOGUE_LIMIT = 25;
+
+/**
+ * A Status post can be long. Only the opening matters for working out what the
+ * customer is pointing at, and the rest is prompt weight.
+ */
+
+/** The message a customer was replying to, reduced to what the model needs. */
+export interface RepliedToMessage {
+  /** What it said, or what the picture shows. Null when we hold neither. */
+  body: string | null;
+  fromShop: boolean;
+  /** True when the thing replied to was a picture rather than text. */
+  isImage: boolean;
+  /** True when the referenced message is one we never received at all. */
+  unresolved: boolean;
+}
 
 /** Turns of history. Enough to resolve "the same again", short enough to stay cheap. */
 const MAX_HISTORY_TURNS = 6;
@@ -103,17 +129,42 @@ export interface AssistantBusiness {
   aiAssistMode: AiAssistMode;
   catalogueMode: CatalogueMode;
   waDisplayNumber: string | null;
+  bookingsEnabled?: boolean;
+  /**
+   * The shop's master switch for negotiation.
+   *
+   * Optional so the replay script and the hand-built test fixtures keep
+   * working. Absent reads as off, which is the behaviour every shop has until
+   * its owner turns it on.
+   */
+  bargainingEnabled?: boolean;
 }
 
 export interface AssembleContextInput {
   business: AssistantBusiness;
   catalog: CatalogProductWithStock[];
+  /**
+   * Bookable services with their free times, already checked against the diary.
+   *
+   * Loaded before the model runs, never during, and never by the model asking.
+   * A time that is not in here was not free at the moment the prompt was built,
+   * and the router refuses any booking for one that is not.
+   */
+  services?: EvidenceService[];
   openOrders: EvidenceOrder[];
   history: ConversationTurn[];
   /** A question we already asked and are waiting on, so a bare reply is read as its answer. */
   awaitingClarification: string | null;
   /** Replies the owner wrote themselves, shown to the model as tone only. */
   voiceExamples: string[];
+  /**
+   * The message this one replies to, when Meta told us there was one.
+   *
+   * Optional so the two test files that build this input by hand, and the replay
+   * script, keep working without it. Absent means the same as it always did:
+   * treat the message as standing on its own.
+   */
+  replyingTo?: RepliedToMessage | null;
   message: string;
 }
 
@@ -123,6 +174,7 @@ export interface AssistantContext {
   evidence: EvidenceSet;
   /** The rows that were rendered — the clarification composer needs the same ones. */
   products: EvidenceProduct[];
+  services: EvidenceService[];
   profile: BusinessProfile | null;
 }
 
@@ -160,13 +212,35 @@ export function extractMentionedQuantities(text: string): number[] {
   return [...found];
 }
 
-function toEvidenceProduct(product: CatalogProductWithStock): EvidenceProduct {
+/**
+ * The catalogue row as the model and the validator both see it.
+ *
+ * The ladder is computed HERE, once, and the same object is used to render the
+ * prompt, to build the allowed amounts and to check the offer the model comes
+ * back with. Computing it twice would let the prompt and the enforcement
+ * disagree — the model told one floor and judged against another — which is
+ * the specific bug that would make this feature look arbitrary to an owner.
+ */
+function toEvidenceProduct(
+  product: CatalogProductWithStock,
+  bargainingEnabled: boolean,
+): EvidenceProduct {
   return {
     id: product.id,
     name: product.name,
     unit: product.unit,
     price: product.price,
     stockQuantity: product.stockQuantity,
+    photoId: product.photoId,
+    ladder: buildLadder({
+      price: product.price,
+      floorPrice: product.floorPrice,
+      discountPercent: product.discountPercent,
+      discountLabel: product.discountLabel,
+      discountEndsAt: product.discountEndsAt,
+      tiers: product.tiers,
+      bargainingEnabled,
+    }),
   };
 }
 
@@ -180,6 +254,7 @@ function toEvidenceProduct(product: CatalogProductWithStock): EvidenceProduct {
 export function selectCandidateProducts(
   message: string,
   catalog: CatalogProductWithStock[],
+  bargainingEnabled = false,
 ): EvidenceProduct[] {
   const byId = new Map(catalog.map((p) => [p.id, p]));
   const candidates = findCandidateProducts(message, catalog, MAX_CANDIDATE_PRODUCTS);
@@ -187,12 +262,12 @@ export function selectCandidateProducts(
   const matched = candidates
     .map((candidate) => byId.get(candidate.product.id))
     .filter((p): p is CatalogProductWithStock => p !== undefined)
-    .map(toEvidenceProduct);
+    .map((p) => toEvidenceProduct(p, bargainingEnabled));
 
   if (matched.length > 0) return matched;
 
   if (catalog.length > 0 && catalog.length <= SMALL_CATALOGUE_LIMIT) {
-    return catalog.map(toEvidenceProduct);
+    return catalog.map((p) => toEvidenceProduct(p, bargainingEnabled));
   }
 
   return [];
@@ -200,10 +275,25 @@ export function selectCandidateProducts(
 
 export function assembleContext(input: AssembleContextInput): AssistantContext {
   const { business } = input;
-  const products = selectCandidateProducts(input.message, input.catalog);
+  const products = selectCandidateProducts(
+    input.message,
+    input.catalog,
+    business.bargainingEnabled ?? false,
+  );
+
+  // Whether the model is looking at the whole shop or only the rows that matched.
+  //
+  // `selectCandidateProducts` already returns the entire catalogue for a small
+  // shop when nothing matched. The knowledge was there; we simply never said so,
+  // and the model dutifully offered to "check" for a product it could see the
+  // shop does not sell. Comparing counts is what makes the difference sayable.
+  const catalogueComplete = input.catalog.length > 0 && products.length === input.catalog.length;
+
+  const services = input.services ?? [];
 
   const evidence = buildEvidenceSet({
     products,
+    services,
     profile: business.businessProfile,
     openOrders: input.openOrders,
     mentionedQuantities: extractMentionedQuantities(input.message),
@@ -217,7 +307,11 @@ export function assembleContext(input: AssembleContextInput): AssistantContext {
     profile: business.businessProfile,
     policyNotes: business.businessPolicyNotes,
     products,
+    services,
+    catalogueComplete,
+    replyingTo: input.replyingTo ?? null,
     catalogueMode: business.catalogueMode,
+    unsupervised: business.aiAssistMode === 'AUTONOMOUS',
     openOrders: input.openOrders,
     history: input.history,
     awaitingClarification: input.awaitingClarification,
@@ -229,6 +323,7 @@ export function assembleContext(input: AssembleContextInput): AssistantContext {
     systemPrompt: ASSISTANT_SYSTEM_PROMPT,
     userPrompt,
     evidence,
+    services,
     products,
     profile: business.businessProfile,
   };
@@ -253,6 +348,8 @@ const BUSINESS_CONTEXT_SELECT = {
   aiAssistMode: true,
   catalogueMode: true,
   waDisplayNumber: true,
+  bargainingEnabled: true,
+  bookingsEnabled: true,
 } satisfies Prisma.BusinessSelect;
 
 /**
@@ -334,7 +431,45 @@ export async function loadConversationHistory(
  * Not scoped to one customer on purpose: how a shop talks is a property of the
  * shop, and a new customer is exactly the conversation with no history to learn
  * from.
+ *
+ * That breadth is why `carriesPersonalDetail` below is not optional. These are
+ * the owner's words to *other* customers, so an example has to be safe to show
+ * to a stranger before it can be used to teach tone.
  */
+
+/**
+ * True when an example carries something belonging to one particular customer.
+ *
+ * These lines go into the prompt whole, under an instruction to imitate them. A
+ * model told to copy the register of "Kwame, your 12 bags are set aside, balance
+ * GHS 400, I'll drop them at East Legon Friday" copies the name, the balance and
+ * the neighbourhood along with the register — into a reply addressed to someone
+ * else entirely.
+ *
+ * So this selects rather than redacts. An example is used only when it can be
+ * shown to carry nothing personal; anything unproven is dropped. Rejecting a
+ * good line costs nothing — we over-fetch, and the worst case is a shorter list
+ * and a flatter greeting — while admitting a bad one puts one customer's
+ * business in front of another. A redaction pass would have to recognise every
+ * Ghanaian name and neighbourhood to be safe. This has to recognise none.
+ */
+export function carriesPersonalDetail(body: string): boolean {
+  // Digits cover order references, balances, quantities, phone numbers, dates.
+  if (/\d/.test(body)) return true;
+
+  // Money and handles, written out rather than in figures.
+  if (/[@₵]|\bGH[S₵]\b|\bcedis?\b/i.test(body)) return true;
+
+  // A capitalised word that does not open a sentence is usually a person or a
+  // place. Sentence-initial words carry no such signal, so they are skipped.
+  for (const sentence of body.split(/(?<=[.!?])\s+/)) {
+    const afterFirstWord = sentence.trim().split(/\s+/).slice(1);
+    if (afterFirstWord.some((word) => /^[A-Z][a-z’']/.test(word))) return true;
+  }
+
+  return false;
+}
+
 export async function loadOwnerVoice(businessId: string): Promise<string[]> {
   const rows = await prisma.message.findMany({
     where: {
@@ -344,9 +479,10 @@ export async function loadOwnerVoice(businessId: string): Promise<string[]> {
       body: { not: null },
     },
     orderBy: { createdAt: 'desc' },
-    // Over-fetch: the length filter below discards "ok" and "noted", and
-    // fetching exactly six would leave the prompt with one usable example.
-    take: MAX_VOICE_EXAMPLES * 4,
+    // Over-fetch: the filters below discard "ok" and "noted", and then most of
+    // what survives, since any line naming a customer or an amount is dropped.
+    // Fetching exactly six would leave the prompt with none.
+    take: MAX_VOICE_EXAMPLES * 12,
     select: { body: true },
   });
 
@@ -356,6 +492,10 @@ export async function loadOwnerVoice(businessId: string): Promise<string[]> {
   for (const row of rows) {
     const body = row.body?.trim();
     if (!body || body.length < MIN_VOICE_EXAMPLE_LENGTH) continue;
+
+    // This example was written to a different customer. Tone may cross that
+    // boundary; their name, balance and address may not.
+    if (carriesPersonalDetail(body)) continue;
 
     // A shop that answers "we open at 8" twenty times a day would otherwise
     // fill every slot with the same sentence.
@@ -380,7 +520,10 @@ export async function loadOpenOrders(
       businessId,
       customerId,
       deletedAt: null,
-      status: { in: ['PENDING', 'CONFIRMED', 'PROCESSING'] },
+      // DISPATCHED counts as open: the customer most likely to ask "where is my
+      // order" is the one whose order is already on the way, and leaving it out
+      // meant the assistant answered as though they had no order at all.
+      status: { in: ['PENDING', 'CONFIRMED', 'PROCESSING', 'DISPATCHED'] },
     },
     orderBy: { createdAt: 'desc' },
     take: MAX_OPEN_ORDERS,
@@ -419,26 +562,105 @@ export interface LoadedContext extends AssistantContext {
  * Reads everything in parallel — these four queries have no dependency on each
  * other, and the assistant's latency budget is already dominated by the model.
  */
+/**
+ * The message this one is a reply to, when there is one.
+ *
+ * Two hops, because Meta gives us its id rather than its text: read
+ * `replyToWaId` off the incoming message, then find the message carrying that
+ * `waMessageId`. Scoped to the business, so one shop can never resolve a reply
+ * against another shop's message.
+ *
+ * The case that matters most is a Status reply. Plenty of Ghanaian shops sell by
+ * posting goods to WhatsApp Status and answering whoever replies, and those
+ * replies arrive as "how much?" or "is it still there?" — pronouns with nothing
+ * to attach to. The thing being asked about is one lookup away, and until now
+ * the assistant was left to guess or ask.
+ */
+async function loadRepliedToMessage(
+  businessId: string,
+  messageId: string,
+): Promise<RepliedToMessage | null> {
+  const current = await prisma.message.findFirst({
+    where: { id: messageId, businessId },
+    select: { replyToWaId: true },
+  });
+
+  if (!current?.replyToWaId) return null;
+
+  // Everything about WHAT was replied to — caption, stored description, or the
+  // honest admission that we hold nothing — lives in `status-context.ts`, so
+  // the four cases can be argued with in a test rather than here.
+  const context = await resolveRepliedTo(businessId, current.replyToWaId, describeImageForReply);
+  if (!context) return null;
+
+  return context;
+}
+
+/**
+ * Every service this shop offers, with the times that are actually free.
+ *
+ * Capped hard. Six services at eight slots each is forty-eight times in the
+ * prompt, which is already more than a customer wants read out at them, and
+ * the cost of the arithmetic is paid on every single inbound message.
+ */
+async function loadBookableServices(businessId: string): Promise<EvidenceService[]> {
+  const services = await listServices(businessId, true);
+  if (services.length === 0) return [];
+
+  const from = new Date();
+
+  const withSlots = await Promise.all(
+    services.slice(0, 6).map(async (service) => {
+      const { slots } = await findSlots(businessId, {
+        serviceId: service.id,
+        from,
+        days: 14,
+        limit: 8,
+      });
+
+      return {
+        id: service.id,
+        name: service.name,
+        durationMinutes: service.durationMinutes,
+        price: service.price,
+        slots: slots.map((slot) => ({ startsAt: slot.startsAt, endsAt: slot.endsAt })),
+      };
+    }),
+  );
+
+  return withSlots;
+}
+
 export async function loadAssistantContext(
   input: LoadContextInput,
 ): Promise<LoadedContext | null> {
-  const [business, catalog, history, openOrders, voiceExamples] = await Promise.all([
+  const [business, catalog, history, openOrders, voiceExamples, replyingTo] = await Promise.all([
     loadAssistantBusiness(input.businessId),
     findCatalogProductsWithStock(input.businessId),
     loadConversationHistory(input.businessId, input.customerId, input.messageId),
     loadOpenOrders(input.businessId, input.customerId),
     loadOwnerVoice(input.businessId),
+    loadRepliedToMessage(input.businessId, input.messageId),
   ]);
 
   if (!business) return null;
 
+  // Loaded after the business, not alongside it, because most shops have no
+  // diary and running the slot arithmetic for them would be work done to
+  // produce an empty array on every inbound message.
+  const services = business.bookingsEnabled
+    ? await loadBookableServices(input.businessId)
+    : [];
+
   const context = assembleContext({
     business,
     catalog,
+    services,
     openOrders,
     history,
     awaitingClarification: input.awaitingClarification ?? null,
     voiceExamples,
+    replyingTo,
     message: input.message,
   });
 

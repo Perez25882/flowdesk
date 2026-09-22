@@ -42,12 +42,13 @@ const COLUMNS: {
   { status: 'PENDING', label: 'Pending', accent: 'bg-status-pending' },
   { status: 'CONFIRMED', label: 'Confirmed', accent: 'bg-status-confirmed' },
   { status: 'PROCESSING', label: 'Packing', accent: 'bg-status-processing' },
+  { status: 'DISPATCHED', label: 'On the way', accent: 'bg-status-dispatched' },
   { status: 'FULFILLED', label: 'Delivered', accent: 'bg-status-fulfilled' },
   { status: 'CANCELLED', label: 'Cancelled', accent: 'bg-status-cancelled' },
 ];
 
 /**
- * CANCELLED is a terminal state — orders there should not be draggable.
+ * CANCELLED is a terminal state, orders there should not be draggable.
  */
 function OrderCardDraggable({
   order,
@@ -115,7 +116,12 @@ function KanbanColumn({
     const list = orders ?? [];
     return {
       count: list.length,
-      totalValue: list.reduce((sum, o) => sum + (o.totalAmount ?? 0), 0),
+      // `Number(...)`, because `totalAmount` is typed `number` here but arrives
+      // as a STRING: it is a Prisma `Decimal`, and the orders list serialises
+      // the row straight to JSON without converting it. `0 + "240"` is "0240",
+      // and eight orders of GHS 240 became a column total in the quadrillions.
+      // The type said number, so nothing caught it.
+      totalValue: list.reduce((sum, o) => sum + Number(o.totalAmount ?? 0), 0),
     };
   }, [orders]);
 
@@ -210,7 +216,7 @@ export default function OrderBoard({ onSelectOrder, staffId }: OrderBoardProps):
    *
    * dnd-kit's default PointerSensor begins a drag on pointerdown with no
    * threshold, and a drag suppresses the click that follows. The cards are
-   * buttons whose click opens the order — so with the defaults, clicking an
+   * buttons whose click opens the order, so with the defaults, clicking an
    * order on the board did nothing at all. The only way into an order was the
    * dashboard's list. Tapping on a phone was worse: the tap started a drag, and
    * on mobile the board is a tabbed list with nothing to drag to.
