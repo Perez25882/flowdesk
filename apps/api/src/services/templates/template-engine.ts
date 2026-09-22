@@ -4,6 +4,7 @@ export type TemplateKey =
   | 'order_pending'
   | 'order_confirmed'
   | 'order_processing'
+  | 'order_dispatched'
   | 'order_fulfilled'
   | 'order_cancelled'
   | 'payment_received'
@@ -24,13 +25,18 @@ interface TemplateVariables {
   reason?: string;
 }
 
-const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
+export const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
   order_pending:
     'Hi {name}! We received your order (Ref: {ref}). We\'ll confirm shortly. — {business}',
   order_confirmed:
     'Your order {ref} is confirmed and being prepared. We\'ll let you know when it\'s ready. — {business}',
   order_processing:
     'Your order {ref} is being packed and prepared for delivery/pickup. — {business}',
+  // {details} carries the courier and tracking number when there is one, and
+  // is empty otherwise. Kept as one variable rather than two so a shop with no
+  // courier does not send "Sent with  , tracking ".
+  order_dispatched:
+    'Your order {ref} is on its way. {details} — {business}',
   order_fulfilled:
     'Your order {ref} has been completed. Thank you for your business! — {business}',
   order_cancelled:
@@ -41,12 +47,17 @@ const DEFAULT_TEMPLATES: Record<TemplateKey, string> = {
     'Your order {ref} is currently: {status}. {details} — {business}',
   greeting:
     'Hello {name}! Welcome to {business}. How can we help you today?',
+  // Reached only when the assistant produced nothing at all — it composes a
+  // holding line naming what was asked about whenever it can. So this has one
+  // job: say a person is looking, without asking a customer who has already
+  // been clear to repeat themselves. "Please share more details" was doing the
+  // opposite, and it was the reply real customers saw most often.
   inquiry:
-    'Hi {name}! Thanks for your question. Please share more details and we’ll get back to you right away. — {business}',
+    'Hi {name}! Let me check that for you and come right back. — {business}',
   payment:
     'Hi {name}! We received your payment message. Please share the order reference or amount and we’ll confirm. — {business}',
   complaint:
-    'Hi {name}! We’re sorry for the inconvenience. Please share more details and we’ll look into it immediately. — {business}',
+    'Hi {name}! I’m sorry about that. Let me look into it and come back to you. — {business}',
   fallback:
     'Hi {name}! We received your message. Our team will review it and get back to you shortly. — {business}',
 };
@@ -147,6 +158,8 @@ export function humanizeStatus(status: OrderStatus | string): string {
       return 'Confirmed — being prepared';
     case 'PROCESSING':
       return 'Processing — being packed';
+    case 'DISPATCHED':
+      return 'On the way — sent out for delivery';
     case 'FULFILLED':
       return 'Fulfilled — delivered/collected';
     case 'CANCELLED':
@@ -165,15 +178,31 @@ export function getCustomerFirstName(name: string | null | undefined): string {
   return name.split(' ')[0] ?? name;
 }
 
+export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether Meta's 24-hour customer-service window is open.
+ *
+ * Free-form messages may only be sent inside a window that a message FROM the
+ * customer opens, so this takes `lastInboundAt` — never `lastInteractionAt`,
+ * which the owner's own replies from the WhatsApp Business app also bump
+ * (`echo.service.ts`). Gating on the latter let us believe the window was open
+ * after Meta had closed it: the send was accepted here, rejected by Meta as
+ * non-retryable, and dead-lettered without anything surfacing to the owner.
+ *
+ * A missing value means no customer message has ever arrived, so the window has
+ * never opened. That is CLOSED. This previously returned open, which is the
+ * wrong way round to fail on a rule Meta enforces for us.
+ */
 export function shouldSendAutoReply(
-  lastInteractionAt: Date | null | undefined,
+  lastInboundAt: Date | null | undefined,
 ): { withinWindow: boolean } {
-  if (!lastInteractionAt) {
-    return { withinWindow: true };
+  if (!lastInboundAt) {
+    return { withinWindow: false };
   }
 
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  return { withinWindow: lastInteractionAt > twentyFourHoursAgo };
+  const windowOpenedAfter = new Date(Date.now() - SERVICE_WINDOW_MS);
+  return { withinWindow: lastInboundAt > windowOpenedAfter };
 }
 
 export function getTemplateKeyForOrderStatus(status: OrderStatus): TemplateKey | null {
@@ -184,6 +213,8 @@ export function getTemplateKeyForOrderStatus(status: OrderStatus): TemplateKey |
       return 'order_confirmed';
     case 'PROCESSING':
       return 'order_processing';
+    case 'DISPATCHED':
+      return 'order_dispatched';
     case 'FULFILLED':
       return 'order_fulfilled';
     case 'CANCELLED':
@@ -201,6 +232,7 @@ export const TEMPLATE_KEYS: TemplateKey[] = [
   'order_pending',
   'order_confirmed',
   'order_processing',
+  'order_dispatched',
   'order_fulfilled',
   'order_cancelled',
   'payment_received',
@@ -216,6 +248,7 @@ export const TEMPLATE_LABELS: Record<TemplateKey, string> = {
   order_pending: 'Order Detected',
   order_confirmed: 'Order Confirmed',
   order_processing: 'Order Processing',
+  order_dispatched: 'Order Dispatched',
   order_fulfilled: 'Order Fulfilled',
   order_cancelled: 'Order Cancelled',
   payment_received: 'Payment Received',
@@ -231,6 +264,7 @@ export const TEMPLATE_DESCRIPTIONS: Record<TemplateKey, string> = {
   order_pending: 'Sent when a new order is detected from a customer message',
   order_confirmed: 'Sent when an order is confirmed by staff',
   order_processing: 'Sent when an order moves to processing',
+  order_dispatched: 'Sent when an order leaves the shop, with courier and tracking when known',
   order_fulfilled: 'Sent when an order is fulfilled',
   order_cancelled: 'Sent when an order is cancelled',
   payment_received: 'Sent when a payment is verified',
@@ -246,6 +280,7 @@ export const TEMPLATE_VARIABLES: Record<TemplateKey, string[]> = {
   order_pending: ['name', 'ref', 'business'],
   order_confirmed: ['name', 'ref', 'business'],
   order_processing: ['name', 'ref', 'business'],
+  order_dispatched: ['name', 'ref', 'business', 'details'],
   order_fulfilled: ['name', 'ref', 'business'],
   order_cancelled: ['name', 'ref', 'business', 'reason'],
   payment_received: ['name', 'ref', 'business', 'amount'],

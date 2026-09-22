@@ -1,16 +1,34 @@
 import { prisma } from '../../config/database.js';
-import { Prisma } from '@prisma/client';
+import { Prisma, type PaymentMethod } from '@prisma/client';
+import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
 import { recalculateCustomerTotals } from '../customers/customers.repository.js';
+import type { ConfirmPaymentInput } from './payments.schema.js';
+
+/**
+ * What counts as money, as a Prisma filter.
+ *
+ * The database-side twin of `isAttested` in @flowdesk/shared. The two must agree;
+ * if you change one, change the other.
+ */
+export const ATTESTED_PAYMENT = {
+  confidence: { not: 'CLAIMED' },
+  voidedAt: null,
+} satisfies Prisma.PaymentWhereInput;
 
 export interface PaymentWithCustomer {
   id: string;
   amount: Prisma.Decimal;
   method: string;
+  direction: PaymentDirection;
+  confidence: PaymentConfidence;
   reference: string | null;
-  verified: boolean;
-  verifiedAt: Date | null;
+  attestedAt: Date | null;
+  voidedAt: Date | null;
+  voidReason: string | null;
   screenshotUrl: string | null;
+  /** The archive key of the screenshot this claim came from, if any. */
+  screenshotKey: string | null;
   customer: { id: string; name: string | null; waNumber: string };
   orderId: string | null;
   order?: { id: string; referenceNumber: string; amountPaid: Prisma.Decimal; totalAmount: Prisma.Decimal } | null;
@@ -30,12 +48,19 @@ export async function createPayment(
         orderId: data.orderId ?? null,
         amount: new Prisma.Decimal(data.amount),
         method: data.method,
+        direction: data.direction,
         reference: data.reference ?? null,
         notes: data.notes ?? null,
         loggedById,
-        verified: data.verified,
-        verifiedBy: data.verified ? loggedById : null,
-        verifiedAt: data.verified ? new Date() : null,
+        confidence: data.attested ? 'SELLER_ATTESTED' : 'CLAIMED',
+        // The owner has no staff row, so `loggedById` is null when the owner
+        // logs their own attested payment — the dominant write path. Falling
+        // back to 'owner' here matches the attest/void routes
+        // (`request.user?.staffId ?? 'owner'`) so tier-1 attestations always
+        // name an attester instead of silently recording NULL for the actor
+        // whose word the tier is supposed to rest on.
+        attestedBy: data.attested ? (loggedById ?? 'owner') : null,
+        attestedAt: data.attested ? new Date() : null,
       },
       include: {
         customer: { select: { id: true, name: true, waNumber: true } },
@@ -43,13 +68,69 @@ export async function createPayment(
       },
     });
 
-    // Only a verified payment moves money, so totals are refreshed only then.
-    if (data.verified) {
+    // Only attested money moves totals, so they are refreshed only then.
+    if (data.attested) {
       if (payment.orderId) {
         await recalculateOrderPaid(payment.orderId, tx);
       }
       await recalculateCustomerTotals(payment.customerId, tx);
     }
+
+    return payment as unknown as PaymentWithCustomer;
+  });
+}
+
+/**
+ * Records money a payment gateway confirmed.
+ *
+ * Its own function rather than a flag on `createPayment`, because it is the one
+ * path where nobody's word is involved. A screenshot claim is CLAIMED until a
+ * person attests it; an owner's own entry is SELLER_ATTESTED on their say-so.
+ * This is GATEWAY_CONFIRMED: Paystack settled it, the reference can be checked
+ * against Paystack's own record, and no human attestation would add anything.
+ *
+ * Totals move immediately for the same reason — there is nothing left to
+ * verify, so an order that is now paid should say so before the owner opens it.
+ */
+export async function createGatewayPayment(
+  businessId: string,
+  data: {
+    customerId: string;
+    orderId: string | null;
+    amount: number;
+    method: PaymentMethod;
+    reference: string;
+    notes?: string | null;
+  },
+): Promise<PaymentWithCustomer> {
+  return prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.create({
+      data: {
+        businessId,
+        customerId: data.customerId,
+        orderId: data.orderId,
+        amount: new Prisma.Decimal(data.amount),
+        method: data.method,
+        direction: 'IN',
+        reference: data.reference,
+        notes: data.notes ?? null,
+        confidence: 'GATEWAY_CONFIRMED',
+        // Recorded as attested by the gateway rather than by a person, so the
+        // audit trail never implies someone signed off on something no human
+        // ever looked at.
+        attestedBy: 'paystack',
+        attestedAt: new Date(),
+      },
+      include: {
+        customer: { select: { id: true, name: true, waNumber: true } },
+        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
+      },
+    });
+
+    if (payment.orderId) {
+      await recalculateOrderPaid(payment.orderId, tx);
+    }
+    await recalculateCustomerTotals(payment.customerId, tx);
 
     return payment as unknown as PaymentWithCustomer;
   });
@@ -72,9 +153,35 @@ export async function listPayments(
   const where: Prisma.PaymentWhereInput = { businessId };
   if (filters.customerId) where.customerId = filters.customerId;
   if (filters.orderId) where.orderId = filters.orderId;
-  if (filters.verified !== undefined) where.verified = filters.verified;
+  if (filters.confidence) where.confidence = filters.confidence;
+  // `attested` narrows by voidedAt always, and by confidence only when the
+  // caller did not already supply an explicit `confidence` filter — an
+  // unconditional Object.assign here used to silently overwrite a caller's
+  // `confidence` filter with the `attested` bucket's own, so e.g.
+  // `?confidence=GATEWAY_CONFIRMED&attested=false` returned CLAIMED rows
+  // instead of an empty (or, at the service layer, rejected) result. The
+  // service layer above rejects genuinely contradictory combinations before
+  // this runs, so an explicit `confidence` reaching here is always
+  // compatible with `attested` and is left alone to do the narrowing.
+  if (filters.attested === true) {
+    where.voidedAt = null;
+    if (!filters.confidence) where.confidence = ATTESTED_PAYMENT.confidence;
+  }
+  // A live claim awaiting the owner's confirmation — deliberately excludes voided
+  // rows. A voided payment is already resolved and needs no action, so it belongs
+  // in neither the "attested" nor the "needs checking" bucket. It stays reachable
+  // by listing without the `attested` filter.
+  if (filters.attested === false) {
+    where.voidedAt = null;
+    if (!filters.confidence) where.confidence = 'CLAIMED';
+  }
+  // Keyed on the archive key, not the URL. The key is written for every
+  // screenshot claim the moment it is recorded; the URL only appears once the
+  // image has actually reached the bucket, which it never does when media
+  // storage is unconfigured. Filtering on the URL — as this used to — hid every
+  // screenshot claim on a deployment without S3, which is all of them today.
   if (filters.hasScreenshot) {
-    where.screenshotUrl = { not: null };
+    where.screenshotKey = { not: null };
   }
   if (filters.dateFrom || filters.dateTo) {
     where.createdAt = {};
@@ -95,35 +202,55 @@ export async function listPayments(
 }
 
 /**
- * Recomputes an order's `amountPaid` from its verified payments.
+ * Recomputes an order's `amountPaid` from its attested payments, net of refunds.
  *
- * Like the customer totals, this is a materialised value rather than an
- * accumulator, so verifying, un-verifying or deleting a payment always lands on
- * the correct figure instead of drifting.
+ * Materialised rather than accumulated, so attesting, voiding or refunding always
+ * lands on the correct figure instead of drifting.
+ *
+ * The two aggregates run in sequence, not in parallel: an interactive Prisma
+ * transaction holds a single connection and concurrent queries on it are not safe.
  */
 async function recalculateOrderPaid(
   orderId: string,
   tx: Prisma.TransactionClient,
 ): Promise<void> {
-  const paid = await tx.payment.aggregate({
-    where: { orderId, verified: true },
+  const received = await tx.payment.aggregate({
+    where: { orderId, direction: 'IN', ...ATTESTED_PAYMENT },
+    _sum: { amount: true },
+  });
+  const refunded = await tx.payment.aggregate({
+    where: { orderId, direction: 'OUT', ...ATTESTED_PAYMENT },
     _sum: { amount: true },
   });
 
-  await tx.order.update({
-    where: { id: orderId },
-    data: { amountPaid: paid._sum.amount ?? new Prisma.Decimal(0) },
-  });
+  const net = (received._sum.amount ?? new Prisma.Decimal(0))
+    .sub(refunded._sum.amount ?? new Prisma.Decimal(0));
+
+  await tx.order.update({ where: { id: orderId }, data: { amountPaid: net } });
 }
 
-export async function verifyPaymentWithSideEffects(
+/**
+ * Records the seller's attestation that the money landed.
+ *
+ * The update is conditional on the payment still being an unvoided claim, so two
+ * simultaneous attestations resolve to exactly one. Returns null when the claim
+ * had already been taken — the caller reports that as a conflict, not an error.
+ */
+export async function attestPaymentWithSideEffects(
   paymentId: string,
-  verifiedBy: string,
-): Promise<PaymentWithCustomer> {
-  const verified = await prisma.$transaction(async (tx) => {
-    const updated = await tx.payment.update({
+  businessId: string,
+  attestedBy: string,
+): Promise<PaymentWithCustomer | null> {
+  return prisma.$transaction(async (tx) => {
+    const claimed = await tx.payment.updateMany({
+      where: { id: paymentId, businessId, confidence: 'CLAIMED', voidedAt: null },
+      data: { confidence: 'SELLER_ATTESTED', attestedBy, attestedAt: new Date() },
+    });
+
+    if (claimed.count !== 1) return null;
+
+    const updated = await tx.payment.findUniqueOrThrow({
       where: { id: paymentId },
-      data: { verified: true, verifiedBy, verifiedAt: new Date() },
       include: {
         customer: { select: { id: true, name: true, waNumber: true } },
         order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
@@ -133,37 +260,47 @@ export async function verifyPaymentWithSideEffects(
     if (updated.orderId) {
       await recalculateOrderPaid(updated.orderId, tx);
     }
-
     await recalculateCustomerTotals(updated.customerId, tx);
 
-    return updated;
+    return updated as unknown as PaymentWithCustomer;
   });
-
-  return verified as unknown as PaymentWithCustomer;
 }
 
 /**
- * Deletes a payment and repairs every total it contributed to.
+ * Reverses a payment's effect without destroying the record of it.
  *
- * Previously this removed the row without reversing its effects, permanently
- * corrupting the customer's balance and the order's paid amount.
+ * This used to be a hard DELETE. A deleted payment is a destroyed alibi: the one
+ * artefact a dispute turns on is what was claimed, by whom, and when. Voiding
+ * keeps the row, the reason and the actor, and repairs every total it fed.
+ *
+ * Returns false when the payment does not exist or was already voided, so a
+ * double-submit is a no-op rather than a second reversal.
  */
-export async function deletePayment(id: string, businessId: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const payment = await tx.payment.findFirst({
-      where: { id, businessId },
-      select: { id: true, customerId: true, orderId: true },
+export async function voidPayment(
+  id: string,
+  businessId: string,
+  voidedBy: string,
+  reason: string,
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const claimed = await tx.payment.updateMany({
+      where: { id, businessId, voidedAt: null },
+      data: { voidedAt: new Date(), voidedBy, voidReason: reason },
     });
 
-    if (!payment) return;
+    if (claimed.count !== 1) return false;
 
-    await tx.payment.delete({ where: { id: payment.id } });
+    const payment = await tx.payment.findUniqueOrThrow({
+      where: { id },
+      select: { customerId: true, orderId: true },
+    });
 
     if (payment.orderId) {
       await recalculateOrderPaid(payment.orderId, tx);
     }
-
     await recalculateCustomerTotals(payment.customerId, tx);
+
+    return true;
   });
 }
 
@@ -181,26 +318,29 @@ export async function getRevenueStats(businessId: string): Promise<{
   startOfWeek.setHours(0, 0, 0, 0);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const [totalAgg, todayAgg, weekAgg, monthAgg, byMethodAgg] = await Promise.all([
-    prisma.payment.aggregate({
-      where: { businessId, verified: true },
+  async function netFrom(since: Date | null): Promise<number> {
+    const window = since ? { createdAt: { gte: since } } : {};
+    const received = await prisma.payment.aggregate({
+      where: { businessId, direction: 'IN', ...ATTESTED_PAYMENT, ...window },
       _sum: { amount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { businessId, verified: true, createdAt: { gte: startOfDay } },
+    });
+    const refunded = await prisma.payment.aggregate({
+      where: { businessId, direction: 'OUT', ...ATTESTED_PAYMENT, ...window },
       _sum: { amount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { businessId, verified: true, createdAt: { gte: startOfWeek } },
-      _sum: { amount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { businessId, verified: true, createdAt: { gte: startOfMonth } },
-      _sum: { amount: true },
-    }),
+    });
+    return Number(received._sum.amount ?? 0) - Number(refunded._sum.amount ?? 0);
+  }
+
+  const [totalRevenue, today, thisWeek, thisMonth, byMethodAgg] = await Promise.all([
+    netFrom(null),
+    netFrom(startOfDay),
+    netFrom(startOfWeek),
+    netFrom(startOfMonth),
+    // Money in, by method. Refunds are excluded rather than netted: the question
+    // this answers is which rails customers actually pay on.
     prisma.payment.groupBy({
       by: ['method'],
-      where: { businessId, verified: true },
+      where: { businessId, direction: 'IN', ...ATTESTED_PAYMENT },
       _sum: { amount: true },
     }),
   ]);
@@ -210,11 +350,199 @@ export async function getRevenueStats(businessId: string): Promise<{
     byMethod[row.method] = Number(row._sum.amount ?? 0);
   }
 
-  return {
-    totalRevenue: Number(totalAgg._sum.amount ?? 0),
-    today: Number(todayAgg._sum.amount ?? 0),
-    thisWeek: Number(weekAgg._sum.amount ?? 0),
-    thisMonth: Number(monthAgg._sum.amount ?? 0),
-    byMethod,
-  };
+  return { totalRevenue, today, thisWeek, thisMonth, byMethod };
+}
+
+
+/**
+ * One thing waiting for the owner's judgement.
+ *
+ * Every unvoided CLAIMED payment qualifies, whichever way it got there: a
+ * screenshot the detector flagged, or an amount counter staff wrote down and
+ * cannot attest to themselves. Both are the same question — did this money
+ * actually arrive — and answering it is the same tap.
+ */
+export interface ReviewQueueItem {
+  paymentId: string;
+  kind: 'SCREENSHOT' | 'LOGGED';
+  /** Null when nobody has read the amount off the screenshot yet. */
+  amount: number | null;
+  method: string;
+  direction: PaymentDirection;
+  confidence: PaymentConfidence;
+  reference: string | null;
+  notes: string | null;
+  createdAt: Date;
+  customer: { id: string; name: string | null; waNumber: string };
+  order: {
+    id: string;
+    referenceNumber: string;
+    totalAmount: number;
+    amountPaid: number;
+    outstanding: number;
+  } | null;
+  screenshot: {
+    /** False when the image could not be archived. The claim still stands. */
+    available: boolean;
+    /** Path to fetch the image bytes from, relative to the API base. */
+    viewUrl: string | null;
+    unavailableReason: 'NOT_ARCHIVED' | null;
+    caption: string | null;
+    receivedAt: Date | null;
+    messageId: string | null;
+  } | null;
+}
+
+/**
+ * Everything the owner has to check, newest first.
+ *
+ * Decimals are converted to numbers here rather than handed out raw: a Prisma
+ * Decimal serialises as its own internal shape, and a dashboard reading
+ * `amount` off it gets an object where it expected money.
+ */
+export async function listReviewQueue(
+  businessId: string,
+  limit: number,
+): Promise<ReviewQueueItem[]> {
+  const claims = await prisma.payment.findMany({
+    where: { businessId, confidence: 'CLAIMED', voidedAt: null },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    include: {
+      customer: { select: { id: true, name: true, waNumber: true } },
+      order: {
+        select: { id: true, referenceNumber: true, totalAmount: true, amountPaid: true },
+      },
+    },
+  });
+
+  // The message the screenshot arrived on carries the caption and the time the
+  // customer sent it — the context that makes a bare image interpretable. It is
+  // fetched in one query for the whole page rather than one per row.
+  const screenshotKeys = claims
+    .map((claim) => claim.screenshotKey)
+    .filter((key): key is string => key !== null);
+
+  const messages =
+    screenshotKeys.length > 0
+      ? await prisma.message.findMany({
+          where: { businessId, mediaKey: { in: screenshotKeys } },
+          select: { id: true, mediaKey: true, body: true, createdAt: true },
+        })
+      : [];
+
+  const messageByKey = new Map(messages.map((message) => [message.mediaKey, message]));
+
+  return claims.map((claim) => {
+    const message = claim.screenshotKey ? messageByKey.get(claim.screenshotKey) : undefined;
+    const amount = Number(claim.amount);
+
+    return {
+      paymentId: claim.id,
+      kind: claim.screenshotKey ? 'SCREENSHOT' : 'LOGGED',
+      amount: amount === 0 ? null : amount,
+      method: claim.method,
+      direction: claim.direction as PaymentDirection,
+      confidence: claim.confidence as PaymentConfidence,
+      reference: claim.reference,
+      notes: claim.notes,
+      createdAt: claim.createdAt,
+      customer: claim.customer,
+      order: claim.order
+        ? {
+            id: claim.order.id,
+            referenceNumber: claim.order.referenceNumber,
+            totalAmount: Number(claim.order.totalAmount),
+            amountPaid: Number(claim.order.amountPaid),
+            outstanding: Number(claim.order.totalAmount) - Number(claim.order.amountPaid),
+          }
+        : null,
+      screenshot: claim.screenshotKey
+        ? {
+            available: claim.screenshotUrl !== null,
+            viewUrl: claim.screenshotUrl !== null ? `/payments/${claim.id}/screenshot` : null,
+            unavailableReason: claim.screenshotUrl === null ? 'NOT_ARCHIVED' : null,
+            caption: message?.body ?? null,
+            receivedAt: message?.createdAt ?? null,
+            messageId: message?.id ?? null,
+          }
+        : null,
+    };
+  });
+}
+
+/** The archive key of a payment's screenshot, for serving the image back. */
+export async function findScreenshotKey(
+  paymentId: string,
+  businessId: string,
+): Promise<{ key: string; archived: boolean } | null> {
+  const payment = await prisma.payment.findFirst({
+    where: { id: paymentId, businessId },
+    select: { screenshotKey: true, screenshotUrl: true },
+  });
+
+  if (!payment?.screenshotKey) return null;
+
+  return { key: payment.screenshotKey, archived: payment.screenshotUrl !== null };
+}
+
+/**
+ * Fills in what the owner read off the screenshot and attests it in one write.
+ *
+ * Same conditional `updateMany` as `attestPaymentWithSideEffects`, for the same
+ * reason: the row moves out of CLAIMED exactly once, so a double-tap on a slow
+ * connection confirms one payment rather than two. The amount and method are set
+ * in the same statement as the confidence, so there is no window in which an
+ * attested payment carries the placeholder figures.
+ *
+ * Returns null when the claim had already been taken or voided.
+ */
+export async function confirmClaimWithSideEffects(
+  paymentId: string,
+  businessId: string,
+  data: ConfirmPaymentInput,
+  attestedBy: string,
+): Promise<PaymentWithCustomer | null> {
+  return prisma.$transaction(async (tx) => {
+    const previous = await tx.payment.findFirst({
+      where: { id: paymentId, businessId },
+      select: { orderId: true },
+    });
+
+    const claimed = await tx.payment.updateMany({
+      where: { id: paymentId, businessId, confidence: 'CLAIMED', voidedAt: null },
+      data: {
+        amount: new Prisma.Decimal(data.amount),
+        method: data.method,
+        confidence: 'SELLER_ATTESTED',
+        attestedBy,
+        attestedAt: new Date(),
+        ...(data.orderId !== undefined ? { orderId: data.orderId } : {}),
+        ...(data.reference !== undefined ? { reference: data.reference } : {}),
+      },
+    });
+
+    if (claimed.count !== 1) return null;
+
+    const updated = await tx.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+      include: {
+        customer: { select: { id: true, name: true, waNumber: true } },
+        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
+      },
+    });
+
+    // A claim can be attached to an order at the moment it is confirmed, so the
+    // order it left has to be recomputed too — otherwise the old order keeps
+    // credit for money that has just been moved onto a different one.
+    if (previous?.orderId && previous.orderId !== updated.orderId) {
+      await recalculateOrderPaid(previous.orderId, tx);
+    }
+    if (updated.orderId) {
+      await recalculateOrderPaid(updated.orderId, tx);
+    }
+    await recalculateCustomerTotals(updated.customerId, tx);
+
+    return updated as unknown as PaymentWithCustomer;
+  });
 }

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 /**
- * Panel — the workhorse container.
+ * Panel, the workhorse container.
  *
  * A hairline border and a white ground. No shadow: a panel does not float, it
  * sits on the page. Elevation is reserved for drawers, dialogs and menus, so
@@ -27,7 +27,7 @@ export function Panel({
 
 /**
  * Panel header. Title on the left, optional action on the right, sitting on a
- * rule. Deliberately not uppercase — when every panel head was uppercase and
+ * rule. Deliberately not uppercase, when every panel head was uppercase and
  * letterspaced they all read at the same weight and the page had no shape.
  */
 export function PanelHead({

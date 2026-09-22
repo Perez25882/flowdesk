@@ -168,6 +168,12 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       case 'PROCESSING':
         order = await markProcessing(id, businessId, changedBy);
         break;
+      // DISPATCHED has no case here ON PURPOSE. Sending an order out goes
+      // through `POST /orders/:id/dispatch`, which writes the shipment row
+      // first and only then moves the status — because the customer's "on its
+      // way" message reads the courier and tracking number off that row. A
+      // status change made here would skip it and message the customer with
+      // neither. Falling to the default below is the right refusal.
       case 'FULFILLED':
         order = await fulfillOrder(id, businessId, changedBy);
         break;

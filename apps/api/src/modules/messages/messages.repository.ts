@@ -1,7 +1,15 @@
 import { prisma } from '../../config/database.js';
 import { Prisma, IntentType, ClassificationSource } from '@prisma/client';
+import { NotFoundError } from '../../utils/errors.js';
 import type { ListMessagesQueryInput, UpdateMessageIntentInput } from './messages.schema.js';
 
+/**
+ * The API's message shape.
+ *
+ * Hand-written and applied with a cast, so adding a Prisma column does NOT make
+ * it appear here — the cast will happily claim a field the response never
+ * carried. Anything the dashboard needs has to be listed.
+ */
 export interface MessageWithCustomer {
   id: string;
   waMessageId: string;
@@ -14,6 +22,10 @@ export interface MessageWithCustomer {
   requiresReview: boolean;
   processed: boolean;
   relatedOrderId: string | null;
+  /** A reply the assistant wrote for this message, if any. */
+  aiReplyText: string | null;
+  aiReplyStatus: string | null;
+  aiValidationFailed: string[];
   createdAt: Date;
   customer: { id: string; name: string | null; waNumber: string } | null;
 }
@@ -48,7 +60,10 @@ export async function updateMessageIntent(
     where: { id, businessId },
     include: { customer: { select: { id: true, name: true, waNumber: true } } },
   });
-  if (!message) throw new Error('Message not found');
+  // A bare Error here reached the owner as "Internal server error", because the
+  // handler only maps `AppError`. The id being absent is the ordinary case of
+  // another tenant's message id, which is a 404, not a fault.
+  if (!message) throw new NotFoundError('Message not found');
 
   await prisma.intentCorrection.create({
     data: {

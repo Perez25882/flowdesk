@@ -55,3 +55,26 @@ apps/api/prisma/*.db
 .vscode/*
 !.vscode/extensions.json
 Thumbs.db
+
+# Redis snapshot, written if a local redis-server is started from the repo root
+dump.rdb
+
+# Dev server logs written when the API/web are started in the background
+.api-dev.log
+.api-dev.err.log
+.web-dev.log
+.web-dev.err.log
+
+# Output captured from a local test or typecheck run. Useful while working,
+# meaningless once committed — and stale within a day, which is worse than
+# absent because someone reads it as current.
+test.log
+test-output.log
+typecheck.log
+
+# Archives taken before a risky change. Kept locally on purpose; committing one
+# puts a second copy of the whole tree inside the tree.
+*.tar.gz
+
+# Scratch directory used by tooling.
+Claude outputs/

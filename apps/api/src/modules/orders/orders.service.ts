@@ -1,15 +1,16 @@
 import { Prisma, type OrderStatus } from '@prisma/client';
-import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
-import { NotFoundError, ValidationError } from '../../utils/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { extractItemsFromText } from '../../utils/item-extractor.js';
 import { notifyOrderStatus } from '../../services/notifications/customer-notifications.js';
 import { recordOrder } from '../../services/plan/plan.service.js';
+import { notifyOwnerLowStock, notifyOwnerNewOrder } from '../../services/notifications/owner-notifications.js';
 import { emitOrderCreated, emitOrderUpdated, emitStockAlert } from '../../services/sse/sse.events.js';
 import {
   createOrder,
   findOrderById,
   updateOrderStatus,
+  claimStockMovement,
   generateOrderReference,
   findOrdersByStatus,
   assignOrderToStaff,
@@ -20,6 +21,7 @@ import {
 import {
   findActiveCatalogProducts,
   deductStockForOrderItems,
+  restoreStockForOrderItems,
 } from '../products/products.repository.js';
 import type { CreateOrderInput as ManualOrderInput } from './orders.schema.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
@@ -36,7 +38,15 @@ import { findProductById } from '../products/products.repository.js';
 const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   PENDING: ['CONFIRMED', 'CANCELLED'],
   CONFIRMED: ['PROCESSING', 'CANCELLED'],
-  PROCESSING: ['FULFILLED', 'CANCELLED'],
+  // PROCESSING keeps its direct route to FULFILLED: a shop where the customer
+  // collects in person never dispatches anything, and forcing those orders
+  // through a shipment they do not have would be a worse lie than the missing
+  // step it was meant to fix.
+  PROCESSING: ['DISPATCHED', 'FULFILLED', 'CANCELLED'],
+  // Cancelling after dispatch is allowed because goods do come back. What is
+  // not allowed is reversing into PROCESSING: once a rider has it, "being
+  // packed" is no longer true of it.
+  DISPATCHED: ['FULFILLED', 'CANCELLED'],
   FULFILLED: [],
   CANCELLED: [],
 };
@@ -107,7 +117,19 @@ async function emitCreated(order: OrderWithRelations): Promise<void> {
     referenceNumber: order.referenceNumber,
     customerName: order.customer?.name ?? null,
     totalAmount: Number(order.totalAmount),
+    // Carried so the realtime fan-out can make the same assignment-scoped
+    // decision the HTTP layer makes; without it a delivery rider is either sent
+    // every order in the shop or none of them.
+    assignedStaffId: order.assignedStaffId ?? null,
   });
+
+  // The owner is on WhatsApp, not on a dashboard. The PRD rates "owner never
+  // checks the dashboard" as the highest product risk and names this as the
+  // mitigation. A manual order was typed by the owner a moment ago, so telling
+  // them about it is noise.
+  if (!order.isManual) {
+    await notifyOwnerNewOrder(order.id);
+  }
 }
 
 /**
@@ -154,6 +176,61 @@ export async function createOrderFromMessage(
       total: Number(order.totalAmount),
     },
     'Order created from customer message',
+  );
+
+  return order;
+}
+
+export interface AssistantOrderItem {
+  productId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+/**
+ * Creates an order the assistant has settled over several turns.
+ *
+ * Separate from `createOrderFromMessage` because there is nothing left to
+ * extract: the items were resolved against the catalogue across the
+ * conversation, and re-parsing the last message ("2 bags") would throw that away
+ * and produce an unpriced line instead.
+ *
+ * `rawMessage` carries the conversation's own words so the owner can still see
+ * what was actually asked for.
+ */
+export async function createOrderFromAssistant(
+  businessId: string,
+  customerId: string,
+  items: AssistantOrderItem[],
+  rawMessage: string,
+): Promise<OrderWithRelations> {
+  const order = await createOrderWithReference(businessId, (referenceNumber) => ({
+    businessId,
+    customerId,
+    referenceNumber,
+    rawMessage,
+    isManual: false,
+    items: items.map((item) => ({
+      productId: item.productId,
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+    })),
+  }));
+
+  await Promise.all([recalculateCustomerTotals(customerId), recordOrder(businessId)]);
+  await emitCreated(order);
+
+  logger.info(
+    {
+      orderId: order.id,
+      businessId,
+      reference: order.referenceNumber,
+      itemCount: items.length,
+      total: Number(order.totalAmount),
+    },
+    'Order created by the assistant',
   );
 
   return order;
@@ -270,18 +347,47 @@ async function transitionOrder(
   }
 
   const note = options.reason ?? `Order moved to ${next}`;
-  const order = await updateOrderStatus(orderId, next, actorId, note, undefined);
+  const order = await updateOrderStatus(
+    orderId,
+    next,
+    actorId,
+    note,
+    previousStatus,
+    options.reason ?? null,
+  );
 
-  if (next === 'CANCELLED' && options.reason) {
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { cancelReason: options.reason },
-    });
+  // Someone else moved this order between our read and our write. The work
+  // below — notifying the customer, moving stock, recomputing balances — has
+  // already been done by whoever won, so doing it again is exactly the double
+  // send and double deduction the conditional write exists to prevent.
+  //
+  // What the caller sees depends on what they asked for. If the order is now in
+  // the state they wanted, their intent was carried out and a 200 is honest. If
+  // the winner moved it somewhere else, their request genuinely did not happen
+  // and they need to know.
+  if (!order) {
+    const current = await findOrderById(orderId, businessId);
+
+    if (!current) {
+      throw new NotFoundError('Order not found');
+    }
+
+    if (current.status === next) {
+      return current;
+    }
+
+    throw new ConflictError(
+      `This order was already moved to ${current.status} by someone else.`,
+    );
   }
 
   // Stock leaves inventory at CONFIRMED, not at PENDING: an unconfirmed order
   // must not deplete stock the owner has not agreed to sell.
-  if (next === 'CONFIRMED' && !order.stockDeducted) {
+  //
+  // The claim, not `order.stockDeducted`, is what makes this happen once. The
+  // flag was read and written in two separate statements, so two concurrent
+  // confirmations both saw false and both deducted.
+  if (next === 'CONFIRMED' && (await claimStockMovement(orderId, businessId, false))) {
     const alerts = await deductStockForOrderItems(
       orderId,
       businessId,
@@ -293,14 +399,30 @@ async function transitionOrder(
       })),
     );
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: { stockDeducted: true },
-    });
-
     for (const alert of alerts) {
       emitStockAlert(businessId, alert);
+      // Stock most often falls low through selling, not through a manual
+      // adjustment, so this is the path that matters. The owner-notification
+      // cooldown is what keeps a busy morning from becoming forty messages.
+      await notifyOwnerLowStock(alert.productId);
     }
+  }
+
+  // Cancelling an order that had already taken stock out of inventory has to
+  // put it back. Without this the shop's stock count drifts down by the size of
+  // every cancelled order and never recovers — and the reorder alerts that
+  // depend on it start firing on stock the shop still has on the shelf.
+  if (next === 'CANCELLED' && (await claimStockMovement(orderId, businessId, true))) {
+    await restoreStockForOrderItems(
+      orderId,
+      businessId,
+      actorId,
+      order.items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        matched: item.matched,
+      })),
+    );
   }
 
   // A status change moves the order in or out of the billable set, so the
@@ -366,6 +488,19 @@ export async function markProcessing(
 ): Promise<OrderWithRelations> {
   // Packing an order claims it, but only a real staff member can be assigned.
   return transitionOrder(orderId, businessId, staffId, 'PROCESSING', assignmentFor(staffId));
+}
+
+/**
+ * Moves an order to DISPATCHED. Called by the shipments module once the
+ * shipment row exists, never before: the customer's "on its way" message reads
+ * the courier and tracking off that row.
+ */
+export async function dispatchOrderStatus(
+  orderId: string,
+  businessId: string,
+  staffId: string | null,
+): Promise<OrderWithRelations> {
+  return transitionOrder(orderId, businessId, staffId, 'DISPATCHED', assignmentFor(staffId));
 }
 
 export async function fulfillOrder(

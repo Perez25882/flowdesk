@@ -3,10 +3,12 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { logger } from '../../config/logger.js';
 import { redis } from '../../config/redis.js';
 import { requireAuth } from '../../middleware/auth.middleware.js';
+import { attachBusinessContext } from '../../middleware/business-context.middleware.js';
 import {
   MAX_CONNECTIONS_PER_BUSINESS,
   SSEManager,
   sendHeartbeat,
+  type SSESubscriber,
 } from '../../services/sse/sse.manager.js';
 import type { BusinessPlan, StaffRole } from '../../types/prisma-enums.js';
 
@@ -53,7 +55,11 @@ async function redeemTicket(ticket: string): Promise<TicketRecord | null> {
 export default async function sseRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/sse/ticket',
-    { preHandler: requireAuth },
+    // `attachBusinessContext` as well as `requireAuth`: without it a suspended,
+    // inactive, soft-deleted or trial-expired business was refused on every
+    // REST call but kept a fully working realtime feed, because this was the
+    // one authenticated route that skipped the business-state gate.
+    { preHandler: [requireAuth, attachBusinessContext] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const ticket = crypto.randomBytes(32).toString('base64url');
@@ -141,7 +147,14 @@ export default async function sseRoutes(app: FastifyInstance): Promise<void> {
     reply.raw.writeHead(200, headers);
     reply.raw.flushHeaders();
 
-    const connectionId = manager.addConnection(record.businessId, reply);
+    // The ticket already recorded who this is; the connection has to carry it
+    // too, or the fan-out has no way to decide what this subscriber may see and
+    // falls back to writing everything to everyone.
+    const subscriber: SSESubscriber = {};
+    if (record.staffId !== undefined) subscriber.staffId = record.staffId;
+    if (record.role !== undefined) subscriber.role = record.role as StaffRole;
+
+    const connectionId = manager.addConnection(record.businessId, reply, subscriber);
 
     // Lost a race against another connection for the last slot.
     if (connectionId === null) {

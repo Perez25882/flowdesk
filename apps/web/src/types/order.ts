@@ -1,4 +1,12 @@
-export type OrderStatus = 'PENDING' | 'CONFIRMED' | 'PROCESSING' | 'FULFILLED' | 'CANCELLED';
+import { type PaymentConfidence } from '@flowdesk/shared';
+
+export type OrderStatus =
+  | 'PENDING'
+  | 'CONFIRMED'
+  | 'PROCESSING'
+  | 'DISPATCHED'
+  | 'FULFILLED'
+  | 'CANCELLED';
 
 export interface OrderItem {
   id: string;
@@ -19,6 +27,34 @@ export interface OrderCustomer {
   totalOrders?: number;
 }
 
+/** What the assistant captured in the chat after the order was confirmed. */
+export interface OrderDelivery {
+  recipientName: string | null;
+  deliveryAddress: string | null;
+  deliveryArea: string | null;
+  /** Stored as 233XXXXXXXXX. Use `formatWaNumber` before showing it. */
+  contactPhone: string | null;
+  /** Null while the assistant is still asking. */
+  deliveryCapturedAt: string | null;
+}
+
+/**
+ * What left the shop.
+ *
+ * No proof URL on purpose: the bucket is private and the photo is served by an
+ * authenticated endpoint, so the client asks for it rather than linking to it.
+ */
+export interface Shipment {
+  orderId: string;
+  courier: string | null;
+  trackingNumber: string | null;
+  notes: string | null;
+  dispatchedAt: string | null;
+  deliveredAt: string | null;
+  hasProof: boolean;
+  proofUploadedAt: string | null;
+}
+
 export interface OrderStaff {
   id: string;
   name: string;
@@ -28,7 +64,8 @@ export interface OrderPayment {
   id: string;
   amount: number;
   method: string;
-  verified: boolean;
+  confidence: PaymentConfidence;
+  voidedAt: string | null;
 }
 
 export interface OrderStatusHistory {
@@ -40,7 +77,7 @@ export interface OrderStatusHistory {
   createdAt: string;
 }
 
-export interface OrderWithRelations {
+export interface OrderWithRelations extends OrderDelivery {
   id: string;
   businessId: string;
   customerId: string;

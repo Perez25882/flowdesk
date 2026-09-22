@@ -3,6 +3,8 @@ import { prisma } from '../../config/database.js';
 import { redis } from '../../config/redis.js';
 import { logger } from '../../config/logger.js';
 import { NotFoundError } from '../../utils/errors.js';
+import type { PaymentConfidence } from '@flowdesk/shared';
+import { ATTESTED_PAYMENT } from '../payments/payments.repository.js';
 
 export interface CreateOrderItemInput {
   productId?: string;
@@ -65,7 +67,8 @@ export interface OrderWithRelations {
     id: string;
     amount: Prisma.Decimal;
     method: string;
-    verified: boolean;
+    confidence: PaymentConfidence;
+    voidedAt: Date | null;
   }>;
   statusHistory: Array<{
     id: string;
@@ -182,7 +185,7 @@ export async function createOrder(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, verified: true } },
+      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: true,
     },
   });
@@ -204,7 +207,7 @@ export async function findOrderById(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, verified: true } },
+      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: { orderBy: { createdAt: 'desc' } },
     },
   });
@@ -226,7 +229,7 @@ export async function findOrderByReference(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, verified: true } },
+      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: { orderBy: { createdAt: 'desc' } },
     },
   });
@@ -234,25 +237,37 @@ export async function findOrderByReference(
   return order as unknown as OrderWithRelations | null;
 }
 
+/**
+ * Moves an order to a new status, but only if it is still in the status the
+ * caller read.
+ *
+ * Returns null when it is not — meaning another request got there first.
+ *
+ * This used to be a read, then a legality check in the service, then an
+ * unconditional `update`. Two requests three milliseconds apart — an owner on a
+ * laptop and a manager on a phone, or one 3G client retrying — both read
+ * PENDING, both passed the check, and both wrote. The customer received two
+ * "your order is confirmed" messages, two status-history rows were written for
+ * one transition, and stock was deducted twice, because both had also read
+ * `stockDeducted: false` before either set it.
+ *
+ * The `status: expectedFrom` clause in the WHERE is what makes the check and
+ * the write one atomic step. `updateMany` rather than `update` because Prisma's
+ * `update` throws on no-match, and losing this race is an ordinary outcome, not
+ * an error.
+ */
 export async function updateOrderStatus(
   id: string,
   status: OrderStatus,
   changedBy: string | null,
   note: string | null,
+  expectedFrom: OrderStatus,
+  cancelReason?: string | null,
   tx?: PrismaTransaction,
-): Promise<OrderWithRelations> {
+): Promise<OrderWithRelations | null> {
   const db = tx ?? prisma;
 
-  const existing = await db.order.findFirst({
-    where: { id, deletedAt: null },
-    select: { status: true },
-  });
-
-  if (!existing) {
-    throw new NotFoundError('Order not found');
-  }
-
-  const updateData: Prisma.OrderUpdateInput = {
+  const updateData: Prisma.OrderUncheckedUpdateManyInput = {
     status,
   };
 
@@ -262,31 +277,73 @@ export async function updateOrderStatus(
     updateData.fulfilledAt = new Date();
   } else if (status === 'CANCELLED') {
     updateData.cancelledAt = new Date();
+    // Written in the same statement as the status. A second `update` for the
+    // reason left a window in which a cancelled order had no reason on it, and
+    // the notification that reads the reason could be composed inside it.
+    if (cancelReason) updateData.cancelReason = cancelReason;
   }
 
-  const order = await db.order.update({
-    where: { id },
+  const claimed = await db.order.updateMany({
+    where: { id, deletedAt: null, status: expectedFrom },
     data: updateData,
-    include: {
-      items: true,
-      customer: { select: { id: true, waNumber: true, name: true } },
-      assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, verified: true } },
-      statusHistory: true,
-    },
   });
+
+  if (claimed.count === 0) {
+    return null;
+  }
 
   await db.orderStatusHistory.create({
     data: {
       orderId: id,
-      fromStatus: existing.status,
+      fromStatus: expectedFrom,
       toStatus: status,
       changedBy,
       note,
     },
   });
 
+  const order = await db.order.findFirst({
+    where: { id },
+    include: {
+      items: true,
+      customer: { select: { id: true, waNumber: true, name: true } },
+      assignedTo: { select: { id: true, name: true } },
+      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+      statusHistory: true,
+    },
+  });
+
+  if (!order) {
+    throw new NotFoundError('Order not found');
+  }
+
   return order as unknown as OrderWithRelations;
+}
+
+/**
+ * Claims the right to move this order's stock, exactly once.
+ *
+ * `stockDeducted` is both the flag and the lock: flipping it with a conditional
+ * `updateMany` means only one caller can ever win, so a retried job or a
+ * concurrent transition cannot deduct the same items twice.
+ *
+ * `expected` is the value being moved away from — false when deducting at
+ * CONFIRMED, true when putting stock back on a cancellation.
+ */
+export async function claimStockMovement(
+  id: string,
+  businessId: string,
+  expected: boolean,
+  tx?: PrismaTransaction,
+): Promise<boolean> {
+  const db = tx ?? prisma;
+
+  const claimed = await db.order.updateMany({
+    where: { id, businessId, deletedAt: null, stockDeducted: expected },
+    data: { stockDeducted: !expected },
+  });
+
+  return claimed.count === 1;
 }
 
 export async function listOrders(
@@ -307,7 +364,7 @@ export async function listOrders(
         items: true,
         customer: { select: { id: true, waNumber: true, name: true } },
         assignedTo: { select: { id: true, name: true } },
-        payments: { select: { id: true, amount: true, method: true, verified: true } },
+        payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
         statusHistory: { orderBy: { createdAt: 'desc' }, take: 5 },
       },
     }),
@@ -348,7 +405,7 @@ export async function assignOrderToStaff(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, verified: true } },
+      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: true,
     },
   });
@@ -457,7 +514,7 @@ export async function findOrdersByStatus(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, verified: true } },
+      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: { orderBy: { createdAt: 'desc' }, take: 3 },
     },
   });
@@ -478,7 +535,11 @@ export async function getOrderStats(
     },
   };
 
-  const [orders, totalPaidAgg] = await Promise.all([
+  // Net of refunds, matching payments.repository.ts's netFrom — a paid total
+  // that ignores OUT payments would overstate how much of an order is settled.
+  const dateWindow = { createdAt: { gte: dateRange.start, lte: dateRange.end } };
+
+  const [orders, receivedAgg, refundedAgg] = await Promise.all([
     prisma.order.findMany({
       where,
       select: {
@@ -487,14 +548,11 @@ export async function getOrderStats(
       },
     }),
     prisma.payment.aggregate({
-      where: {
-        businessId,
-        verified: true,
-        createdAt: {
-          gte: dateRange.start,
-          lte: dateRange.end,
-        },
-      },
+      where: { businessId, direction: 'IN', ...ATTESTED_PAYMENT, ...dateWindow },
+      _sum: { amount: true },
+    }),
+    prisma.payment.aggregate({
+      where: { businessId, direction: 'OUT', ...ATTESTED_PAYMENT, ...dateWindow },
       _sum: { amount: true },
     }),
   ]);
@@ -507,7 +565,7 @@ export async function getOrderStats(
     totalRevenue += Number(order.totalAmount);
   }
 
-  const totalPaid = Number(totalPaidAgg._sum.amount ?? 0);
+  const totalPaid = Number(receivedAgg._sum.amount ?? 0) - Number(refundedAgg._sum.amount ?? 0);
 
   return {
     totalOrders: orders.length,

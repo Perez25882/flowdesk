@@ -1,13 +1,18 @@
 import { prisma } from '../../config/database.js';
 import { Prisma } from '@prisma/client';
 import { NotFoundError } from '../../utils/errors.js';
+import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { UpdateCustomerInput, ListCustomersQueryInput } from './customers.schema.js';
 
 /**
  * Order statuses that represent a real financial obligation. A PENDING order is
  * not yet owed — the owner has not accepted it — and a CANCELLED one never was.
+ *
+ * DISPATCHED belongs here for the obvious reason: goods that have left the shop
+ * are the most owed they will ever be. It was missing when the status was
+ * added, so sending an order out quietly erased it from what the customer owed.
  */
-const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'FULFILLED'] as const;
+const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] as const;
 
 /**
  * Recomputes a customer's denormalised totals from the underlying orders and
@@ -18,7 +23,8 @@ const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'FULFILLED'] as const;
  * deleted or re-verified payment had no compensating adjustment. Recomputing
  * from source makes every write self-healing and idempotent.
  *
- * Call this after ANY change to an order's status or a payment's verification.
+ * Call this after ANY change to an order's status or a payment's attestation or
+ * voiding.
  */
 export async function recalculateCustomerTotals(
   customerId: string,
@@ -26,13 +32,21 @@ export async function recalculateCustomerTotals(
 ): Promise<void> {
   const db = tx ?? prisma;
 
-  const [billable, payments, orderCount, firstOrder] = await Promise.all([
+  // The where-clause below is written out longhand rather than importing
+  // ATTESTED_PAYMENT from payments.repository.ts: that file already imports
+  // recalculateCustomerTotals from this one, so importing back would close a
+  // circular dependency. Keep the two in step by hand.
+  const [billable, received, refunded, orderCount, firstOrder] = await Promise.all([
     db.order.aggregate({
       where: { customerId, deletedAt: null, status: { in: [...BILLABLE_STATUSES] } },
       _sum: { totalAmount: true },
     }),
     db.payment.aggregate({
-      where: { customerId, verified: true },
+      where: { customerId, direction: 'IN', confidence: { not: 'CLAIMED' }, voidedAt: null },
+      _sum: { amount: true },
+    }),
+    db.payment.aggregate({
+      where: { customerId, direction: 'OUT', confidence: { not: 'CLAIMED' }, voidedAt: null },
       _sum: { amount: true },
     }),
     db.order.count({ where: { customerId, deletedAt: null } }),
@@ -44,7 +58,8 @@ export async function recalculateCustomerTotals(
   ]);
 
   const owed = billable._sum.totalAmount ?? new Prisma.Decimal(0);
-  const paid = payments._sum.amount ?? new Prisma.Decimal(0);
+  const paid = (received._sum.amount ?? new Prisma.Decimal(0))
+    .sub(refunded._sum.amount ?? new Prisma.Decimal(0));
 
   await db.customer.update({
     where: { id: customerId },
@@ -123,7 +138,9 @@ export async function getCustomerWithHistory(
     id: string;
     amount: Prisma.Decimal;
     method: string;
-    verified: boolean;
+    direction: PaymentDirection;
+    confidence: PaymentConfidence;
+    voidedAt: Date | null;
     createdAt: Date;
   }>;
 }> {
@@ -143,7 +160,15 @@ export async function getCustomerWithHistory(
         where: { businessId },
         orderBy: { createdAt: 'desc' },
         take: 20,
-        select: { id: true, amount: true, method: true, verified: true, createdAt: true },
+        select: {
+          id: true,
+          amount: true,
+          method: true,
+          direction: true,
+          confidence: true,
+          voidedAt: true,
+          createdAt: true,
+        },
       },
     },
   });

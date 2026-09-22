@@ -25,92 +25,128 @@
    ═══════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* ── Green. The brand, and money. ──────────────────────────────────── */
-  --green-50: #edf5f1;
-  --green-100: #d3e7dd;
-  --green-200: #a9cfbd;
-  --green-300: #71b097;
-  --green-400: #3d8f72;
-  --green-500: #166f4f;
-  --green-600: #125a41;
-  --green-700: #0e4733;
-  --green-800: #0a3526;
-  --green-900: #06231a;
+  /* ── Slate blue. The brand. ────────────────────────────────────────
+     Four colours were supplied — #F7FBFD, #D6E6EF, #7FA6B8, #2A3E4B — and
+     they sit within five degrees of one hue, which is why they work as a
+     family and why the rest of this ramp could be built around them rather
+     than beside them. They are the 50, 100, 400 and 800 below, unchanged.
+
+     The steps between are interpolated at the same hue; 500-700 exist
+     because the supplied four leave a gap exactly where readable text and
+     pressed states live. #7FA6B8 measures 2.61:1 against white, so it is a
+     border, a fill and a chart stroke, and never a word. That is not a
+     criticism of the colour — it is what a mid-tone at 61% lightness is
+     for. */
+  --blue-50: #f7fbfd;
+  --blue-100: #d6e6ef;
+  --blue-200: #b7d1df;
+  --blue-300: #9abccd;
+  --blue-400: #7fa6b8;
+  --blue-500: #608fa7;
+  --blue-600: #4d7489;
+  --blue-700: #3b596a;
+  --blue-800: #2a3e4b;
+  --blue-900: #1e2d36;
+  --blue-950: #152029;
 
   /* ── Clay. The second voice. ────────────────────────────────────────
-     Green alone gives a one-note palette, which is most of why the old
-     interface read as unfinished — every accent was the same accent. Clay
-     is warm, sits opposite green on the wheel without fighting it, and is
-     at home in a West African commercial context. It carries emphasis on
-     the marketing page and marks a customer worth noticing in the app.
-     It is never a status: statuses are the four hues below. */
-  --clay-50: #fbf0eb;
-  --clay-100: #f4dbcf;
-  --clay-200: #e7b69f;
-  --clay-300: #d68f6e;
-  --clay-400: #c06e48;
-  /* 500 is darkened a step from the natural midpoint of this ramp. At the
-     lighter value (#a85c3c) clay text on clay-50 measured 4.40:1, just under
-     AA. This clears it at 4.74 and still takes white at 5.30 as a fill, so
-     one value serves both jobs. */
-  --clay-500: #a3572f;
-  --clay-600: #8c4a2f;
-  --clay-700: #6e3924;
-  --clay-800: #52291a;
-  --clay-900: #351a10;
+     Kept, and re-cut against the new brand. A single-hue interface has no
+     way to say "this one matters" other than making something bigger, and
+     terracotta against slate is a pairing that has worked for as long as
+     there have been roofs and skies. It carries emphasis on the marketing
+     page and marks a customer worth noticing in the app. It is never a
+     status: statuses are the hues below. */
+  --clay-50: #faeee8;
+  --clay-100: #efd5c8;
+  --clay-200: #dfb8a4;
+  --clay-300: #ca8968;
+  --clay-400: #b4643c;
+  --clay-500: #99502b;
+  --clay-600: #804425;
+  --clay-700: #63351d;
+  --clay-800: #472616;
+  --clay-900: #2c170d;
 
-  /* ── Neutrals. One family, faintly cool, faintly green. ─────────────
-     Cool reads precise; warm reads homely. This is a ledger. The cast is
-     shared with the brand so greys never look dirty beside it. */
+  /* ── Neutrals. One family, carrying the brand's own hue. ────────────
+     Same 201 degrees as the blue above, at a fraction of the saturation.
+     Greys built on a different hue from the brand read as dirty next to
+     it; these read as the same light. This is a ledger, so the cast stays
+     cool — warm greys read homely, and nobody wants a homely bank
+     statement. */
   --neutral-0: #ffffff;
-  --neutral-25: #fafbfa;
-  --neutral-50: #f4f6f5;
-  --neutral-100: #ebeeec;
-  --neutral-200: #dde2df;
-  --neutral-300: #c4ccc7;
-  --neutral-400: #9aa5a0;
-  --neutral-500: #74807a;
-  --neutral-600: #58635e;
-  --neutral-700: #414b46;
-  --neutral-800: #28312d;
-  --neutral-900: #0f1714;
+  --neutral-25: #fbfcfd;
+  --neutral-50: #f7fbfd;
+  --neutral-100: #ebf3f7;
+  --neutral-200: #d7e5ec;
+  --neutral-300: #bfd0d9;
+  --neutral-400: #96abb6;
+  /* 500 is darker than the ramp's natural midpoint. At the lighter value it
+     measured 4.19:1 on a sunken surface, under AA for the small print it is
+     used for. This clears 4.62 there and 5.19 on white. The one surface it
+     is still short on is the full #d6e6ef tint, where text takes that
+     tint's own colour instead. */
+  --neutral-500: #5a707c;
+  --neutral-600: #4b5f6a;
+  --neutral-700: #384952;
+  --neutral-800: #232f36;
+  --neutral-900: #0f161a;
 
-  /* ── Status hues. Four, each with one job, each distinguishable from
-     the others at 12px on a washed-out screen. ────────────────────── */
-  --amber-50: #fdf4e3;
-  --amber-100: #f7e2b8;
-  --amber-500: #8a5a0b;
-  --amber-200: #eccd8a;
+  /* ── Status hues. ───────────────────────────────────────────────────
+     Every one of these is pulled well away from the brand's 201 degrees,
+     which is a harder constraint than it was: the old palette was green,
+     so a blue status read as a status. Now blue IS the interface, and a
+     blue badge would read as furniture. Indigo went in particular — at
+     #2b4c7e it was four degrees and a little lightness from the new
+     primary, so "confirmed" would have looked like a brand element rather
+     than a state. Violet took its place.
 
-  --crimson-50: #fdecea;
-  --crimson-100: #f7c9c4;
-  --crimson-200: #efa79f;
-  --crimson-500: #a3231b;
+     Each clears AA on white as text, and each is distinguishable from the
+     others at 12px on a screen washed out by daylight. */
+  --amber-50: #fbf4e7;
+  --amber-100: #f1e2c3;
+  --amber-200: #e3cda0;
+  --amber-500: #875e0a;
 
-  --indigo-50: #ecf0f9;
-  --indigo-100: #c9d5ee;
-  --indigo-200: #a3b7e0;
-  --indigo-500: #2b4c7e;
+  --crimson-50: #fceceb;
+  --crimson-100: #f3cecb;
+  --crimson-200: #e7b0ac;
+  --crimson-500: #a4241b;
 
-  --plum-50: #f3edf6;
-  --plum-100: #ddcbe6;
-  --plum-200: #c4a8d2;
-  --plum-500: #5e3a73;
+  --violet-50: #f5effa;
+  --violet-100: #e4d7ef;
+  --violet-200: #d0bde0;
+  --violet-500: #693894;
+
+  --plum-50: #faedf6;
+  --plum-100: #eed5e7;
+  --plum-200: #dfbbd4;
+  --plum-500: #822e69;
+
+  /* ── Green. Money in, and nothing else. ────────────────────────────
+     Demoted from the brand to a single job. It is the only hue in the
+     system that means "this went well", and it is worth more now that it
+     is not also the colour of the navigation. */
+  --green-50: #ebf7f3;
+  --green-100: #d2e9e2;
+  --green-200: #b5d9cd;
+  --green-500: #0d6b4c;
 
   /* ═════════════════════════════════════════════════════════════════════
      2. SEMANTIC
      What components actually read. Nothing below this line is a raw hue.
      ═════════════════════════════════════════════════════════════════════ */
 
-  --color-primary: var(--green-500);
-  --color-primary-hover: var(--green-600);
-  --color-primary-active: var(--green-700);
-  --color-primary-light: var(--green-50);
-  --color-primary-muted: rgba(22, 111, 79, 0.07);
-  --color-primary-border: var(--green-200);
+  --color-primary: var(--blue-800);
+  --color-primary-hover: var(--blue-900);
+  --color-primary-active: var(--blue-950);
+  --color-primary-light: var(--blue-100);
+  --color-primary-muted: rgba(42, 62, 75, 0.06);
+  --color-primary-border: var(--blue-200);
   --color-primary-contrast: var(--neutral-0);
 
   --color-accent: var(--clay-500);
+  /* A warm wash, for the one or two places a page needs a second voice. */
+  --color-accent-wash: #fdf3ee;
   --color-accent-hover: var(--clay-600);
   --color-accent-light: var(--clay-50);
   --color-accent-border: var(--clay-200);
@@ -124,8 +160,8 @@
   --color-surface-elevated: var(--neutral-0);
   --color-surface-hover: var(--neutral-50);
   --color-surface-sunken: var(--neutral-100);
-  --color-surface-ink: var(--neutral-900);
-  --color-surface-ink-raised: #16211d;
+  --color-surface-ink: var(--blue-950);
+  --color-surface-ink-raised: #1c2b35;
 
   --color-border: var(--neutral-200);
   --color-border-subtle: var(--neutral-100);
@@ -138,10 +174,10 @@
   --color-text-secondary: var(--neutral-600);
   --color-text-muted: var(--neutral-500);
   --color-text-inverse: var(--neutral-0);
-  --color-text-on-ink: #e8ede9;
-  --color-text-on-ink-muted: #93a09a;
+  --color-text-on-ink: #e6eef3;
+  --color-text-on-ink-muted: #94a8b4;
 
-  --color-success: #0e6b48;
+  --color-success: var(--green-500);
   --color-success-muted: var(--green-50);
   --color-success-border: var(--green-200);
   --color-warning: var(--amber-500);
@@ -150,15 +186,42 @@
   --color-danger: var(--crimson-500);
   --color-danger-muted: var(--crimson-50);
   --color-danger-border: var(--crimson-200);
-  --color-info: var(--indigo-500);
-  --color-info-muted: var(--indigo-50);
-  --color-info-border: var(--indigo-200);
+  --color-info: var(--violet-500);
+  --color-info-muted: var(--violet-50);
+  --color-info-border: var(--violet-200);
+
+
+  /* ── Alpha channels ─────────────────────────────────────────────────
+     The same six colours again, as bare RGB channels.
+
+     They exist because a Tailwind opacity modifier — `bg-primary/20`,
+     `border-warning/40` — compiles to `rgb(var(--color-primary) / 0.2)`,
+     and `var(--color-primary)` holds `#2a3e4b`, not `42 62 75`. The result
+     is invalid CSS, which the browser drops silently: no error, no warning,
+     no colour. Every such class in the app produced NOTHING, and had done
+     since the day it was written — a tinted warning banner with no tint, a
+     highlighted row with no highlight, all of it invisible in exactly the
+     way that never gets reported.
+
+     Tailwind reads these through `<alpha-value>`; the hex tokens above stay
+     for everything written in plain CSS. Two definitions of one colour is a
+     drift risk, so they are kept adjacent and both are derived from the
+     ramps rather than typed by hand. */
+  --color-primary-rgb: 42 62 75;
+  --color-accent-rgb: 153 80 43;
+  --color-success-rgb: 13 107 76;
+  --color-warning-rgb: 135 94 10;
+  --color-danger-rgb: 164 36 27;
+  --color-info-rgb: 105 56 148;
 
   /* Order lifecycle. Distinct hues so a board column is identifiable at a
      glance; always paired with a text label, never used alone. */
   --color-status-pending: var(--amber-500);
-  --color-status-confirmed: var(--indigo-500);
+  --color-status-confirmed: var(--violet-500);
   --color-status-processing: var(--plum-500);
+  /* Between packed and delivered. The brand blue rather than another warm
+     hue, so the board reads left to right as warm, warm, cool, green. */
+  --color-status-dispatched: var(--blue-400);
   --color-status-fulfilled: var(--color-success);
   --color-status-cancelled: var(--neutral-500);
   --color-processing-muted: var(--plum-50);
@@ -222,13 +285,38 @@
   --radius-xl: 16px;
   --radius-full: 9999px;
 
-  /* Elevation is tinted with the ink colour. A neutral-black shadow over a
-     tinted ground reads as grey haze. Single light source, from above. */
-  --shadow-xs: 0 1px 1px rgba(15, 23, 20, 0.04);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 20, 0.06), 0 1px 1px rgba(15, 23, 20, 0.03);
-  --shadow-md: 0 4px 10px rgba(15, 23, 20, 0.06), 0 1px 2px rgba(15, 23, 20, 0.04);
-  --shadow-lg: 0 14px 30px rgba(15, 23, 20, 0.09), 0 3px 8px rgba(15, 23, 20, 0.04);
-  --shadow-xl: 0 28px 56px rgba(15, 23, 20, 0.13), 0 8px 16px rgba(15, 23, 20, 0.05);
+  /* Elevation is tinted with the ink colour, which is now the brand's own
+     hue rather than the old green. A neutral-black shadow over a tinted
+     ground reads as grey haze; a shadow carrying the same hue as the light
+     it sits in reads as air.
+
+     Each step is two or three layers, not one. A single blur is what makes a
+     card look stuck on rather than lifted: real shadows have a tight contact
+     edge and a wide, almost invisible ambient falloff, and the difference
+     between one layer and three is the difference between a box and an
+     object. Single light source, from above. */
+  --shadow-xs: 0 1px 1px rgba(15, 22, 26, 0.04);
+  --shadow-sm:
+    0 1px 2px rgba(15, 22, 26, 0.05),
+    0 1px 1px rgba(15, 22, 26, 0.03);
+  --shadow-md:
+    0 1px 2px rgba(15, 22, 26, 0.04),
+    0 4px 10px rgba(15, 22, 26, 0.05),
+    0 12px 24px rgba(15, 22, 26, 0.03);
+  --shadow-lg:
+    0 1px 2px rgba(15, 22, 26, 0.04),
+    0 8px 20px rgba(15, 22, 26, 0.06),
+    0 24px 48px rgba(15, 22, 26, 0.05);
+  --shadow-xl:
+    0 2px 4px rgba(15, 22, 26, 0.04),
+    0 16px 36px rgba(15, 22, 26, 0.08),
+    0 44px 88px rgba(15, 22, 26, 0.07);
+
+  /* An inner highlight along the top edge, so a raised surface catches the
+     same light its shadow implies. Applied with, never instead of, a shadow —
+     on its own it reads as a rendering artefact. */
+  --sheen: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --sheen-ink: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
   /* ═════════════════════════════════════════════════════════════════════
      5. MOTION
@@ -240,17 +328,26 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  /* Overshoots very slightly, then settles. For something arriving — a
+     revealed section, a card lifting under the cursor. Not for anything the
+     user is reading at the time, because the settle is a small movement and a
+     small movement under text is a distraction. */
+  --ease-spring: cubic-bezier(0.34, 1.32, 0.48, 1);
 
   --duration-instant: 100ms;
   --duration-fast: 140ms;
   --duration-base: 200ms;
   --duration-slow: 300ms;
+  --duration-reveal: 720ms;
 
   --transition-fast: 140ms var(--ease-out);
   --transition-base: 200ms var(--ease-out);
   --transition-slow: 300ms var(--ease-out);
 
-  --focus-ring: 0 0 0 3px rgba(22, 111, 79, 0.26);
+  /* The brand blue at the opacity that reads as a ring rather than a glow.
+     Was still the old green — a leftover the palette change missed, and the
+     kind of thing that is invisible until someone tabs through a form. */
+  --focus-ring: 0 0 0 3px rgba(42, 62, 75, 0.22);
 
   /* A named scale, so nobody writes z-index: 9999 again. */
   --z-sticky: 20;
@@ -350,7 +447,7 @@ summary,
 [role='button'],
 [role='tab'] {
   touch-action: manipulation;
-  -webkit-tap-highlight-color: rgba(22, 111, 79, 0.1);
+  -webkit-tap-highlight-color: rgba(42, 62, 75, 0.1);
 }
 
 /* ── Scrollbars ── */
@@ -429,8 +526,50 @@ summary,
      means something. */
   .fd-panel {
     background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
+    /* A hairline this faint is a seam, not a frame. The separation comes from
+       the shadow and from the panel being lighter than the page; the border
+       only stops two adjacent panels bleeding into one shape. */
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* A raised panel. The workhorse stays flat; this is for the few surfaces
+     that should read as sitting ON the page rather than in it — the hero
+     demo, the sign-in card, a dialog. Sheen and shadow together, because
+     either one alone looks like a mistake. */
+  .fd-panel-raised {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg), var(--sheen);
+  }
+
+  /* The double bezel: a plate seated in a tray.
+     An outer shell in a faint tint with a hairline, a small gap, and the real
+     surface inside it at a tighter radius so the two curves are concentric.
+     Used sparingly — it is expensive attention, and on every card it stops
+     meaning anything. */
+  .fd-bezel {
+    padding: 6px;
+    background-color: var(--color-primary-muted);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: calc(var(--radius-xl) + 6px);
+  }
+
+  .fd-bezel > * {
+    border-radius: var(--radius-xl);
+  }
+
+  /* Ambient light behind the hero. Three wide radial washes in the brand's
+     own hues, at opacities low enough to read as paper rather than as
+     gradient. No image, no blur filter, nothing that costs a repaint — this
+     is a background-image on a static element and it is free. */
+  .fd-aurora {
+    background-image:
+      radial-gradient(60% 50% at 15% 0%, rgba(214, 230, 239, 0.9) 0%, transparent 65%),
+      radial-gradient(45% 45% at 88% 8%, rgba(127, 166, 184, 0.28) 0%, transparent 70%),
+      radial-gradient(70% 40% at 50% 100%, rgba(247, 251, 253, 0) 0%, transparent 60%);
   }
 
   .fd-panel-head {
@@ -438,8 +577,10 @@ summary,
     align-items: baseline;
     justify-content: space-between;
     gap: 0.75rem;
-    padding: 0.875rem 1rem;
-    border-bottom: 1px solid var(--color-border-subtle);
+    /* No rule underneath. The head is set apart by weight and by the space
+       below it, which is what a printed page does and what a line was
+       standing in for. */
+    padding: 1rem 1.125rem 0.5rem;
   }
 
   .fd-panel-title {
@@ -612,5 +753,48 @@ summary,
     50% {
       opacity: 0.55;
     }
+  }
+}
+
+
+/*
+ * Scroll-reveal, as progressive enhancement.
+ *
+ * The visible state is the default, so a page whose JavaScript never arrives
+ * still reads. Only a document that has announced itself as script-capable
+ * (`.fd-js`, set inline in index.html) starts an unrevealed element hidden.
+ */
+/* The reveal.
+ *
+ * `ease-out` was the browser's own curve, which is too weak to read as
+ * deliberate — things arrived, but nothing about the arrival felt designed.
+ * The spring overshoots by a hair and settles, which is what gives a section
+ * the sense of having weight.
+ *
+ * The movement stays small: 14px, not 60. A long travel reads as an animation
+ * playing at you; a short one reads as the page settling into place, which is
+ * the only thing this is allowed to say. Transform and opacity only — nothing
+ * here can trigger layout, so it stays smooth on a mid-range Android while the
+ * rest of the page is still parsing.
+ */
+.fd-reveal {
+  transition:
+    opacity var(--duration-reveal) var(--ease-out),
+    transform var(--duration-reveal) var(--ease-spring);
+}
+
+.fd-js .fd-reveal[data-shown='false'] {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fd-reveal {
+    transition: none;
+  }
+
+  .fd-js .fd-reveal[data-shown='false'] {
+    opacity: 1;
+    transform: none;
   }
 }

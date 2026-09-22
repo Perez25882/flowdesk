@@ -19,11 +19,18 @@ function createPrismaClient(): PrismaClient {
 
   client.$on('query', (event: Prisma.QueryEvent) => {
     if (event.duration >= SLOW_QUERY_THRESHOLD_MS) {
+      // `event.params` is deliberately NOT logged. It is the bound parameter
+      // list, verbatim: customer WhatsApp message bodies, customer phone
+      // numbers, owner email addresses and bcrypt hashes. This line runs at
+      // `warn`, which is emitted under the default production LOG_LEVEL=info,
+      // so those values were being written to the production log for every
+      // query that happened to be slow. The statement text and target are
+      // enough to identify which query is slow; the values it ran with are not
+      // needed to fix it.
       logger.warn(
         {
           duration: event.duration,
           query: event.query,
-          params: event.params,
           target: event.target,
         },
         'Slow Prisma query detected',

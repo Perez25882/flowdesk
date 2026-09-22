@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Plus, Users } from 'lucide-react';
-import { useStaff, useInviteStaff } from '@/hooks/useStaff';
+import { useStaff, useInviteStaff, useUpdateStaff } from '@/hooks/useStaff';
+import type { StaffMember } from '@/hooks/useStaff';
 import EmptyState from '@/components/shared/EmptyState';
 import PageHeader from '@/components/shared/PageHeader';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
@@ -16,7 +17,7 @@ type Role = 'MANAGER' | 'OPERATIONS' | 'DELIVERY';
  *
  * The role select used to offer three bare words. Choosing wrongly here is how
  * a delivery rider ends up able to see revenue, so each option now states what
- * it grants, and the choice is a radio list rather than a dropdown — the
+ * it grants, and the choice is a radio list rather than a dropdown, the
  * consequences deserve to be visible before you commit to them.
  */
 const ROLES: { value: Role; label: string; scope: string }[] = [
@@ -44,6 +45,32 @@ export default function StaffPage(): React.JSX.Element {
   const [form, setForm] = useState(EMPTY_FORM);
   const { data: staff, isLoading } = useStaff();
   const invite = useInviteStaff();
+  const updateStaff = useUpdateStaff();
+  const [pendingId, setPendingId] = useState<string | null>(null);
+
+  /**
+   * Turns a staff member's access on or off.
+   *
+   * Confirmed on the way out only. Re-enabling someone is not a destructive
+   * act and does not need a second thought; cutting off the person who is
+   * meant to be packing today's orders does.
+   */
+  function toggleActive(member: StaffMember): void {
+    if (
+      member.active &&
+      !window.confirm(
+        `Disable ${member.name}?\n\nThey will be signed out immediately and will not be able to sign in again. Everything they have already done stays in the activity log. You can re-enable them at any time.`,
+      )
+    ) {
+      return;
+    }
+
+    setPendingId(member.id);
+    updateStaff.mutate(
+      { id: member.id, data: { active: !member.active } },
+      { onSettled: () => setPendingId(null) },
+    );
+  }
 
   const canInvite = form.name.trim().length > 0 && form.phone.replace(/\D/g, '').length >= 9;
 
@@ -206,10 +233,32 @@ export default function StaffPage(): React.JSX.Element {
                       Invited
                     </Badge>
                   )}
+
+                  {/* Deactivation is the reason this page exists on a phone: a
+                      staff member walks out with a phone still signed in, and
+                      the owner needs to cut access from wherever they are
+                      standing. It takes effect immediately. The API deletes
+                      their sessions and bumps a revocation epoch, so even a
+                      token issued a minute ago stops working. */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className={member.active ? 'text-danger' : undefined}
+                    isLoading={updateStaff.isPending && pendingId === member.id}
+                    onClick={() => toggleActive(member)}
+                  >
+                    {member.active ? 'Disable' : 'Re-enable'}
+                  </Button>
                 </span>
               </Row>
             ))}
           </RowList>
+        )}
+
+        {updateStaff.isError && (
+          <p role="alert" className="px-4 pb-4 text-sm font-medium text-danger">
+            {(updateStaff.error as Error).message}
+          </p>
         )}
       </Panel>
     </div>

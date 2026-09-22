@@ -1,9 +1,18 @@
 import { z } from 'zod';
 
+/**
+ * Must match the `OrderStatus` enum in `prisma/schema.prisma` exactly.
+ *
+ * DISPATCHED was added to the database and to the dashboard but not here, so
+ * `GET /orders?status=DISPATCHED` failed validation and the board's "On the
+ * way" column showed a connection error — on a request that had reached the
+ * server perfectly well.
+ */
 export const OrderStatusSchema = z.enum([
   'PENDING',
   'CONFIRMED',
   'PROCESSING',
+  'DISPATCHED',
   'FULFILLED',
   'CANCELLED',
 ]);

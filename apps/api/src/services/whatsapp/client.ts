@@ -27,6 +27,13 @@ const GRAPH_BASE = 'https://graph.facebook.com';
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**
+ * Uploading several megabytes over a Ghanaian connection is not a 15-second
+ * job, and it happens once per photo rather than once per message, so it gets
+ * its own more patient budget.
+ */
+const MEDIA_UPLOAD_TIMEOUT_MS = 60_000;
+
+/**
  * Meta throttles per phone number. This cap is deliberately below the published
  * limit so bursts queue rather than earning a 429 that would count against the
  * number's quality rating.
@@ -317,4 +324,128 @@ export async function sendTemplate(
     type: 'template',
     template,
   });
+}
+
+/**
+ * Sends an image the tenant has already uploaded to Meta.
+ *
+ * Takes a media id rather than a URL on purpose. The `link` form exists, but it
+ * requires the image to be publicly fetchable by Meta's crawler, and the media
+ * bucket is private — publishing the catalogue to make WhatsApp work would mean
+ * every shop's photos were readable by anyone who could guess an object key.
+ * Uploading the bytes once and reusing the id keeps the bucket shut.
+ *
+ * An image message counts as one message, caption included, so the caption is
+ * how a photo answers a question rather than arriving as a bare picture.
+ */
+export async function sendImage(
+  credentials: TenantCredentials,
+  to: string,
+  mediaId: string,
+  caption?: string,
+): Promise<SendResult> {
+  const recipient = normalizeGhanaPhone(to);
+
+  logger.info(
+    { businessId: credentials.businessId, to: maskPhone(recipient), mediaId },
+    'Sending WhatsApp image',
+  );
+
+  return callGraph(credentials, {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: recipient,
+    type: 'image',
+    image: {
+      id: mediaId,
+      // Meta caps an image caption at 1024 characters and rejects the whole
+      // message if it is longer, so it is trimmed here rather than losing the
+      // photo over a few words.
+      ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+    },
+  });
+}
+
+/** Meta refused the upload. Distinguished from a network failure by the caller. */
+export class MetaMediaUploadError extends Error {
+  constructor(
+    readonly businessId: string,
+    readonly httpStatus: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MetaMediaUploadError';
+  }
+}
+
+/**
+ * Uploads image bytes to a tenant's own WhatsApp number and returns Meta's
+ * media id.
+ *
+ * The id is scoped to the phone number that uploaded it and expires after about
+ * thirty days, so callers cache it against both — see `ProductImage.waMediaId`
+ * and `waMediaPhoneNumberId`. A business that reconnects on a different number
+ * must upload again; an id from the old number is not merely stale but wrong.
+ *
+ * This does not go through `callGraph`: that one posts JSON to `/messages` and
+ * reads a message id back, whereas this is multipart to `/media` and returns an
+ * object id. Sharing them would mean a parameter that changes everything.
+ */
+export async function uploadMediaToMeta(
+  credentials: TenantCredentials,
+  buffer: Buffer,
+  mimeType: string,
+): Promise<string> {
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', mimeType);
+  form.append(
+    'file',
+    new Blob([new Uint8Array(buffer)], { type: mimeType }),
+    `upload.${mimeType.split('/')[1] ?? 'jpg'}`,
+  );
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(
+      `${GRAPH_BASE}/${env.META_API_VERSION}/${credentials.phoneNumberId}/media`,
+      {
+        method: 'POST',
+        // No Content-Type header: fetch derives it from the FormData, and
+        // setting it by hand omits the multipart boundary and breaks the body.
+        headers: { Authorization: `Bearer ${credentials.accessToken}` },
+        body: form,
+        signal: controller.signal,
+      },
+    );
+
+    const raw = await response.text();
+
+    if (!response.ok) {
+      logger.error(
+        { businessId: credentials.businessId, status: response.status },
+        'Meta rejected a media upload',
+      );
+      throw new MetaMediaUploadError(credentials.businessId, response.status, raw.slice(0, 500));
+    }
+
+    const data = JSON.parse(raw) as { id?: string };
+    if (!data.id) {
+      throw new MetaMediaUploadError(
+        credentials.businessId,
+        response.status,
+        'Meta accepted the upload but returned no media id',
+      );
+    }
+
+    logger.info(
+      { businessId: credentials.businessId, mediaId: data.id, size: buffer.length },
+      'Uploaded image to Meta',
+    );
+    return data.id;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

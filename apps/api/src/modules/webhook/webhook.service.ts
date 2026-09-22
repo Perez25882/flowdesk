@@ -200,6 +200,15 @@ export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncoming
           body: extractBody(message),
           media: extractMedia(message),
           reaction: extractReaction(message),
+          // What they were replying to, when they were replying to anything.
+          //
+          // Meta sets `context.id` on a quoted reply and on a reply to a Status
+          // the owner posted from the Business app. That second case is a whole
+          // sales channel for Ghanaian shops — post the goods to Status, field
+          // the replies — and it arrives here as a bare "how much?" unless this
+          // id is carried through. It was in the payload all along and was being
+          // dropped one line before it could be used.
+          replyToWaId: message.context?.id ?? null,
           rawPayload: message,
         };
       });

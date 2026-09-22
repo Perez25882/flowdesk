@@ -1,6 +1,8 @@
+import { IntentType } from '@flowdesk/shared';
 import { useMemo, useState } from 'react';
 import { CheckCircle2, MessageSquare } from 'lucide-react';
 import { useMessages, useCorrectMessageIntent } from '@/hooks/useMessages';
+import ReplyEditor from '@/components/messages/ReplyEditor';
 import EmptyState from '@/components/shared/EmptyState';
 import PageHeader from '@/components/shared/PageHeader';
 import SearchInput from '@/components/ui/SearchInput';
@@ -9,19 +11,29 @@ import { Tabs, type TabOption } from '@/components/ui/Tabs';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import { Badge, type BadgeTone } from '@/components/ui/Badge';
 import { useTabParam } from '@/hooks/useTabParam';
-import { timeAgo, cn } from '@/lib/utils';
+import { timeAgo, cn, customerLabel } from '@/lib/utils';
 
 type MessageTab = 'all' | 'review';
 const MESSAGE_TABS = ['all', 'review'] as const;
 
-const INTENT_OPTIONS: { value: string; label: string }[] = [
+/**
+ * Exactly the intents the classifier can hold, no more, no fewer.
+ *
+ * This list used to offer "A cancellation" and "Thanks", neither of which is a
+ * member of `IntentType`. Picking either sent a value Prisma refused, and the
+ * resulting validation error is not a `PrismaClientKnownRequestError`, so it
+ * fell through to the generic handler and the owner was shown "Internal server
+ * error" for doing exactly what the page invited them to do. `STATUS_CHECK` is
+ * a real intent and was missing, so a message the assistant misread as an order
+ * could not be corrected to it at all.
+ */
+const INTENT_OPTIONS: { value: `${IntentType}`; label: string }[] = [
   { value: 'ORDER', label: 'An order' },
   { value: 'INQUIRY', label: 'A question' },
   { value: 'PAYMENT', label: 'A payment' },
+  { value: 'STATUS_CHECK', label: 'Asking about an order' },
   { value: 'COMPLAINT', label: 'A complaint' },
-  { value: 'CANCEL', label: 'A cancellation' },
   { value: 'GREETING', label: 'A greeting' },
-  { value: 'THANKS', label: 'Thanks' },
   { value: 'OTHER', label: 'Something else' },
   { value: 'UNCLASSIFIED', label: 'Cannot tell' },
 ];
@@ -58,8 +70,8 @@ const INTENT_LABEL: Record<string, string> = {
  * previous version presented that as a bare dropdown labelled "Correct intent"
  * listing nine engineering enum names.
  *
- * Now the question is asked in words a shop owner uses — "What was this
- * message actually about?" — and the options are phrases, not enum labels. The
+ * Now the question is asked in words a shop owner uses, "What was this
+ * message actually about?", and the options are phrases, not enum labels. The
  * confidence score is spelled out too, since "62% conf" means nothing to
  * someone who has never seen a classifier.
  */
@@ -139,8 +151,7 @@ export default function MessagesPage(): React.JSX.Element {
                 const justSaved =
                   correctIntent.isSuccess && correctIntent.variables?.id === msg.id;
                 const failed = correctIntent.isError && correctIntent.variables?.id === msg.id;
-                const customerLabel =
-                  msg.customer?.name ?? msg.customer?.waNumber ?? 'Unknown number';
+                const displayName = customerLabel(msg.customer);
 
                 return (
                   <li
@@ -160,7 +171,7 @@ export default function MessagesPage(): React.JSX.Element {
                       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                         <span className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-semibold text-text-primary">
-                            {customerLabel}
+                            {displayName}
                           </span>
                           <Badge tone={INTENT_TONE[msg.intent] ?? 'neutral'}>
                             {INTENT_LABEL[msg.intent] ?? msg.intent}
@@ -227,6 +238,10 @@ export default function MessagesPage(): React.JSX.Element {
                           )}
                         </div>
                       )}
+
+                      {/* Inbound only, there is nothing to reply to on a
+                          message the business itself sent. */}
+                      {msg.direction === 'INBOUND' && <ReplyEditor message={msg} />}
                     </div>
                   </li>
                 );

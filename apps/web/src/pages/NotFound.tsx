@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
 import { isAuthenticated } from '@/hooks/useAuth';
-import Wordmark from '@/components/marketing/Wordmark';
+import Logo from '@/components/shared/Logo';
 
 /**
  * A real 404.
@@ -24,7 +24,7 @@ export default function NotFoundPage(): React.JSX.Element {
           to="/"
           className="inline-block rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
-          <Wordmark />
+          <Logo />
           <span className="sr-only">Flowdesk home</span>
         </Link>
       </header>

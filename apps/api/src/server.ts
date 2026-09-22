@@ -9,6 +9,8 @@ import { messageProcessorWorker } from './workers/message-processor.worker.js';
 import { intentClassifierWorker } from './workers/intent-classifier.worker.js';
 import { outboundWorker } from './workers/outbound.worker.js';
 import { deadLetterWorker } from './workers/dead-letter.worker.js';
+import { insightsWorker } from './workers/insights.worker.js';
+import { scheduleDailyInsights } from './queues/insights.queue.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -19,6 +21,7 @@ async function drainQueues(): Promise<void> {
   await intentClassifierWorker.close();
   await outboundWorker.close();
   await deadLetterWorker.close();
+  await insightsWorker.close();
   logger.info('Queue drain completed');
 }
 
@@ -34,6 +37,13 @@ async function startServer(): Promise<void> {
 
   await syncAccessTokenFromEnv().catch((error: unknown) => {
     logger.error({ error }, 'Failed to sync WhatsApp access token from environment');
+  });
+
+  // Keyed by name and pattern in Redis, so every instance calling this
+  // converges on one schedule rather than one each. A failure here must not
+  // stop the server: the summaries are a courtesy, the message pipeline is not.
+  await scheduleDailyInsights().catch((error: unknown) => {
+    logger.error({ error }, 'Failed to install the daily summary schedule');
   });
 
   let isShuttingDown = false;

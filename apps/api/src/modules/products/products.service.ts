@@ -1,5 +1,6 @@
 import { NotFoundError, PlanLimitError } from '../../utils/errors.js';
 import { emitStockAlert } from '../../services/sse/sse.events.js';
+import { notifyOwnerLowStock } from '../../services/notifications/owner-notifications.js';
 import { checkProductLimit } from '../../services/plan/plan.service.js';
 import type { CreateProductInput, UpdateProductInput, StockAdjustmentInput, ListProductsQueryInput } from './products.schema.js';
 import * as repository from './products.repository.js';
@@ -67,6 +68,8 @@ export async function adjustStock(
       currentStock: stockQty,
       threshold,
     });
+
+    await notifyOwnerLowStock(product.id);
   }
 
   return product;

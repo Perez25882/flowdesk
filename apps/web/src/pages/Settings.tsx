@@ -1,13 +1,27 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, RotateCw } from 'lucide-react';
-import { useBusiness, useUpdateBusiness } from '@/hooks/useBusiness';
+import type { AiAssistMode, BusinessProfile, BusinessType, CatalogueMode } from '@flowdesk/shared';
+import {
+  useBusiness,
+  useReplyTemplates,
+  useUpdateBusiness,
+  type Business,
+  type ReplyTemplateEntry,
+  type UpdateBusinessInput,
+} from '@/hooks/useBusiness';
+import BusinessProfileForm from '@/components/settings/BusinessProfileForm';
+import BrandingSettings from '@/components/settings/BrandingSettings';
+import BargainingSettings from '@/components/settings/BargainingSettings';
+import BookingSettings from '@/components/settings/BookingSettings';
+import PayoutSettings from '@/components/settings/PayoutSettings';
 import { useBadges } from '@/hooks/useBadges';
 import { useCheckout, type BillablePlan } from '@/hooks/useBilling';
 import { BILLABLE_PLAN_CODES, PLANS, getPlan, limit, planHighlights } from '@/config/plans';
 import WhatsAppConnection from '@/components/settings/WhatsAppConnection';
 import PageHeader from '@/components/shared/PageHeader';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
+import { isOwner } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Tabs, type TabOption } from '@/components/ui/Tabs';
@@ -23,159 +37,70 @@ interface DraftState {
   notifyOnPayment: boolean;
 }
 
+/** What the assistant knows about the business, edited as one unit. */
+interface AssistantDraft {
+  businessType: BusinessType | null;
+  businessTypeOther: string | null;
+  businessProfile: BusinessProfile;
+  businessPolicyNotes: string | null;
+  aiAssistMode: AiAssistMode;
+  catalogueMode: CatalogueMode;
+}
+
+function assistantDraftFrom(business: Business): AssistantDraft {
+  return {
+    businessType: business.businessType,
+    businessTypeOther: business.businessTypeOther,
+    businessProfile: business.businessProfile ?? {},
+    businessPolicyNotes: business.businessPolicyNotes,
+    aiAssistMode: business.aiAssistMode,
+    catalogueMode: business.catalogueMode,
+  };
+}
+
 /**
- * Reply template contract.
+ * Reply template drafts, keyed by the engine's template keys.
  *
- * These keys, placeholders and defaults MUST match the reply engine in
- * `apps/api/src/services/templates/template-engine.ts`, which is the single
- * source of truth. The API validates incoming keys against that same list, so
- * any drift here is not cosmetic — it makes every save fail with a 400 and the
- * owner cannot customise their auto-replies at all.
+ * The keys, labels, placeholders and default wording all come from
+ * `GET /settings/templates`, the reply engine's own catalogue. This page used
+ * to hold a hand-copied duplicate of all of it, which had to stay byte-identical
+ * to the server's with nothing to catch it when it didn't. The API validates
+ * keys against that same list, so drift was not cosmetic: it made every save
+ * fail with a 400 and the owner could not customise their replies at all.
  */
-type TemplateKey =
-  | 'order_pending'
-  | 'order_confirmed'
-  | 'order_processing'
-  | 'order_fulfilled'
-  | 'order_cancelled'
-  | 'payment_received'
-  | 'status_check_response'
-  | 'greeting'
-  | 'inquiry'
-  | 'payment'
-  | 'complaint'
-  | 'fallback';
-
-type ReplyTemplatesDraft = Record<TemplateKey, string>;
-
-const TEMPLATE_META: Array<{
-  key: TemplateKey;
-  label: string;
-  description: string;
-  placeholders: string[];
-}> = [
-  {
-    key: 'order_pending',
-    label: 'Order received',
-    description: 'Goes out the moment Flowdesk reads an order out of a message.',
-    placeholders: ['{name}', '{ref}', '{business}'],
-  },
-  {
-    key: 'order_confirmed',
-    label: 'Order confirmed',
-    description: 'Goes out after you confirm the order.',
-    placeholders: ['{ref}', '{business}'],
-  },
-  {
-    key: 'order_processing',
-    label: 'Being packed',
-    description: 'Goes out when the order moves into packing.',
-    placeholders: ['{ref}', '{business}'],
-  },
-  {
-    key: 'order_fulfilled',
-    label: 'Delivered',
-    description: 'Goes out when you mark the order delivered.',
-    placeholders: ['{ref}', '{business}'],
-  },
-  {
-    key: 'order_cancelled',
-    label: 'Order cancelled',
-    description: 'Goes out when anyone on your team cancels an order.',
-    placeholders: ['{ref}', '{reason}', '{business}'],
-  },
-  {
-    key: 'payment_received',
-    label: 'Payment received',
-    description: 'Goes out when you record a payment against an order.',
-    placeholders: ['{amount}', '{ref}', '{business}'],
-  },
-  {
-    key: 'status_check_response',
-    label: 'Where is my order',
-    description: 'Goes out when a customer asks about an order they have already placed.',
-    placeholders: ['{ref}', '{status}', '{details}', '{business}'],
-  },
-  {
-    key: 'greeting',
-    label: 'Greeting',
-    description: 'Goes out when someone messages for the first time, or just says hello.',
-    placeholders: ['{name}', '{business}'],
-  },
-  {
-    key: 'inquiry',
-    label: 'General question',
-    description: 'Goes out when a customer asks something that is not an order.',
-    placeholders: ['{name}', '{business}'],
-  },
-  {
-    key: 'payment',
-    label: 'Payment mentioned',
-    description: 'Goes out when someone mentions paying but gives no order reference.',
-    placeholders: ['{name}', '{business}'],
-  },
-  {
-    key: 'complaint',
-    label: 'Complaint',
-    description: 'Goes out when a customer raises a problem.',
-    placeholders: ['{name}', '{business}'],
-  },
-  {
-    key: 'fallback',
-    label: 'Anything else',
-    description: 'Goes out when Flowdesk cannot tell what a message was about.',
-    placeholders: ['{name}', '{business}'],
-  },
-];
-
-const DEFAULT_TEMPLATES: ReplyTemplatesDraft = {
-  order_pending:
-    "Hi {name}! We received your order (Ref: {ref}). We'll confirm shortly. — {business}",
-  order_confirmed:
-    "Your order {ref} is confirmed and being prepared. We'll let you know when it's ready. — {business}",
-  order_processing:
-    'Your order {ref} is being packed and prepared for delivery/pickup. — {business}',
-  order_fulfilled: 'Your order {ref} has been completed. Thank you for your business! — {business}',
-  order_cancelled:
-    'Your order {ref} has been cancelled. {reason} Please contact us if you have questions. — {business}',
-  payment_received: 'Payment of GHS {amount} received for order {ref}. Thank you! — {business}',
-  status_check_response: 'Your order {ref} is currently: {status}. {details} — {business}',
-  greeting: 'Hello {name}! Welcome to {business}. How can we help you today?',
-  inquiry:
-    'Hi {name}! Thanks for your question. Please share more details and we’ll get back to you right away. — {business}',
-  payment:
-    'Hi {name}! We received your payment message. Please share the order reference or amount and we’ll confirm. — {business}',
-  complaint:
-    'Hi {name}! We’re sorry for the inconvenience. Please share more details and we’ll look into it immediately. — {business}',
-  fallback:
-    'Hi {name}! We received your message. Our team will review it and get back to you shortly. — {business}',
-};
+type ReplyTemplatesDraft = Record<string, string>;
 
 
-type SettingsTab = 'business' | 'replies' | 'plan';
+type SettingsTab = 'business' | 'assistant' | 'replies' | 'payouts' | 'plan';
 
 const TAB_OPTIONS: readonly TabOption<SettingsTab>[] = [
   { value: 'business', label: 'Business' },
+  { value: 'assistant', label: 'Assistant' },
   { value: 'replies', label: 'Automatic replies' },
+  { value: 'payouts', label: 'Payouts' },
   { value: 'plan', label: 'Plan and billing' },
 ];
 
 const SETTINGS_TAB_VALUES = TAB_OPTIONS.map((t) => t.value);
 
 /**
- * The API stores customisations under `overrides`, keyed by template, with
- * anything absent falling back to the engine default. Reading the object as a
- * flat map silently showed defaults even after a save.
+ * The wording currently in force for each template: the owner's override where
+ * they set one, otherwise the engine's default. Both come from the server, so
+ * this page has no opinion about what any reply says.
  */
-function templatesFromReply(
-  reply: { overrides?: Record<string, string> | null } | null | undefined,
-): ReplyTemplatesDraft {
-  const out = { ...DEFAULT_TEMPLATES };
-  const overrides = reply?.overrides;
-  if (!overrides) return out;
-  for (const meta of TEMPLATE_META) {
-    const value = overrides[meta.key];
-    if (value) out[meta.key] = value;
+function templatesFromCatalogue(entries: ReplyTemplateEntry[] | undefined): ReplyTemplatesDraft {
+  const out: ReplyTemplatesDraft = {};
+  for (const entry of entries ?? []) {
+    out[entry.key] = entry.text ?? entry.defaultText;
+  }
+  return out;
+}
+
+/** Every template back to the shipped wording, discarding all customisation. */
+function resetAllToDefaults(entries: ReplyTemplateEntry[] | undefined): ReplyTemplatesDraft {
+  const out: ReplyTemplatesDraft = {};
+  for (const entry of entries ?? []) {
+    out[entry.key] = entry.defaultText;
   }
   return out;
 }
@@ -185,7 +110,7 @@ function templatesFromReply(
  *
  * This was one 600-line scroll ending in a Save button. Two consequences: the
  * button was invisible from anywhere you might actually make a change, and the
- * twelve reply templates — the longest and least frequently touched section —
+ * twelve reply templates, the longest and least frequently touched section , 
  * sat between the owner and everything else.
  *
  * It is now three sections, with a save bar that appears only when something is
@@ -195,6 +120,7 @@ function templatesFromReply(
  */
 export default function SettingsPage(): React.JSX.Element {
   const { data: business, isLoading, refetch: refetchBusiness } = useBusiness();
+  const { data: templateCatalogue } = useReplyTemplates();
   const updateBusiness = useUpdateBusiness();
   const { data: badges } = useBadges();
   const checkout = useCheckout();
@@ -202,11 +128,12 @@ export default function SettingsPage(): React.JSX.Element {
 
   const [tab, setTab] = useTabParam<SettingsTab>('section', SETTINGS_TAB_VALUES, 'business');
   const [draft, setDraft] = useState<DraftState | null>(null);
-  const [draftTemplates, setDraftTemplates] = useState<ReplyTemplatesDraft>(DEFAULT_TEMPLATES);
+  const [draftTemplates, setDraftTemplates] = useState<ReplyTemplatesDraft>({});
+  const [draftAssistant, setDraftAssistant] = useState<AssistantDraft | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
 
   // Detect a Paystack return. ?billing=return means the user bounced back from
-  // the hosted checkout — refetch so they immediately see the upgraded plan.
+  // the hosted checkout, refetch so they immediately see the upgraded plan.
   // ?billing=cancelled means they bailed before paying.
   const billingReturn = searchParams.get('billing') === 'return';
   const billingCancelled = searchParams.get('billing') === 'cancelled';
@@ -235,9 +162,16 @@ export default function SettingsPage(): React.JSX.Element {
         notifyOnLowStock: business.notifyOnLowStock,
         notifyOnPayment: business.notifyOnPayment,
       });
-      setDraftTemplates(templatesFromReply(business.replyTemplates));
+      setDraftAssistant(assistantDraftFrom(business));
     }
   }, [business, draft]);
+
+  // Template drafts hydrate from the catalogue, which arrives on its own request.
+  useEffect(() => {
+    if (templateCatalogue) {
+      setDraftTemplates(templatesFromCatalogue(templateCatalogue));
+    }
+  }, [templateCatalogue]);
 
   function handleUpgrade(plan: BillablePlan): void {
     checkout.mutate(plan, {
@@ -256,26 +190,36 @@ export default function SettingsPage(): React.JSX.Element {
       draft.notifyOnLowStock !== business.notifyOnLowStock ||
       draft.notifyOnPayment !== business.notifyOnPayment);
 
-  const knownServerTemplates = templatesFromReply(business?.replyTemplates);
-  const dirtyTemplateCount = TEMPLATE_META.filter(
-    (m) => draftTemplates[m.key] !== knownServerTemplates[m.key],
+  const savedTemplates = templatesFromCatalogue(templateCatalogue);
+  const dirtyTemplateCount = (templateCatalogue ?? []).filter(
+    (entry) => draftTemplates[entry.key] !== savedTemplates[entry.key],
   ).length;
   const templatesDirty = dirtyTemplateCount > 0;
-  const anyDirty = profileDirty || templatesDirty;
+
+  // The profile is a nested object, so a structural compare is the honest test.
+  // At this size a stringify is cheaper to read than a hand-written deep equal.
+  const assistantDirty =
+    !!draftAssistant &&
+    !!business &&
+    JSON.stringify(draftAssistant) !== JSON.stringify(assistantDraftFrom(business));
+
+  const anyDirty = profileDirty || templatesDirty || assistantDirty;
 
   useUnsavedChangesWarning(anyDirty);
 
   function handleSave(): void {
     if (!anyDirty) return;
 
-    const payload: {
-      name?: string;
-      ownerName?: string;
-      notifyOnNewOrder?: boolean;
-      notifyOnLowStock?: boolean;
-      notifyOnPayment?: boolean;
-      replyTemplates?: { overrides: Record<string, string> };
-    } = {};
+    const payload: UpdateBusinessInput = {};
+
+    if (assistantDirty && draftAssistant) {
+      payload.businessType = draftAssistant.businessType;
+      payload.businessTypeOther = draftAssistant.businessTypeOther;
+      payload.businessProfile = draftAssistant.businessProfile;
+      payload.businessPolicyNotes = draftAssistant.businessPolicyNotes;
+      payload.aiAssistMode = draftAssistant.aiAssistMode;
+      payload.catalogueMode = draftAssistant.catalogueMode;
+    }
 
     if (draft) {
       if (profileDirty) {
@@ -290,9 +234,10 @@ export default function SettingsPage(): React.JSX.Element {
         // every default would freeze this owner's wording, so later
         // improvements to the shipped defaults would never reach them.
         const overrides: Record<string, string> = {};
-        for (const meta of TEMPLATE_META) {
-          if (draftTemplates[meta.key] !== DEFAULT_TEMPLATES[meta.key]) {
-            overrides[meta.key] = draftTemplates[meta.key];
+        for (const entry of templateCatalogue ?? []) {
+          const value = draftTemplates[entry.key];
+          if (value !== undefined && value !== entry.defaultText) {
+            overrides[entry.key] = value;
           }
         }
         payload.replyTemplates = { overrides };
@@ -304,7 +249,8 @@ export default function SettingsPage(): React.JSX.Element {
 
   function handleDiscard(): void {
     setDraft(null);
-    setDraftTemplates(templatesFromReply(business?.replyTemplates));
+    setDraftTemplates(templatesFromCatalogue(templateCatalogue));
+    if (business) setDraftAssistant(assistantDraftFrom(business));
   }
 
   if (isLoading || !business) {
@@ -460,6 +406,55 @@ export default function SettingsPage(): React.JSX.Element {
           )}
 
           {/* ── Replies ── */}
+          {tab === 'assistant' && draftAssistant && (
+            <div className="flex flex-col gap-5">
+              <BusinessProfileForm
+                businessType={draftAssistant.businessType}
+                businessTypeOther={draftAssistant.businessTypeOther}
+                profile={draftAssistant.businessProfile}
+                policyNotes={draftAssistant.businessPolicyNotes}
+                assistMode={draftAssistant.aiAssistMode}
+                autonomyAccepted={Boolean(business?.autonomyAcceptedAt)}
+                catalogueMode={draftAssistant.catalogueMode}
+                onChange={(patch) =>
+                  setDraftAssistant((prev) => (prev ? { ...prev, ...patch } : prev))
+                }
+              />
+
+              {/*
+                Sits with the assistant rather than with pricing, because what
+                it changes is what the assistant is allowed to decide. An owner
+                reading this page is asking "what does it do without me", and
+                agreeing a discount is the largest answer on the page.
+              */}
+              <BargainingSettings />
+              <BookingSettings />
+            </div>
+          )}
+
+          {tab === 'payouts' && (
+            <div className="flex flex-col gap-5">
+              {/*
+                Where the shop's money lands is the account holder's alone — the
+                API refuses both the read and the write for anyone else, so
+                rendering the form to staff would only produce a 403 they cannot
+                act on. Branding is not owner-only and stays where it is, which
+                is why this gates the panel rather than the whole tab.
+              */}
+              {isOwner() ? (
+                <PayoutSettings />
+              ) : (
+                <Panel>
+                  <PanelHead title="Payouts" />
+                  <p className="px-4 pb-4 text-sm text-muted">
+                    Only the account owner can see or change where money is paid out.
+                  </p>
+                </Panel>
+              )}
+              <BrandingSettings />
+            </div>
+          )}
+
           {tab === 'replies' && (
             <Panel>
               <PanelHead
@@ -468,12 +463,12 @@ export default function SettingsPage(): React.JSX.Element {
                 action={
                   confirmingReset ? (
                     <span className="flex items-center gap-1.5">
-                      <span className="text-xs text-text-secondary">Reset all twelve?</span>
+                      <span className="text-xs text-text-secondary">Reset all replies?</span>
                       <Button
                         size="sm"
                         variant="danger"
                         onClick={() => {
-                          setDraftTemplates({ ...DEFAULT_TEMPLATES });
+                          setDraftTemplates(resetAllToDefaults(templateCatalogue));
                           setConfirmingReset(false);
                         }}
                       >
@@ -505,8 +500,8 @@ export default function SettingsPage(): React.JSX.Element {
               </div>
 
               <div className="divide-y divide-border-subtle">
-                {TEMPLATE_META.map((m) => {
-                  const isDirty = draftTemplates[m.key] !== knownServerTemplates[m.key];
+                {(templateCatalogue ?? []).map((m) => {
+                  const isDirty = draftTemplates[m.key] !== savedTemplates[m.key];
 
                   return (
                     <div key={m.key} className="p-4">
@@ -519,12 +514,12 @@ export default function SettingsPage(): React.JSX.Element {
                         </label>
 
                         <span className="flex flex-wrap items-center gap-1.5">
-                          {m.placeholders.map((p) => (
+                          {m.variables.map((p) => (
                             <code
                               key={p}
                               className="fd-figure rounded-xs bg-surface-sunken px-1 py-px text-2xs text-text-secondary"
                             >
-                              {p}
+                              {`{${p}}`}
                             </code>
                           ))}
                           {isDirty && (
@@ -533,7 +528,7 @@ export default function SettingsPage(): React.JSX.Element {
                               onClick={() =>
                                 setDraftTemplates((prev) => ({
                                   ...prev,
-                                  [m.key]: DEFAULT_TEMPLATES[m.key],
+                                  [m.key]: m.defaultText,
                                 }))
                               }
                               className="rounded-sm px-1.5 py-px text-2xs font-semibold text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"

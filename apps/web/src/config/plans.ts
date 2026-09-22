@@ -1,5 +1,5 @@
 /**
- * Plans — the single source of truth.
+ * Plans, the single source of truth.
  *
  * The marketing page and the billing screen were quoting different products.
  * Landing said GHS 149 and GHS 399 with 2,000 conversations on the middle
@@ -10,13 +10,50 @@
  * The billing screen is authoritative, because it is the one wired to the
  * payment provider. Those figures are reproduced here once, and both surfaces
  * import them. Any future change happens in this file or not at all.
+ *
+ * That rule held for price and then quietly failed for everything else: this
+ * file went on advertising unlimited products, unlimited orders and unlimited
+ * staff seats that `PLAN_LIMITS` in
+ * `apps/api/src/services/plan/plan.service.ts` refuses, and features, weekly
+ * reports, broadcasts, priority payment matching, that no code implements.
+ * A limit quoted more generously than the API enforces is not marketing, it is
+ * a support ticket with a delay on it.
+ *
+ * So the rule is now specific. Every number below is copied from
+ * `PLAN_LIMITS`, and every feature row names something a customer can find in
+ * the product today. Changing a limit means changing `plan.service.ts` first
+ * and this file second; adding a feature row means the feature exists.
+ * Last checked against `plan.service.ts` and `billing.schema.ts` on 2026-08-20.
  */
 
-export type PlanCode = 'TRIAL' | 'STARTER' | 'BUSINESS' | 'GROWTH' | 'ENTERPRISE' | 'SUSPENDED';
+/**
+ * Matches Prisma's `BusinessPlan` exactly.
+ *
+ * There is deliberately no `TRIAL` member. A trial is not a plan: registration
+ * stamps `trialEndsAt` and leaves the business on whatever plan its row holds,
+ * so a `TRIAL` entry here could only ever be a set of numbers nothing enforces
+ *, which is precisely what the old one was.
+ */
+export type PlanCode = 'STARTER' | 'BUSINESS' | 'GROWTH' | 'ENTERPRISE' | 'SUSPENDED';
 
 /** The codes a customer can actually buy. */
 export const BILLABLE_PLAN_CODES = ['STARTER', 'BUSINESS', 'GROWTH'] as const;
 export type BillablePlanCode = (typeof BILLABLE_PLAN_CODES)[number];
+
+/** `TRIAL_DAYS` in `apps/api/src/modules/auth/auth.service.ts`. */
+export const TRIAL_DAYS = 14;
+
+/** `TRIAL_GRACE_MS` in `apps/api/src/services/plan/plan.service.ts`, in hours. */
+export const TRIAL_GRACE_HOURS = 48;
+
+/**
+ * What the conversation allowance actually counts.
+ *
+ * One unit is one WhatsApp message Flowdesk sends on the shop's behalf, * counted in the outbound worker, not per thread, so the figure is worth
+ * spelling out wherever it is quoted.
+ */
+export const CONVERSATION_UNIT_NOTE =
+  'One conversation is one message Flowdesk sends for you. Go past the monthly allowance and automatic replies pause until the month turns over or you move up a plan, incoming messages and orders keep being recorded either way.';
 
 export interface Plan {
   code: PlanCode;
@@ -33,9 +70,6 @@ export interface Plan {
   products: number | null;
   features: {
     customTemplates: boolean;
-    reports: boolean;
-    priorityMatching: boolean;
-    broadcasts: boolean;
     namedSupport: boolean;
   };
   /** Marked on both surfaces so the recommendation never disagrees. */
@@ -43,25 +77,6 @@ export interface Plan {
 }
 
 export const PLANS: Record<PlanCode, Plan> = {
-  TRIAL: {
-    code: 'TRIAL',
-    name: 'Trial',
-    price: 'Free',
-    period: 'for 14 days',
-    audience: 'Every account starts here.',
-    conversationsPerMonth: 100,
-    ordersPerMonth: null,
-    staffSeats: 1,
-    products: null,
-    features: {
-      customTemplates: true,
-      reports: true,
-      priorityMatching: true,
-      broadcasts: false,
-      namedSupport: false,
-    },
-    recommended: false,
-  },
   STARTER: {
     code: 'STARTER',
     name: 'Starter',
@@ -69,14 +84,13 @@ export const PLANS: Record<PlanCode, Plan> = {
     period: 'per month',
     audience: 'A single shop, run by you.',
     conversationsPerMonth: 500,
-    ordersPerMonth: null,
+    ordersPerMonth: 300,
     staffSeats: 1,
-    products: null,
+    products: 50,
     features: {
-      customTemplates: false,
-      reports: false,
-      priorityMatching: false,
-      broadcasts: false,
+      // Every plan can rewrite the automatic replies, nothing in the API
+      // gates `replyTemplates` by plan, so this row cannot claim otherwise.
+      customTemplates: true,
       namedSupport: false,
     },
     recommended: false,
@@ -87,15 +101,12 @@ export const PLANS: Record<PlanCode, Plan> = {
     price: 'GHS 350',
     period: 'per month',
     audience: 'A shop with staff on the floor.',
-    conversationsPerMonth: 2_500,
+    conversationsPerMonth: 2_000,
     ordersPerMonth: null,
     staffSeats: 5,
     products: null,
     features: {
       customTemplates: true,
-      reports: true,
-      priorityMatching: true,
-      broadcasts: false,
       namedSupport: false,
     },
     recommended: true,
@@ -108,13 +119,10 @@ export const PLANS: Record<PlanCode, Plan> = {
     audience: 'Several locations, one ledger.',
     conversationsPerMonth: 10_000,
     ordersPerMonth: null,
-    staffSeats: null,
+    staffSeats: 20,
     products: null,
     features: {
       customTemplates: true,
-      reports: true,
-      priorityMatching: true,
-      broadcasts: true,
       namedSupport: true,
     },
     recommended: false,
@@ -131,9 +139,6 @@ export const PLANS: Record<PlanCode, Plan> = {
     products: null,
     features: {
       customTemplates: true,
-      reports: true,
-      priorityMatching: true,
-      broadcasts: true,
       namedSupport: true,
     },
     recommended: false,
@@ -141,18 +146,19 @@ export const PLANS: Record<PlanCode, Plan> = {
   SUSPENDED: {
     code: 'SUSPENDED',
     name: 'Suspended',
-    price: '—',
+    price: '\u2013',
     period: '',
     audience: '',
-    conversationsPerMonth: null,
-    ordersPerMonth: null,
-    staffSeats: null,
-    products: null,
+    // Zeroes rather than nulls: `PLAN_LIMITS.SUSPENDED` is zero across the
+    // board, and a suspended account rendering "Unlimited conversations a
+    // month" in Settings is the most confusing possible thing to show someone
+    // whose account has stopped working.
+    conversationsPerMonth: 0,
+    ordersPerMonth: 0,
+    staffSeats: 0,
+    products: 0,
     features: {
       customTemplates: false,
-      reports: false,
-      priorityMatching: false,
-      broadcasts: false,
       namedSupport: false,
     },
     recommended: false,
@@ -164,31 +170,34 @@ export function limit(value: number | null, unlimitedLabel = 'Unlimited'): strin
   return value === null ? unlimitedLabel : value.toLocaleString('en-GB');
 }
 
-/** The rows of the comparison table, derived so the two views cannot drift. */
+/**
+ * The rows of the comparison table, derived so the two views cannot drift.
+ *
+ * Rows that are true on every plan stay in: what a visitor most needs to know
+ * about the assistant is that it is not the expensive tier's feature.
+ */
 export const PLAN_COMPARISON: {
   label: string;
   value: (plan: Plan) => string | boolean;
 }[] = [
   { label: 'Conversations a month', value: (p) => limit(p.conversationsPerMonth) },
-  { label: 'Orders', value: (p) => limit(p.ordersPerMonth) },
-  { label: 'Staff accounts', value: (p) => limit(p.staffSeats) },
+  { label: 'Orders a month', value: (p) => limit(p.ordersPerMonth) },
   { label: 'Products', value: (p) => limit(p.products) },
+  { label: 'Staff accounts', value: (p) => limit(p.staffSeats) },
   { label: 'Automatic replies', value: () => true },
+  { label: 'Drafts for anything unverified', value: () => true },
   { label: 'Your own reply wording', value: (p) => p.features.customTemplates },
-  { label: 'Weekly reports', value: (p) => p.features.reports },
-  { label: 'Priority payment matching', value: (p) => p.features.priorityMatching },
-  { label: 'Broadcasts', value: (p) => p.features.broadcasts },
   { label: 'Named support contact', value: (p) => p.features.namedSupport },
 ];
 
-/** Short bullets for the billing screen, generated from the same flags. */
+/** Short bullets for the billing screen, generated from the same figures. */
 export function planHighlights(plan: Plan): string[] {
   const out: string[] = [
     `${limit(plan.conversationsPerMonth)} conversations a month`,
+    `${limit(plan.ordersPerMonth)} orders a month`,
+    `${limit(plan.products)} products`,
     `${limit(plan.staffSeats)} staff ${plan.staffSeats === 1 ? 'account' : 'accounts'}`,
   ];
-  if (plan.features.reports) out.push('Weekly reports');
-  if (plan.features.broadcasts) out.push('Broadcasts');
   if (plan.features.namedSupport) out.push('Named support contact');
   return out;
 }

@@ -3,7 +3,15 @@ import { MessageDirection, MessageType } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
-import { loadTenantCredentials, sendText } from '../services/whatsapp/client.js';
+import {
+  loadTenantCredentials,
+  sendImage,
+  sendTemplate,
+  sendText,
+  type SendResult,
+  type TenantCredentials,
+} from '../services/whatsapp/client.js';
+import { resolveProductImageMediaId } from '../services/whatsapp/product-photo.js';
 import { WhatsAppSendError, describeForOwner } from '../services/whatsapp/meta-errors.js';
 import { recordOutboundConversation } from '../services/plan/plan.service.js';
 import {
@@ -31,7 +39,14 @@ const WORKER_CONCURRENCY = 5;
 async function recordSentMessage(
   data: OutboundJobData,
   waMessageId: string,
+  channel: SentChannel,
 ): Promise<void> {
+  // The type reflects what was actually sent, not what was asked for. A photo
+  // that failed to upload went out as text, and logging it as an IMAGE would
+  // leave the owner looking at a conversation claiming to contain a picture
+  // their customer never received.
+  const sentAsImage = channel === 'image';
+
   await prisma.message
     .create({
       data: {
@@ -39,11 +54,13 @@ async function recordSentMessage(
         customerId: data.customerId,
         waMessageId,
         direction: MessageDirection.OUTBOUND,
-        type: MessageType.TEXT,
+        type: sentAsImage ? MessageType.IMAGE : MessageType.TEXT,
         body: data.body,
         processed: true,
         processedAt: new Date(),
         relatedOrderId: data.relatedOrderId ?? null,
+        inReplyToMessageId: data.inReplyToMessageId ?? null,
+        sentByStaffId: data.sentByStaffId ?? null,
       },
     })
     .catch((error: unknown) => {
@@ -56,7 +73,98 @@ async function recordSentMessage(
     });
 }
 
+/**
+ * Sends the job through the channel Meta will accept for it.
+ *
+ * The branch is the whole point of `template` being on the job. Inside the
+ * 24-hour window a free-form text is cheaper, carries the owner's own wording,
+ * and needs no approval. Outside it Meta rejects free-form outright, so a job
+ * queued there used to be enqueued, rejected as non-retryable and dead-lettered
+ * — or, before that, dropped at the gate with nothing but a log line while the
+ * owner believed the customer had been told.
+ */
+/** What actually went down the wire, so the log records the right message type. */
+type SentChannel = 'text' | 'image' | 'template';
+
+async function send(
+  credentials: TenantCredentials,
+  data: OutboundJobData,
+): Promise<SendResult & { channel: SentChannel }> {
+  if (!data.template) {
+    // Already resolved by the caller — a receipt's logo, uploaded once and
+    // cached on the business row. Checked first because it needs no lookup.
+    if (data.waMediaId) {
+      return { ...(await sendImage(credentials, data.to, data.waMediaId, data.body)), channel: 'image' };
+    }
+
+    // A photo is an enhancement to the sentence, never a replacement for it. If
+    // the image cannot be resolved — object gone, Meta refusing the upload —
+    // the text still goes out, because a customer who asked about a jacket is
+    // better served by the price arriving without the picture than by silence.
+    if (data.productImageId) {
+      const mediaId = await resolveProductImageMediaId(credentials, data.productImageId);
+      if (mediaId) {
+        return { ...(await sendImage(credentials, data.to, mediaId, data.body)), channel: 'image' };
+      }
+      logger.warn(
+        { businessId: data.businessId, productImageId: data.productImageId },
+        'Product photo could not be prepared; sending the reply as text only',
+      );
+    }
+
+    return { ...(await sendText(credentials, data.to, data.body)), channel: 'text' };
+  }
+
+  const result = await sendTemplate(
+    credentials,
+    data.to,
+    data.template.name,
+    data.template.language,
+    data.template.parameters.length > 0
+      ? [
+          {
+            type: 'body',
+            parameters: data.template.parameters.map((text) => ({ type: 'text', text })),
+          },
+        ]
+      : undefined,
+  );
+
+  return { ...result, channel: 'template' };
+}
+
+/**
+ * True when the owner started answering from their own phone after this job was
+ * queued.
+ *
+ * The takeover gate runs at enqueue time, but generation plus queue latency can
+ * be several seconds — ample time for the owner to begin replying in the
+ * WhatsApp Business app. Re-checking here, immediately before the send, closes
+ * that window; without it the assistant talks over a human mid-conversation,
+ * which is the failure most likely to make an owner switch the product off.
+ */
+async function ownerTookOver(data: OutboundJobData): Promise<boolean> {
+  if (!data.suppressIfOwnerRepliedSince || !data.customerId) return false;
+
+  const since = new Date(data.suppressIfOwnerRepliedSince);
+
+  const takeover = await prisma.message.findFirst({
+    where: { customerId: data.customerId, sentFromApp: true, createdAt: { gt: since } },
+    select: { id: true },
+  });
+
+  return takeover !== null;
+}
+
 async function processOutbound(data: OutboundJobData): Promise<void> {
+  if (await ownerTookOver(data)) {
+    logger.info(
+      { businessId: data.businessId, customerId: data.customerId },
+      'Outbound message dropped: owner answered from the WhatsApp Business app while it was queued',
+    );
+    return;
+  }
+
   const credentials = await loadTenantCredentials(data.businessId);
 
   if (!credentials) {
@@ -68,10 +176,15 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
   }
 
   try {
-    const result = await sendText(credentials, data.to, data.body);
+    const result = await send(credentials, data);
 
+    // Both channels are recorded identically. Meta bills a template
+    // conversation exactly as it bills a free-form one, so an accounting path
+    // that only counted `sendText` would under-report the tenant's usage — and
+    // a conversation log missing the template sends would show the customer
+    // being ignored for a day when they had in fact been told.
     await Promise.all([
-      recordSentMessage(data, result.waMessageId),
+      recordSentMessage(data, result.waMessageId, result.channel),
       recordOutboundConversation(data.businessId),
     ]);
 
@@ -80,6 +193,8 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
         businessId: data.businessId,
         waMessageId: result.waMessageId,
         template: data.templateKey,
+        channel: result.channel,
+        metaTemplate: data.template?.name,
       },
       'Outbound WhatsApp message delivered',
     );
@@ -87,11 +202,20 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
     if (error instanceof WhatsAppSendError && !error.failure.retryable) {
       // Revoked token, closed 24h window, unreachable recipient — all permanent
       // for this message. Retrying wastes quota and delays other tenants.
-      logger.warn(
+      // A missing or paused template is the one permanent failure an operator
+      // can actually fix, and the one that hits every newly onboarded tenant,
+      // so it is logged at error with the template named rather than folded in
+      // with unreachable recipients. It still dead-letters below: this message
+      // is lost, and the record of it has to say so rather than imply the
+      // customer was reached.
+      const level = error.failure.kind === 'TEMPLATE_UNAVAILABLE' ? 'error' : 'warn';
+
+      logger[level](
         {
           businessId: data.businessId,
           kind: error.failure.kind,
           code: error.failure.code,
+          metaTemplate: data.template?.name,
           guidance: describeForOwner(error.failure.kind),
         },
         'Outbound message permanently failed',

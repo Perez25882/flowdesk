@@ -41,3 +41,52 @@ export function getInitials(name: string): string {
     .join('')
     .toUpperCase();
 }
+
+/**
+ * A Ghanaian number in the shape people actually read.
+ *
+ * WhatsApp hands numbers over as bare digits in wire format, 233201847733 , 
+ * and that string was being rendered straight into the UI wherever a customer
+ * had not given their name yet, which is most new customers. Twelve
+ * undifferentiated digits is not something an owner can match against the
+ * number in their phone, or read aloud to a rider.
+ *
+ * Ghanaian numbers are written 0XX XXX XXXX locally and +233 XX XXX XXXX
+ * internationally. Anything that is not a recognisable Ghana number is returned
+ * untouched rather than forced into a shape it does not have, diaspora
+ * customers are common and a mangled foreign number is worse than a raw one.
+ */
+export function formatPhone(raw: string | null | undefined): string {
+  if (!raw) return '';
+
+  const digits = raw.replace(/\D/g, '');
+
+  // 233 + 9 national digits.
+  if (digits.length === 12 && digits.startsWith('233')) {
+    const national = digits.slice(3);
+    return `+233 ${national.slice(0, 2)} ${national.slice(2, 5)} ${national.slice(5)}`;
+  }
+
+  // Local form, 0 + 9 national digits.
+  if (digits.length === 10 && digits.startsWith('0')) {
+    return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  }
+
+  return raw;
+}
+
+/**
+ * What to call a customer on screen.
+ *
+ * Their name once they have given one, otherwise their number in readable form.
+ * Centralised because the fallback appeared in nine places and half of them
+ * printed the raw digits.
+ */
+export function customerLabel(
+  customer: { name?: string | null; waNumber?: string | null } | null | undefined,
+  fallback = 'Unknown number',
+): string {
+  if (!customer) return fallback;
+  if (customer.name && customer.name.trim().length > 0) return customer.name;
+  return formatPhone(customer.waNumber) || fallback;
+}

@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
  *
  * Always renders a text label alongside the colour. Colour on its own is
  * invisible to colour-blind users and washes out on a cheap screen in
- * sunlight — which is exactly where this product is used.
+ * sunlight, which is exactly where this product is used.
  *
  * Squared rather than pill-shaped: a pill reads as a marketing badge, a
  * rectangle reads as a record field. This is a ledger.
@@ -45,7 +45,7 @@ const DOT_TONES: Record<BadgeTone, string> = {
 export interface BadgeProps {
   tone?: BadgeTone;
   children: ReactNode;
-  /** Adds a leading dot — useful in dense lists where the tag is small. */
+  /** Adds a leading dot, useful in dense lists where the tag is small. */
   withDot?: boolean;
   className?: string;
 }
@@ -100,6 +100,7 @@ export const ORDER_STATUS_TONE: Record<string, { tone: BadgeTone; label: string 
   PENDING: { tone: 'warning', label: 'Pending' },
   CONFIRMED: { tone: 'info', label: 'Confirmed' },
   PROCESSING: { tone: 'processing', label: 'Processing' },
+  DISPATCHED: { tone: 'primary', label: 'Dispatched' },
   FULFILLED: { tone: 'success', label: 'Fulfilled' },
   CANCELLED: { tone: 'neutral', label: 'Cancelled' },
 };

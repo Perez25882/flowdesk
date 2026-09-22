@@ -27,17 +27,32 @@ export type SSEEventType = (typeof SSE_EVENT_TYPES)[number];
  */
 export const SSE_CONNECTED_EVENT = 'connected';
 
+/**
+ * The staff member an order is assigned to, when there is one.
+ *
+ * Present on the order payloads because the realtime layer has to make the same
+ * assignment-scoped decision the HTTP layer makes: a rider may see the orders
+ * assigned to them and no others. Without it the fan-out has nothing to filter
+ * on and either broadcasts every order to every rider or withholds all of them.
+ *
+ * Emitters MUST populate this whenever the order has an assignee. It is
+ * optional only because an order can genuinely be unassigned — a missing value
+ * is read as "not assigned to you", so an emitter that forgets it withholds the
+ * event from riders rather than leaking it.
+ */
 export interface OrderCreatedPayload {
   orderId: string;
   referenceNumber: string;
   customerName: string | null;
   totalAmount: number;
+  assignedStaffId?: string | null;
 }
 
 export interface OrderUpdatedPayload {
   orderId: string;
   status: string;
   previousStatus: string;
+  assignedStaffId?: string | null;
 }
 
 export interface MessageFlaggedPayload {

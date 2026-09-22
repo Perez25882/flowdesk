@@ -1,0 +1,122 @@
+# Flowdesk on Render.
+#
+# One always-on web service and one managed Redis. The API and the BullMQ
+# workers share a process (see apps/api/src/server.ts), which is the right shape
+# at launch scale — one deploy, one log stream, no cross-service drift — and is
+# split out later by promoting the worker block at the bottom of this file.
+#
+# Postgres is NOT declared here. It lives on Supabase, which gives point-in-time
+# recovery and a restore path a person can actually operate under pressure. See
+# docs/DEPLOYMENT.md for why, and for the two connection strings it needs.
+#
+# Region: Frankfurt. Of Render's regions it is the closest to Accra by round
+# trip, and it keeps the API in the same region as the database, which matters
+# far more — every inbound WhatsApp message costs several queries, and a
+# cross-Atlantic hop on each one is the difference between a reply that feels
+# instant and one that does not.
+
+services:
+  - type: web
+    name: flowdesk-api
+    runtime: node
+    region: frankfurt
+    # NOT a free instance. Free services sleep when idle, and a sleeping API
+    # does not process the WhatsApp webhook that arrives at 6am — Meta retries
+    # for a while and then drops the message. Message loss is the one failure
+    # this product cannot have.
+    plan: starter
+    branch: main
+    buildCommand: pnpm install --frozen-lockfile && pnpm db:generate && pnpm --filter @flowdesk/shared build && pnpm --filter @flowdesk/api build
+    startCommand: pnpm --filter @flowdesk/api start
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      # Render terminates TLS one hop in front of the app. Without this the
+      # rate limiter and the login brute-force counter key every request on the
+      # load balancer's address, so all tenants share one bucket.
+      - key: TRUST_PROXY
+        value: '1'
+      - key: LOG_LEVEL
+        value: info
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: flowdesk-redis
+          property: connectionString
+      # Everything below is set in the Render dashboard, not here. Committing a
+      # secret to render.yaml puts it in git.
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_CONFIG_ID
+        sync: false
+      - key: META_VERIFY_TOKEN
+        sync: false
+      - key: META_WEBHOOK_SECRET
+        sync: false
+      - key: META_API_VERSION
+        value: v25.0
+      - key: AI_PROVIDER
+        value: nvidia
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_MODEL
+        value: meta/llama-3.1-8b-instruct
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  - type: keyvalue
+    name: flowdesk-redis
+    region: frankfurt
+    plan: starter
+    # BullMQ holds queued jobs here. `allkeys-lru` would evict them under
+    # memory pressure and silently drop customer messages; `noeviction` fails
+    # the write instead, which is loud and recoverable.
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+# When one process is no longer enough — the signal is queue depth staying
+# above zero during the morning peak, not CPU — uncomment this and remove the
+# worker startup from server.ts. The web service then serves HTTP only and this
+# service drains the queues.
+#
+#  - type: worker
+#    name: flowdesk-workers
+#    runtime: node
+#    region: frankfurt
+#    plan: starter
+#    buildCommand: pnpm install --frozen-lockfile && pnpm db:generate && pnpm --filter @flowdesk/shared build && pnpm --filter @flowdesk/api build
+#    startCommand: pnpm --filter @flowdesk/api exec node dist/workers/index.js

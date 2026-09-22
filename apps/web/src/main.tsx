@@ -23,7 +23,7 @@ function mount(): void {
  *
  * The access token lives in memory only, so a page reload starts signed out.
  * Exchanging the httpOnly refresh cookie for a fresh token here means a reload
- * lands on the dashboard instead of bouncing to sign-in — without any
+ * lands on the dashboard instead of bouncing to sign-in, without any
  * long-lived credential ever being readable by JavaScript.
  *
  * Failure needs no special handling: the app renders signed-out and the router

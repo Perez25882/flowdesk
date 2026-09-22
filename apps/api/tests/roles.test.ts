@@ -5,7 +5,7 @@ import { ROLE_CAPABILITIES, hasCapability, isAssignmentScoped } from '@flowdesk/
  * The authorization matrix.
  *
  * These assertions exist because every mutating route once ran with only an
- * authentication check: a delivery rider could log a verified payment, delete
+ * authentication check: a delivery rider could log a verified payment, void
  * the record of one, and read the whole customer list. The specific denials
  * below are the ones that mattered, so they are asserted by name rather than
  * inferred from the table.
@@ -15,7 +15,7 @@ describe('capability matrix', () => {
   describe('the owner', () => {
     it('holds every capability', () => {
       // The owner has no staff row and therefore no role.
-      expect(hasCapability(undefined, 'payments.delete')).toBe(true);
+      expect(hasCapability(undefined, 'payments.void')).toBe(true);
       expect(hasCapability(undefined, 'billing.manage')).toBe(true);
       expect(hasCapability(undefined, 'staff.manage')).toBe(true);
     });
@@ -30,7 +30,7 @@ describe('capability matrix', () => {
     it('cannot touch money', () => {
       expect(hasCapability('DELIVERY', 'payments.create')).toBe(false);
       expect(hasCapability('DELIVERY', 'payments.verify')).toBe(false);
-      expect(hasCapability('DELIVERY', 'payments.delete')).toBe(false);
+      expect(hasCapability('DELIVERY', 'payments.void')).toBe(false);
       expect(hasCapability('DELIVERY', 'revenue.read')).toBe(false);
     });
 
@@ -58,7 +58,7 @@ describe('capability matrix', () => {
     it('can record a payment but not confirm or erase one', () => {
       expect(hasCapability('OPERATIONS', 'payments.create')).toBe(true);
       expect(hasCapability('OPERATIONS', 'payments.verify')).toBe(false);
-      expect(hasCapability('OPERATIONS', 'payments.delete')).toBe(false);
+      expect(hasCapability('OPERATIONS', 'payments.void')).toBe(false);
     });
 
     it('cannot delete products or manage staff', () => {
@@ -73,7 +73,7 @@ describe('capability matrix', () => {
 
   describe('a manager', () => {
     it('runs the shop', () => {
-      expect(hasCapability('MANAGER', 'payments.delete')).toBe(true);
+      expect(hasCapability('MANAGER', 'payments.void')).toBe(true);
       expect(hasCapability('MANAGER', 'staff.manage')).toBe(true);
       expect(hasCapability('MANAGER', 'products.delete')).toBe(true);
       expect(hasCapability('MANAGER', 'revenue.read')).toBe(true);
@@ -95,7 +95,7 @@ describe('capability matrix', () => {
     it('refuses an unknown role rather than defaulting open', () => {
       // A staff token carrying a role we do not recognise must not be treated
       // as an owner. Only `undefined` means owner.
-      expect(hasCapability('SUPERUSER' as never, 'payments.delete')).toBe(false);
+      expect(hasCapability('SUPERUSER' as never, 'payments.void')).toBe(false);
     });
   });
 });

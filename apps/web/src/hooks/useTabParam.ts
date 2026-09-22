@@ -8,7 +8,7 @@ import { useSearchParams } from 'react-router-dom';
  * none of it could be linked to. That matters more than it sounds: a shop
  * owner cannot send a staff member a link to the payments needing checking,
  * cannot bookmark the cancelled orders, and loses their place on every
- * refresh — including the refresh that happens when the browser reclaims a
+ * refresh, including the refresh that happens when the browser reclaims a
  * backgrounded tab on a low-memory Android.
  *
  * `replace` is used so flipping between tabs does not fill the back stack;

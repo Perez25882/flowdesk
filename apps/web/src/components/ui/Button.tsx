@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
  * The application's only button.
  *
  * Consolidating it guarantees that every action shares the same hit area,
- * focus ring, disabled treatment and loading behaviour — previously each page
+ * focus ring, disabled treatment and loading behaviour, previously each page
  * hand-rolled its own, so keyboard focus was visible in some places and not
  * others, and "saving" states varied per screen.
  *
@@ -29,7 +29,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
 
 /**
  * Heights meet the 44px minimum touch target at `md` and above. `sm` is for
- * dense desktop toolbars only — never for a primary action on mobile.
+ * dense desktop toolbars only, never for a primary action on mobile.
  */
 const SIZES: Record<ButtonSize, string> = {
   sm: 'h-8 px-2.5 text-sm gap-1.5',
@@ -42,7 +42,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: ButtonSize;
   /** Shows a spinner and blocks input without changing the button's width. */
   isLoading?: boolean;
-  /** Icon rendered before the label. Decorative — give the button real text. */
+  /** Icon rendered before the label. Decorative, give the button real text. */
   leadingIcon?: ReactNode;
   trailingIcon?: ReactNode;
   fullWidth?: boolean;

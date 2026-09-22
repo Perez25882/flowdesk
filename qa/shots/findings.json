@@ -1,0 +1,374 @@
+[
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "landing",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "landing",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "landing",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "landing",
+    "detail": "GET http://127.0.0.1:4173/dashboard"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "landing",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "login",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "login",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "register",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "register",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "privacy",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "privacy",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "terms",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "terms",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "notfound",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "notfound",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "dashboard",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "dashboard",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "orders",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "orders",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "customers",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "customers",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "products",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "products",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "payments",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "payments",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "messages",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "messages",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "staff",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "staff",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "mobile",
+    "slug": "settings",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "mobile",
+    "slug": "settings",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "landing",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "landing",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "landing",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "landing",
+    "detail": "GET http://127.0.0.1:4173/dashboard"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "landing",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "login",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "login",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "register",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "register",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "privacy",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "privacy",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "terms",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "terms",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "notfound",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "notfound",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "dashboard",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "dashboard",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "orders",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "orders",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "customers",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "customers",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "products",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "products",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "payments",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "payments",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "messages",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "messages",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "staff",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "staff",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  },
+  {
+    "kind": "console",
+    "viewport": "desktop",
+    "slug": "settings",
+    "detail": "Failed to load resource: net::ERR_TUNNEL_CONNECTION_FAILED"
+  },
+  {
+    "kind": "request",
+    "viewport": "desktop",
+    "slug": "settings",
+    "detail": "GET https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;6"
+  }
+]

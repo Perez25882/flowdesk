@@ -40,6 +40,35 @@ export function SkeletonRows({
   );
 }
 
+/**
+ * A metric placeholder, matching `Metric`'s geometry exactly.
+ *
+ * This one matters more than the others. An unloaded `Metric` renders whatever
+ * its props currently compute to, which for a count is `0` and for a currency
+ * is `GHS 0.00` — so for the second before the data lands the dashboard
+ * confidently tells a shop owner they sold nothing today. A placeholder says
+ * "not yet"; a zero says "none", and only one of those is true.
+ */
+export function SkeletonMetric({ emphasis = false }: { emphasis?: boolean }): React.JSX.Element {
+  return (
+    <div
+      className={cn(
+        'flex min-w-0 flex-col justify-between gap-3 px-4 py-4 md:px-5',
+        emphasis && 'md:py-5',
+      )}
+      role="status"
+      aria-busy="true"
+    >
+      <Skeleton className="h-2.5 w-24" />
+      <div className="flex flex-col gap-1.5">
+        <Skeleton className={cn(emphasis ? 'h-7 w-36' : 'h-6 w-20')} />
+        <Skeleton className="h-2.5 w-20" />
+      </div>
+      <span className="sr-only">Loading</span>
+    </div>
+  );
+}
+
 /** Card-shaped placeholders, for the order board columns. */
 export function SkeletonCards({
   count = 3,

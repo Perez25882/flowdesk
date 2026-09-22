@@ -10,6 +10,19 @@ export interface NavItem {
   badge?: 'pendingOrders' | 'reviewMessages';
   mobile?: boolean;
   roles?: string[];
+  /**
+   * A setting this item depends on. Hidden entirely when it is off.
+   *
+   * Distinct from `roles`, which is about permission. This is about relevance:
+   * a shop selling bags has no diary, and showing it one is a nav item nobody
+   * will ever open sitting between two they use every day.
+   */
+  feature?: 'bookings';
+}
+
+/** Which optional features this business has switched on. */
+export interface NavFeatures {
+  bookings?: boolean;
 }
 
 /**
@@ -79,6 +92,28 @@ export const navItems: NavItem[] = [
     roles: ['owner', 'MANAGER', 'OPERATIONS'],
   },
   {
+    label: 'Bookings',
+    path: '/bookings',
+    icon: 'CalendarDays',
+    group: 'today',
+    description: 'Who is coming in, and what you offer.',
+    feature: 'bookings',
+    // On the mobile bar when it is on at all: a clinic's diary is the first
+    // thing they open in the morning, which is what the bar is for.
+    mobile: true,
+    roles: ['owner', 'MANAGER', 'OPERATIONS'],
+  },
+  {
+    label: 'Reports',
+    path: '/reports',
+    icon: 'BarChart3',
+    group: 'records',
+    description: 'How the shop is doing, over 30, 60 or 90 days.',
+    // Not on the mobile bar. This is the page an owner opens sitting down,
+    // and the bar has room for what they open standing up.
+    roles: ['owner', 'MANAGER'],
+  },
+  {
     label: 'Staff',
     path: '/staff',
     icon: 'UserCog',
@@ -96,13 +131,24 @@ export const navItems: NavItem[] = [
   },
 ];
 
-export function getNavItemsForRole(role: string | null): NavItem[] {
+export function getNavItemsForRole(role: string | null, features: NavFeatures = {}): NavItem[] {
   const effectiveRole = role ?? 'owner';
-  return navItems.filter((item) => !item.roles || item.roles.includes(effectiveRole));
+
+  return navItems.filter((item) => {
+    if (item.roles && !item.roles.includes(effectiveRole)) return false;
+    // An unknown feature key hides the item rather than showing it. A nav entry
+    // that appears because a flag was misspelled leads to a page that cannot
+    // work, which is worse than one the owner has to switch on.
+    if (item.feature) return features[item.feature] === true;
+    return true;
+  });
 }
 
-export function getGroupedNavItems(role: string | null): { id: NavGroup; label: string; items: NavItem[] }[] {
-  const visible = getNavItemsForRole(role);
+export function getGroupedNavItems(
+  role: string | null,
+  features: NavFeatures = {},
+): { id: NavGroup; label: string; items: NavItem[] }[] {
+  const visible = getNavItemsForRole(role, features);
   return NAV_GROUPS.map((group) => ({
     ...group,
     items: visible.filter((item) => item.group === group.id),
@@ -111,6 +157,11 @@ export function getGroupedNavItems(role: string | null): { id: NavGroup; label: 
 
 export const mobileBottomNavItems = navItems.filter((item) => item.mobile);
 export const moreNavItems = navItems.filter((item) => !item.mobile);
+
+/** Feature-gated items, for the "everything else" sheet. */
+export function visibleMobileItems(role: string | null, features: NavFeatures = {}): NavItem[] {
+  return getNavItemsForRole(role, features).filter((item) => item.mobile);
+}
 
 export function getNavItem(pathname: string): NavItem | undefined {
   // Longest match first, so /customers/:id resolves to Customers rather than

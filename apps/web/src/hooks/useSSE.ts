@@ -12,7 +12,7 @@ import { apiFetch } from '@/lib/api';
  *
  * Events arrive as *named* SSE frames (`event: order.created`). `onmessage`
  * only ever fires for frames with no `event:` field, so each type has to be
- * registered explicitly — an earlier version listened on `onmessage` alone and
+ * registered explicitly, an earlier version listened on `onmessage` alone and
  * therefore received nothing at all while still reporting itself connected,
  * because `onopen` fires either way.
  */
@@ -28,7 +28,7 @@ let connecting = false;
 /**
  * Bumped by every `disconnect()`. A ticket request that started before a
  * sign-out compares the generation it captured against this on completion and
- * discards its stream if they differ — otherwise the socket it opens would
+ * discards its stream if they differ, otherwise the socket it opens would
  * belong to the account that just signed out.
  */
 let generation = 0;
@@ -51,7 +51,7 @@ async function requestTicket(): Promise<string | null> {
     const response = await apiFetch<TicketResponse>('/sse/ticket', { method: 'POST' });
     return response.ticket;
   } catch {
-    // Not signed in yet, or the token expired — the reconnect loop retries.
+    // Not signed in yet, or the token expired, the reconnect loop retries.
     return null;
   }
 }
@@ -68,7 +68,7 @@ function attachHandlers(es: EventSource): void {
         sseEventBus.emit(eventType, JSON.parse(event.data));
       } catch {
         // A frame we cannot decode is dropped rather than tearing down the
-        // stream — the next event is usually fine.
+        // stream, the next event is usually fine.
       }
     });
   }

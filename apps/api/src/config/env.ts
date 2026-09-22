@@ -114,9 +114,10 @@ const envSchema = z.object({
   // ── AI / Intent classification ──────────────────────────────────────────
   // Absent = rule engine only. The rule engine handles ~80% of traffic, so the
   // pipeline stays functional; ambiguous messages fall through to review.
-  AI_PROVIDER: z.enum(['anthropic', 'nvidia']).default('anthropic'),
+  AI_PROVIDER: z.enum(['anthropic', 'nvidia', 'groq']).default('anthropic'),
   ANTHROPIC_API_KEY: optionalString,
   NVIDIA_API_KEY: optionalString,
+  GROQ_API_KEY: optionalString,
   NVIDIA_MODEL: z.string().min(1).default('meta/llama-3.1-8b-instruct'),
   HAIKU_FALLBACK_ENABLED: booleanFromString.default(true),
   HAIKU_CONFIDENCE_THRESHOLD: z.coerce
@@ -125,13 +126,62 @@ const envSchema = z.object({
     .max(1)
     .default(DEFAULT_HAIKU_CONFIDENCE_THRESHOLD),
 
-  // ── AWS S3 (media) ──────────────────────────────────────────────────────
+  // ── The assistant ───────────────────────────────────────────────────────
+  // Distinct from the label-only classifier above. This one is given the shop's
+  // catalogue and facts and asked to decide how to respond — a much harder task
+  // than picking a label, so it wants a bigger model than the classifier uses.
+  //
+  // Unset means "the provider's default", resolved below rather than here so the
+  // right default follows AI_PROVIDER instead of being pinned to one vendor.
+  ASSISTANT_MODEL: optionalString,
+  /**
+   * A vision model, for reading a shop's own Status photos.
+   *
+   * No default on purpose. A hosted model name baked in as a default outlives
+   * the model — that is exactly how the text provider spent six days serving
+   * canned templates behind a 410. Unset means the assistant asks a good
+   * question about the picture instead of describing it, which it does well.
+   */
+  VISION_MODEL: optionalString,
+  /**
+   * Sampling temperature for the assistant. Warm enough that two customers
+   * asking the same question do not get a byte-identical sentence, low enough
+   * that the model still fills the decision contract reliably.
+   */
+  ASSISTANT_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.6),
+  // Anthropic only. Ignored by other providers.
+  ASSISTANT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
+  ASSISTANT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(20_000),
+  // Caps reasoning AND the reply together, so it needs room for both.
+  ASSISTANT_MAX_TOKENS: z.coerce.number().int().min(512).max(16_000).default(2_048),
+
+  // ── Object storage (media) ──────────────────────────────────────────────
   // Absent = inbound media is recorded but not archived. Meta media URLs
   // expire in ~5 minutes, so production requires this.
+  //
+  // The variables are still named AWS_* because that is what every deployment
+  // already sets, but the client speaks plain S3 and therefore also speaks to
+  // any S3-compatible bucket. Point S3_ENDPOINT at one — Supabase Storage,
+  // Cloudflare R2, MinIO — and the same three credentials work unchanged.
   AWS_ACCESS_KEY_ID: optionalString,
   AWS_SECRET_ACCESS_KEY: optionalString,
   AWS_REGION: z.string().min(1).default('eu-west-1'),
   AWS_S3_BUCKET: optionalString,
+  /**
+   * Base endpoint of an S3-compatible service. Empty means real AWS S3.
+   *
+   * Supabase: https://<project-ref>.storage.supabase.co/storage/v1/s3
+   * with AWS_REGION set to the project's region and the access key pair taken
+   * from Storage → S3 access keys (NOT the anon or service-role JWT).
+   */
+  S3_ENDPOINT: optionalString,
+  /**
+   * Path-style addressing (`<endpoint>/<bucket>/<key>`) rather than putting the
+   * bucket in the hostname. Required by Supabase, R2 and MinIO; AWS deprecated
+   * it, so it defaults off and is turned on automatically whenever an endpoint
+   * is configured.
+   */
+  S3_FORCE_PATH_STYLE: z.coerce.boolean().optional(),
 
   // ── Email ───────────────────────────────────────────────────────────────
   RESEND_API_KEY: optionalString,
@@ -143,14 +193,68 @@ const envSchema = z.object({
 
   // ── Billing ─────────────────────────────────────────────────────────────
   PAYSTACK_SECRET_KEY: optionalString,
+  /**
+   * Paystack plan codes, one per tier.
+   *
+   * Without a plan code `initializeTransaction` creates a ONE-OFF CHARGE:
+   * Paystack makes no subscription, `charge.success` carries no
+   * subscription_code, `paystackSubCode` stays null — and a customer who has
+   * paid still reads as a lapsed trial 48 hours later. Cancel, pause and
+   * downgrade also have nothing to act on. Optional so development works
+   * without them; a production deployment that wants recurring billing must
+   * set all three.
+   */
+  PAYSTACK_PLAN_STARTER: optionalString,
+  PAYSTACK_PLAN_BUSINESS: optionalString,
+  PAYSTACK_PLAN_GROWTH: optionalString,
   PAYSTACK_PUBLIC_KEY: optionalString,
+
+  // ── Taking money for shops (Paystack subaccounts) ───────────────────────
+  /**
+   * Flowdesk's share of each customer payment, as a percentage.
+   *
+   * This is `percentage_charge` on the subaccount, which Paystack defines as
+   * what the MAIN account keeps — so 1.5 means Flowdesk keeps 1.5% and the
+   * shop is settled the rest. A per-business override lives on
+   * `Business.commissionPercent`.
+   */
+  PLATFORM_COMMISSION_PERCENT: z.coerce.number().min(0).max(100).default(1.5),
+  /**
+   * Who absorbs Paystack's own fee on a customer payment.
+   *
+   * `subaccount` — the shop pays the gateway, and Flowdesk's commission sits on
+   * top of that. `account` — Flowdesk absorbs it, which turns the commission
+   * into a much thinner margin. Configuration rather than a constant because it
+   * is a pricing decision, and pricing should not need a deploy.
+   */
+  PAYSTACK_FEE_BEARER: z.enum(['subaccount', 'account']).default('subaccount'),
+  /**
+   * Where Paystack returns the customer after a hosted checkout. Empty leaves
+   * them on Paystack's own confirmation page, which is a perfectly good place
+   * to end up and is the right default before a receipt page exists.
+   */
+  PAYSTACK_CALLBACK_URL: optionalString,
 
   // ── Monitoring ──────────────────────────────────────────────────────────
   SENTRY_DSN: optionalString.refine(
     (value) => value === undefined || /^https?:\/\//.test(value),
     'SENTRY_DSN must be a URL',
   ),
-});
+})
+  /**
+   * The two signing secrets must differ.
+   *
+   * `role.middleware.ts` reads the ABSENCE of a staff id as "this is the
+   * owner", and a refresh token's payload carries no staff id. Token typing
+   * (`services/auth/tokens.ts`) now stops a refresh token being replayed as a
+   * bearer token on its own, but the two secrets being equal removes an entire
+   * layer of that defence for the sake of one careless copy-paste in a
+   * deployment config. Cheaper to refuse at boot.
+   */
+  .refine((values) => values.JWT_SECRET !== values.JWT_REFRESH_SECRET, {
+    message: 'JWT_SECRET and JWT_REFRESH_SECRET must be different values',
+    path: ['JWT_REFRESH_SECRET'],
+  });
 
 export type Env = z.infer<typeof envSchema>;
 
@@ -184,13 +288,37 @@ function formatEnvError(error: z.ZodError): string {
 
 function computeFeatures(parsed: Env): Features {
   return {
+    // Flowdesk is a Meta Tech Provider: every business connects its OWN
+    // WhatsApp number through Embedded Signup, and the per-tenant phone number
+    // id and access token live encrypted on the Business row. The platform
+    // itself therefore needs only its app-level credentials.
+    //
+    // `whatsapp` used to require META_ACCESS_TOKEN and META_PHONE_NUMBER_ID,
+    // which are one specific number's credentials. Requiring them of the
+    // platform meant a production deployment could not boot without pasting one
+    // tenant's secrets into the shared environment — the exact coupling the
+    // Tech Provider model exists to remove.
     whatsapp: Boolean(
-      parsed.META_ACCESS_TOKEN && parsed.META_PHONE_NUMBER_ID && parsed.META_WEBHOOK_SECRET,
+      parsed.META_APP_ID &&
+        parsed.META_APP_SECRET &&
+        parsed.META_CONFIG_ID &&
+        parsed.META_WEBHOOK_SECRET &&
+        parsed.META_VERIFY_TOKEN,
     ),
     whatsappSignup: Boolean(parsed.META_APP_ID && parsed.META_APP_SECRET && parsed.META_CONFIG_ID),
+    // Keyed on the provider actually selected. A lookup rather than a ternary
+    // because a two-branch conditional silently reports on the wrong credential
+    // the moment a third provider exists — which is how a shop ends up being
+    // told the assistant is configured while every request returns 401.
     aiClassification:
       parsed.HAIKU_FALLBACK_ENABLED &&
-      Boolean(parsed.AI_PROVIDER === 'nvidia' ? parsed.NVIDIA_API_KEY : parsed.ANTHROPIC_API_KEY),
+      Boolean(
+        {
+          anthropic: parsed.ANTHROPIC_API_KEY,
+          nvidia: parsed.NVIDIA_API_KEY,
+          groq: parsed.GROQ_API_KEY,
+        }[parsed.AI_PROVIDER],
+      ),
     mediaStorage: Boolean(
       parsed.AWS_ACCESS_KEY_ID && parsed.AWS_SECRET_ACCESS_KEY && parsed.AWS_S3_BUCKET,
     ),
@@ -212,10 +340,21 @@ function assertProductionIntegrations(parsed: Env, flags: Features): void {
   const missing: string[] = [];
 
   if (!flags.whatsapp) {
-    missing.push('WhatsApp (META_ACCESS_TOKEN, META_PHONE_NUMBER_ID, META_WEBHOOK_SECRET)');
+    missing.push(
+      'WhatsApp platform credentials (META_APP_ID, META_APP_SECRET, META_CONFIG_ID, META_WEBHOOK_SECRET, META_VERIFY_TOKEN)',
+    );
   }
-  if (!parsed.META_VERIFY_TOKEN) {
-    missing.push('META_VERIFY_TOKEN');
+
+  // Refused rather than merely unused. These are a single WhatsApp number's
+  // credentials; in a Tech Provider deployment every number belongs to a
+  // tenant, so their presence in the shared environment means either a
+  // half-finished migration or a developer's number about to be used in
+  // production. Both are worth failing the boot for — the failure mode
+  // otherwise is one business's messages going out over another's number.
+  if (parsed.META_ACCESS_TOKEN || parsed.META_PHONE_NUMBER_ID) {
+    missing.push(
+      'META_ACCESS_TOKEN and META_PHONE_NUMBER_ID must NOT be set in production — each business supplies its own through Embedded Signup',
+    );
   }
   if (!flags.mediaStorage) {
     missing.push('media storage (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)');

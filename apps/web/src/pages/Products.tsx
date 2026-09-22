@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { Minus, Package, Plus } from 'lucide-react';
+import { FileUp, Minus, Package, Plus } from 'lucide-react';
 import {
   useProducts,
   useCreateProduct,
   useUpdateProduct,
   useAdjustStock,
+  type Product,
 } from '@/hooks/useProducts';
+import ImportCatalogue from '@/components/products/ImportCatalogue';
+import ProductPhotos, { ProductThumbnail } from '@/components/products/ProductPhotos';
 import EmptyState from '@/components/shared/EmptyState';
 import PageHeader from '@/components/shared/PageHeader';
 import SearchInput from '@/components/ui/SearchInput';
@@ -13,6 +16,12 @@ import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { formatCurrency, cn } from '@/lib/utils';
+import PricingRules, {
+  EMPTY_PRICING,
+  pricingToPayload,
+  type PricingForm,
+} from '@/components/products/PricingRules';
+import { useBusiness } from '@/hooks/useBusiness';
 
 const EMPTY_FORM = {
   name: '',
@@ -30,14 +39,17 @@ const EMPTY_FORM = {
  * buttons, so a screen reader announced two identical "button"s next to a
  * number; they now say what they change and by how much. And the aliases
  * field, which is the thing that actually makes message matching work, was
- * presented as an afterthought labelled "Aliases (comma separated)" — it now
+ * presented as an afterthought labelled "Aliases (comma separated)", it now
  * explains itself, because a shop owner has no reason to know what an alias is.
  */
 export default function ProductsPage(): React.JSX.Element {
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [pricing, setPricing] = useState<PricingForm>(EMPTY_PRICING);
+  const { data: business } = useBusiness();
 
   const { data: products, isLoading } = useProducts(search || undefined);
   const createProduct = useCreateProduct();
@@ -51,6 +63,7 @@ export default function ProductsPage(): React.JSX.Element {
     setShowForm(false);
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setPricing(EMPTY_PRICING);
   }
 
   function handleSubmit(): void {
@@ -64,6 +77,7 @@ export default function ProductsPage(): React.JSX.Element {
         .split(',')
         .map((a) => a.trim())
         .filter(Boolean),
+      ...pricingToPayload(pricing),
     };
 
     if (editingId) {
@@ -73,15 +87,7 @@ export default function ProductsPage(): React.JSX.Element {
     }
   }
 
-  function startEdit(product: {
-    id: string;
-    name: string;
-    unit: string;
-    price: number;
-    stockQuantity: number;
-    reorderThreshold: number;
-    aliases: string[];
-  }): void {
+  function startEdit(product: Product): void {
     setForm({
       name: product.name,
       unit: product.unit,
@@ -89,6 +95,21 @@ export default function ProductsPage(): React.JSX.Element {
       stockQuantity: String(product.stockQuantity),
       reorderThreshold: String(product.reorderThreshold),
       aliases: product.aliases.join(', '),
+    });
+    setPricing({
+      floorPrice: product.floorPrice === null || product.floorPrice === undefined
+        ? ''
+        : String(product.floorPrice),
+      discountPercent: product.discountPercent ? String(product.discountPercent) : '',
+      discountLabel: product.discountLabel ?? '',
+      // Back to the `YYYY-MM-DD` a date input accepts. Anything else renders as
+      // an empty field, and the owner then saves the form having silently
+      // dropped the expiry they set last week.
+      discountEndsAt: product.discountEndsAt ? product.discountEndsAt.slice(0, 10) : '',
+      tiers: (product.tiers ?? []).map((tier) => ({
+        minQuantity: String(tier.minQuantity),
+        percentOff: String(tier.percentOff),
+      })),
     });
     setEditingId(product.id);
     setShowForm(true);
@@ -110,8 +131,23 @@ export default function ProductsPage(): React.JSX.Element {
             />
             <Button
               size="sm"
+              variant="secondary"
+              onClick={() => {
+                setShowImport((open) => !open);
+                closeForm();
+              }}
+              leadingIcon={<FileUp className="h-4 w-4" strokeWidth={2} />}
+            >
+              Import
+            </Button>
+            <Button
+              size="sm"
               variant={showForm ? 'secondary' : 'primary'}
-              onClick={() => (showForm ? closeForm() : setShowForm(true))}
+              onClick={() => {
+                setShowImport(false);
+                if (showForm) closeForm();
+                else setShowForm(true);
+              }}
               leadingIcon={showForm ? undefined : <Plus className="h-4 w-4" strokeWidth={2} />}
             >
               {showForm ? 'Cancel' : 'Add product'}
@@ -119,6 +155,13 @@ export default function ProductsPage(): React.JSX.Element {
           </>
         }
       />
+
+      {showImport && (
+        <Panel>
+          <PanelHead title="Import from a spreadsheet" />
+          <ImportCatalogue onDone={() => setShowImport(false)} />
+        </Panel>
+      )}
 
       {showForm && (
         <Panel>
@@ -200,6 +243,30 @@ export default function ProductsPage(): React.JSX.Element {
                   Separate with commas. Lets Flowdesk match &ldquo;5kg rice&rdquo; to this product.
                 </span>
               </label>
+
+              <PricingRules
+                price={form.price}
+                unit={form.unit}
+                value={pricing}
+                onChange={setPricing}
+                bargainingEnabled={business?.bargainingEnabled ?? false}
+              />
+
+              {/*
+                Photos need a product to belong to, so they appear once it
+                exists rather than as a field that silently discards what was
+                picked. A new product saves first and is reopened for its
+                pictures, one extra tap, against an upload that goes nowhere.
+              */}
+              {editingId ? (
+                <div className="lg:col-span-3">
+                  <ProductPhotos productId={editingId} productName={form.name || 'this product'} />
+                </div>
+              ) : (
+                <p className="text-xs text-text-muted lg:col-span-3">
+                  Save this product first, then reopen it to add photos.
+                </p>
+              )}
             </div>
 
             <div className="mt-5 flex items-center gap-2">
@@ -226,7 +293,14 @@ export default function ProductsPage(): React.JSX.Element {
                 ? 'Nothing matched that.'
                 : 'Add what you sell so Flowdesk can spot it in messages.'
             }
-            {...(search ? {} : { action: { label: 'Add your first product', onClick: () => setShowForm(true) } })}
+            {...(search
+              ? {}
+              : {
+                  action: {
+                    label: 'Import from a spreadsheet',
+                    onClick: () => setShowImport(true),
+                  },
+                })}
           />
         )}
 
@@ -238,6 +312,8 @@ export default function ProductsPage(): React.JSX.Element {
 
               return (
                 <Row key={product.id} className="flex-wrap gap-y-2">
+                  <ProductThumbnail image={product.images?.[0]} name={product.name} />
+
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="truncate text-sm font-medium text-text-primary">
                       {product.name}

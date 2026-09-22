@@ -1,39 +1,22 @@
-import jwt from 'jsonwebtoken';
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { env } from '../config/env.js';
 import { UnauthorizedError } from '../utils/errors.js';
 import { businessSubject, isTokenRevoked, staffSubject } from '../services/auth/revocation.js';
-import type { BusinessPlan, StaffRole } from '@prisma/client';
-
-interface JWTPayload {
-  businessId: string;
-  plan: BusinessPlan;
-  staffId?: string;
-  role?: StaffRole;
-  /** Issued-at, epoch seconds. Set by jwt.sign; compared against the revocation epoch. */
-  iat?: number;
-}
-
-function extractBearerToken(header: string | undefined): string | null {
-  if (!header || !header.startsWith('Bearer ')) {
-    return null;
-  }
-  return header.slice(7).trim();
-}
+import { readAccessTokenClaims } from '../services/auth/tokens.js';
 
 export async function requireAuth(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
-  const token = extractBearerToken(request.headers.authorization);
+  // Signature, algorithm, token type, issuer and audience are all asserted in
+  // `verifyAccessToken`. Asserting the TYPE is what stops a refresh token being
+  // presented as a bearer token: a refresh payload carries no staff id, and
+  // `role.middleware.ts` reads an absent staff id as "this is the owner".
+  //
+  // The claims are memoised per request, so the rate limiter having already
+  // read them at `onRequest` means this costs nothing.
+  const payload = readAccessTokenClaims(request);
 
-  if (!token) {
-    throw new UnauthorizedError('Authentication required');
-  }
-
-  let payload: JWTPayload;
-
-  try {
-    payload = jwt.verify(token, env.JWT_SECRET) as JWTPayload;
-  } catch {
-    throw new UnauthorizedError('Invalid or expired token');
+  if (!payload) {
+    throw new UnauthorizedError(
+      request.headers.authorization ? 'Invalid or expired token' : 'Authentication required',
+    );
   }
 
   // A stateless JWT stays valid until it expires, so a password reset,
@@ -54,4 +37,3 @@ export async function requireAuth(request: FastifyRequest, _reply: FastifyReply)
   if (payload.role !== undefined) userData.role = payload.role;
   request.user = userData;
 }
-

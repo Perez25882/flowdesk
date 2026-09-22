@@ -1,0 +1,1 @@
+A customer messages a Ghanaian shop at 06:41. Flowdesk reads it, prices it from the shop's own catalogue, haggles when asked, and refuses to go under the floor the owner set, because that floor is a database constraint and not a line in a prompt. By the time anyone wakes up the order is sitting at the top of the board.

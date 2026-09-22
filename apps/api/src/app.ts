@@ -17,6 +17,7 @@ import { isAppError } from './utils/errors.js';
 import type { ApiError } from './utils/response.js';
 import { requireAuth } from './middleware/auth.middleware.js';
 import { attachBusinessContext } from './middleware/business-context.middleware.js';
+import { rateLimitKeyGenerator, rateLimitMax } from './services/auth/rate-limit.js';
 
 interface HealthResponse {
   status: 'ok' | 'degraded' | 'down';
@@ -153,14 +154,20 @@ export async function createApp(): Promise<FastifyInstance> {
   // traffic on the business id extracted from the token, so one tenant cannot
   // exhaust another's budget and rotating a token does not reset the limit.
   //
+  // The key and the ceiling both come from `services/auth/rate-limit.ts`, which
+  // verifies the bearer token itself. Reading `request.user` here did nothing:
+  // this plugin's hook runs at `onRequest` and `requireAuth` is a `preHandler`,
+  // so `request.user` was always undefined and every tenant shared one IP-keyed
+  // bucket of 100.
+  //
   // Backed by Redis so the limit is shared across API instances — an in-memory
   // store silently multiplies the effective limit by the number of replicas.
   await app.register(rateLimit, {
-    max: (request) => (request.user ? 1000 : 100),
+    max: rateLimitMax,
     timeWindow: '1 minute',
     redis: rateLimitRedis,
     nameSpace: 'flowdesk:ratelimit:',
-    keyGenerator: (request) => request.user?.businessId ?? request.ip,
+    keyGenerator: rateLimitKeyGenerator,
     // Fail open on a Redis outage rather than locking every user out.
     skipOnError: true,
   });
@@ -261,13 +268,16 @@ export async function createApp(): Promise<FastifyInstance> {
       protectedApp.addHook('preHandler', requireAuth);
       protectedApp.addHook('preHandler', attachBusinessContext);
       await protectedApp.register((await import('./modules/orders/orders.route.js')).default);
+      await protectedApp.register((await import('./modules/shipments/shipments.route.js')).default);
       await protectedApp.register((await import('./modules/payments/payments.route.js')).default);
       await protectedApp.register((await import('./modules/products/products.route.js')).default);
       await protectedApp.register((await import('./modules/customers/customers.route.js')).default);
+      await protectedApp.register((await import('./modules/bookings/bookings.route.js')).default);
       await protectedApp.register((await import('./modules/messages/messages.route.js')).default);
       await protectedApp.register((await import('./modules/settings/settings.route.js')).default);
       await protectedApp.register((await import('./modules/staff/staff.route.js')).default);
       await protectedApp.register((await import('./modules/dashboard/dashboard.route.js')).default);
+      await protectedApp.register((await import('./modules/settings/insights.route.js')).default);
       await protectedApp.register((await import('./modules/billing/billingCheckout.route.js')).default);
     });
   }, { prefix: '/api/v1' });

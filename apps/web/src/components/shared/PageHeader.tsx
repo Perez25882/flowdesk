@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
  * actions that belong to it, instead of pushing every control into a single
  * global toolbar where a "New order" button sits next to "Sign out".
  *
- * The title is set at 22px semibold with tight tracking — large enough to
+ * The title is set at 22px semibold with tight tracking, large enough to
  * anchor the page, small enough that it never competes with the figures
  * underneath it, which are the actual content.
  */

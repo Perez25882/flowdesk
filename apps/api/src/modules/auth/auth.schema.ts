@@ -63,3 +63,17 @@ export type ResetPasswordInput = z.infer<typeof ResetPasswordSchema>;
 export type ChangePasswordInput = z.infer<typeof ChangePasswordSchema>;
 export type RefreshTokenInput = z.infer<typeof RefreshTokenSchema>;
 export type LogoutInput = z.infer<typeof LogoutSchema>;
+
+/**
+ * Six digits, and nothing clever.
+ *
+ * Trimmed and stripped of spaces before validation because a code pasted out of
+ * an email client regularly arrives as "123 456", and rejecting that would be
+ * rejecting the user for the mail client's formatting.
+ */
+export const VerifyEmailSchema = z.object({
+  code: z
+    .string()
+    .transform((value) => value.replace(/\s+/g, ''))
+    .pipe(z.string().regex(/^\d{6}$/, 'Enter the six digit code from your email')),
+});

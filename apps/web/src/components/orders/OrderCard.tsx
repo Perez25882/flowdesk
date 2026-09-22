@@ -10,10 +10,15 @@ interface OrderCardProps {
   showStatus?: boolean;
 }
 
+// Typed as `Record<string, string>`, so a missing status is not a build error —
+// it simply renders as nothing on the card. DISPATCHED went missing here when
+// the status was added to the enum, which is exactly the failure this type can
+// never catch.
 const STATUS_LABEL: Record<string, string> = {
   PENDING: 'Pending',
   CONFIRMED: 'Confirmed',
   PROCESSING: 'Processing',
+  DISPATCHED: 'Dispatched',
   FULFILLED: 'Fulfilled',
   CANCELLED: 'Cancelled',
 };
@@ -23,7 +28,7 @@ const STATUS_LABEL: Record<string, string> = {
  *
  * The old card repeated the status as a coloured tag in the corner while
  * sitting inside a column headed by that same status, and set the reference
- * number in the brand colour at the same size as the customer's name — so the
+ * number in the brand colour at the same size as the customer's name, so the
  * loudest thing on the card was an internal identifier.
  *
  * Now the money is the largest element, the customer is second, and the

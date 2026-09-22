@@ -61,10 +61,17 @@ export function useRealtimeOrders(): void {
       if (event.type === 'message.flagged') {
         queueInvalidate(['messages']);
         queueInvalidate(['dashboard', 'badges']);
+        // A flagged message is very often a MoMo screenshot arriving, and the
+        // payment claim behind it is written in the same transaction. Without
+        // this the review queue only picks it up on the next stale refetch, so
+        // the owner sits looking at a tab that says nothing needs checking
+        // while the customer waits to hear their money landed.
+        queueInvalidate(['payments', 'review-queue']);
       }
 
       if (event.type === 'payment.confirmed') {
         queueInvalidate(['payments']);
+        queueInvalidate(['payments', 'review-queue']);
         queueInvalidate(['orders']);
         queueInvalidate(['customers']);
       }

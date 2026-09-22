@@ -1,10 +1,21 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useLogin, useStaffLogin, isAuthenticated } from '@/hooks/useAuth';
-import AuthShell, { AuthField, AuthSubmit, AuthError } from '@/components/auth/AuthShell';
+import AuthShell, {
+  AuthField,
+  AuthSubmit,
+  AuthError,
+  useFieldErrors,
+  splitApiError,
+  validateEmailShape,
+  type FieldErrors,
+} from '@/components/auth/AuthShell';
 import { cn } from '@/lib/utils';
 
 type Mode = 'owner' | 'staff';
+type Field = 'email' | 'phone' | 'password';
+
+const FIELDS = ['email', 'phone', 'password'] as const;
 
 export default function LoginPage(): React.JSX.Element {
   const navigate = useNavigate();
@@ -17,6 +28,10 @@ export default function LoginPage(): React.JSX.Element {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
 
+  const emailRef = useRef<HTMLInputElement>(null);
+  const phoneRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (isAuthenticated()) {
       navigate('/dashboard', { replace: true });
@@ -25,10 +40,72 @@ export default function LoginPage(): React.JSX.Element {
 
   const active = mode === 'owner' ? ownerLogin : staffLogin;
   const busy = active.isPending;
-  const error = active.error instanceof Error ? active.error.message : null;
+  const serverMessage = active.error instanceof Error ? active.error.message : null;
+
+  /**
+   * Sign-in checks shape, never length.
+   *
+   * A minimum-length rule here would reject the password of anyone who
+   * registered before that rule existed, and it would do so client-side with a
+   * message implying they had typed it wrong. Whether the password is right is
+   * the server's question, and it is the only one qualified to answer it.
+   */
+  const validate = useMemo(
+    () =>
+      (field: Field, value: string): string | undefined => {
+        switch (field) {
+          case 'email':
+            return validateEmailShape(value);
+          case 'phone':
+            return value.trim() === '' ? 'Enter the number your manager invited.' : undefined;
+          case 'password':
+            return value === '' ? 'Enter your password.' : undefined;
+          default:
+            return undefined;
+        }
+      },
+    [],
+  );
+
+  const { errors, handleBlur, handleChange, setErrors } = useFieldErrors<Field>(validate);
+
+  // Server-side validation lands on the field it is about; wrong credentials,
+  // lockouts and network failures stay form-level, because none of those are
+  // about one box.
+  const split = splitApiError<Field>(serverMessage, FIELDS);
+
+  const shown: FieldErrors<Field> = { ...errors, ...split.fieldErrors };
+
+  function fail(next: FieldErrors<Field>, order: Field[]): void {
+    setErrors(next);
+    const first = order.find((field) => next[field]);
+    const refs: Record<Field, typeof emailRef> = {
+      email: emailRef,
+      phone: phoneRef,
+      password: passwordRef,
+    };
+    if (first) refs[first].current?.focus();
+  }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
+    // A second submit while the first is in flight would fire a second request
+    // and, on a rotating refresh token, sign the person straight back out.
+    if (busy) return;
+
+    const identifier: Field = mode === 'owner' ? 'email' : 'phone';
+    const identifierValue = mode === 'owner' ? email : phone;
+
+    const next: FieldErrors<Field> = {
+      [identifier]: validate(identifier, identifierValue),
+      password: validate('password', password),
+    };
+
+    if (next[identifier] || next.password) {
+      fail(next, [identifier, 'password']);
+      return;
+    }
+
     const onSuccess = (): void => navigate('/dashboard', { replace: true });
 
     if (mode === 'owner') {
@@ -36,6 +113,13 @@ export default function LoginPage(): React.JSX.Element {
     } else {
       staffLogin.mutate({ phone: phone.trim(), password }, { onSuccess });
     }
+  }
+
+  function switchMode(next: Mode): void {
+    setMode(next);
+    // The other tab's complaints are not about what is on screen now.
+    setErrors({});
+    active.reset();
   }
 
   return (
@@ -74,7 +158,7 @@ export default function LoginPage(): React.JSX.Element {
             role="tab"
             type="button"
             aria-selected={mode === option}
-            onClick={() => setMode(option)}
+            onClick={() => switchMode(option)}
             className={cn(
               'relative px-3 pb-2.5 text-sm font-medium transition-colors duration-fast ease-out',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background',
@@ -99,9 +183,16 @@ export default function LoginPage(): React.JSX.Element {
             id="email"
             label="Email"
             type="email"
+            inputMode="email"
             autoComplete="email"
             value={email}
-            onChange={setEmail}
+            onChange={(value) => {
+              setEmail(value);
+              handleChange('email', value);
+            }}
+            onBlur={() => handleBlur('email', email)}
+            inputRef={emailRef}
+            error={shown.email}
             placeholder="you@yourbusiness.com"
             required
           />
@@ -110,9 +201,16 @@ export default function LoginPage(): React.JSX.Element {
             id="phone"
             label="Phone number"
             type="tel"
+            inputMode="tel"
             autoComplete="tel"
             value={phone}
-            onChange={setPhone}
+            onChange={(value) => {
+              setPhone(value);
+              handleChange('phone', value);
+            }}
+            onBlur={() => handleBlur('phone', phone)}
+            inputRef={phoneRef}
+            error={shown.phone}
             placeholder="024 418 7702"
             required
           />
@@ -124,7 +222,13 @@ export default function LoginPage(): React.JSX.Element {
           type="password"
           autoComplete="current-password"
           value={password}
-          onChange={setPassword}
+          onChange={(value) => {
+            setPassword(value);
+            handleChange('password', value);
+          }}
+          onBlur={() => handleBlur('password', password)}
+          inputRef={passwordRef}
+          error={shown.password}
           required
         />
 
@@ -139,7 +243,7 @@ export default function LoginPage(): React.JSX.Element {
           </div>
         )}
 
-        <AuthError message={error} />
+        <AuthError message={split.formError} />
 
         <AuthSubmit disabled={busy} isLoading={busy}>
           {busy ? 'Signing in' : 'Sign in'}

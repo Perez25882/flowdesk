@@ -5,6 +5,59 @@ export { IntentType, ClassificationSource, type IntentClassification, type Class
 export { MIN_PASSWORD_LENGTH } from './auth.js';
 
 export {
+  ASSISTANT_CONTRACT_VERSION,
+  ASSISTANT_LANGUAGES,
+  ASSISTANT_SENTIMENTS,
+  ASSISTANT_ACTIONS,
+  ESCALATION_REASONS,
+  CLARIFICATION_FIELDS,
+  type AssistantLanguage,
+  type AssistantSentiment,
+  type AssistantEvidenceRef,
+  type AssistantProductMention,
+  type AssistantDecision,
+  type AssistantAction,
+  type EscalationReason,
+  type ClarificationField,
+} from './assistant.js';
+
+export {
+  BUSINESS_TYPES,
+  BUSINESS_TYPE_LABELS,
+  DAYS_OF_WEEK,
+  DAY_LABELS,
+  PAYMENT_METHODS,
+  PAYMENT_METHOD_LABELS,
+  PRICING_STANCES,
+  PRICING_STANCE_LABELS,
+  PROFILE_QUESTIONS,
+  GHANA_REGIONS,
+  findDeliveryZone,
+  deliveryPlaceNames,
+  AI_ASSIST_MODES,
+  CATALOGUE_MODES,
+  CATALOGUE_MODE_LABELS,
+  AI_ASSIST_MODE_LABELS,
+  AI_ASSIST_MODE_DESCRIPTIONS,
+  sendsWithoutReview,
+  isProfileEmpty,
+  countAnsweredQuestions,
+  hasGroundableFacts,
+  type BusinessType,
+  type DayOfWeek,
+  type PaymentMethod,
+  type PricingStance,
+  type TimeOfDay,
+  type OpeningHours,
+  type GhanaRegion,
+  type DeliveryZone,
+  type BusinessProfile,
+  type ProfileQuestion,
+  type AiAssistMode,
+  type CatalogueMode,
+} from './business-profile.js';
+
+export {
   ROLE_CAPABILITIES,
   hasCapability,
   isAssignmentScoped,
@@ -24,3 +77,15 @@ export {
   type StockAlertPayload,
   type PaymentConfirmedPayload,
 } from './sse.js';
+
+export {
+  PAYMENT_CONFIDENCES,
+  PAYMENT_CONFIDENCE_RANK,
+  PAYMENT_CONFIDENCE_LABELS,
+  PAYMENT_DIRECTIONS,
+  isAttested,
+  netAttested,
+  type PaymentConfidence,
+  type PaymentDirection,
+  type AttestablePayment,
+} from './payment-integrity.js';

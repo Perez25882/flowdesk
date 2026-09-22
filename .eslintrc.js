@@ -27,6 +27,15 @@ module.exports = {
     'no-debugger': 'error',
     eqeqeq: ['error', 'always'],
   },
+  overrides: [
+    {
+      // Operator scripts run from a terminal and are read by a person standing
+      // in front of it. `no-console` is there to stop server code logging
+      // outside the structured logger; printing is what these are for.
+      files: ['**/src/scripts/**/*.ts'],
+      rules: { 'no-console': 'off' },
+    },
+  ],
   ignorePatterns: [
     'node_modules',
     'dist',

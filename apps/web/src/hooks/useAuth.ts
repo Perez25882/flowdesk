@@ -169,7 +169,7 @@ export function getUserRole(): string | null {
   return decodeToken()?.role ?? null;
 }
 
-/** The owner is the account holder — staff tokens carry a staffId, owners do not. */
+/** The owner is the account holder, staff tokens carry a staffId, owners do not. */
 export function isOwner(): boolean {
   const claims = decodeToken();
   return claims !== null && !claims.staffId;
@@ -192,7 +192,7 @@ export function isDeliveryStaff(): boolean {
  *
  * Reads the same matrix the API enforces (`@flowdesk/shared`), so a control is
  * hidden exactly when the endpoint behind it would return 403. This is a
- * rendering decision only — the server check is the real one.
+ * rendering decision only, the server check is the real one.
  */
 export function can(capability: Capability): boolean {
   if (isOwner()) return true;
