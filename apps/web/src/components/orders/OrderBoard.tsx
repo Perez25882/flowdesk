@@ -34,17 +34,58 @@ import { SkeletonCards } from '@/components/ui/Skeleton';
  * Column widths are set on the grid container, in the same order as this list.
  * Attention, expressed as width: 1.25 / 1.1 / 1.1 / 1 / 0.8.
  */
+/**
+ * `empty` says what the absence MEANS in that column, rather than repeating
+ * "Nothing here." six times across the board.
+ *
+ * Six identical empty strings is a tell: it says the states were written once
+ * and never read back. An empty Pending column is good news at 4pm and bad news
+ * at 9am, and an empty Cancelled column is simply good — the words should carry
+ * that, because an owner glancing at the board reads the gaps as much as the
+ * cards.
+ */
 const COLUMNS: {
   status: OrderStatus;
   label: string;
   accent: string;
+  empty: string;
 }[] = [
-  { status: 'PENDING', label: 'Pending', accent: 'bg-status-pending' },
-  { status: 'CONFIRMED', label: 'Confirmed', accent: 'bg-status-confirmed' },
-  { status: 'PROCESSING', label: 'Packing', accent: 'bg-status-processing' },
-  { status: 'DISPATCHED', label: 'On the way', accent: 'bg-status-dispatched' },
-  { status: 'FULFILLED', label: 'Delivered', accent: 'bg-status-fulfilled' },
-  { status: 'CANCELLED', label: 'Cancelled', accent: 'bg-status-cancelled' },
+  {
+    status: 'PENDING',
+    label: 'Pending',
+    accent: 'bg-status-pending',
+    empty: 'No new orders waiting.',
+  },
+  {
+    status: 'CONFIRMED',
+    label: 'Confirmed',
+    accent: 'bg-status-confirmed',
+    empty: 'Nothing confirmed yet.',
+  },
+  {
+    status: 'PROCESSING',
+    label: 'Packing',
+    accent: 'bg-status-processing',
+    empty: 'Nothing being packed.',
+  },
+  {
+    status: 'DISPATCHED',
+    label: 'On the way',
+    accent: 'bg-status-dispatched',
+    empty: 'Nothing out for delivery.',
+  },
+  {
+    status: 'FULFILLED',
+    label: 'Delivered',
+    accent: 'bg-status-fulfilled',
+    empty: 'No completed orders yet.',
+  },
+  {
+    status: 'CANCELLED',
+    label: 'Cancelled',
+    accent: 'bg-status-cancelled',
+    empty: 'Nothing cancelled. Good.',
+  },
 ];
 
 /**
@@ -98,6 +139,7 @@ function KanbanColumn({
   status,
   label,
   accent,
+  empty,
   onSelectOrder,
   isDropTarget,
   staffId,
@@ -105,11 +147,18 @@ function KanbanColumn({
   status: OrderStatus;
   label: string;
   accent: string;
+  empty: string;
   onSelectOrder: (order: OrderWithRelations) => void;
   isDropTarget: boolean;
   staffId: string;
 }): React.JSX.Element {
-  const { data: orders, isLoading, error } = useOrdersByStatus(status, staffId || undefined);
+  const {
+    data: orders,
+    isLoading,
+    error,
+    refetch,
+    isFetching,
+  } = useOrdersByStatus(status, staffId || undefined);
   const { setNodeRef, isOver } = useDroppable({ id: status, disabled: !isDropTarget });
 
   const { count, totalValue } = useMemo(() => {
@@ -177,14 +226,32 @@ function KanbanColumn({
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
         {isLoading && <SkeletonCards count={2} />}
 
+        {/*
+          An error a person can act on, not a red sentence. Loose danger-
+          coloured text with no affordance is the most unfinished-looking thing
+          on a dashboard: it tells someone something is wrong and then leaves
+          them with nowhere to click. This column can refetch itself, so it
+          offers that.
+        */}
         {error && (
-          <p className="px-1 py-3 text-sm text-danger">
-            Could not load these orders. Check your connection and try again.
-          </p>
+          <div className="mx-1 my-2 rounded-md border border-danger/25 bg-danger/5 px-3 py-2.5">
+            <p className="text-xs font-medium text-text-primary">These orders didn&apos;t load.</p>
+            <p className="mt-0.5 text-2xs text-text-muted">
+              The rest of the board is unaffected.
+            </p>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              disabled={isFetching}
+              className="mt-2 text-2xs font-semibold text-danger underline-offset-2 hover:underline disabled:opacity-60"
+            >
+              {isFetching ? 'Trying…' : 'Try again'}
+            </button>
+          </div>
         )}
 
         {!isLoading && !error && sortedOrders.length === 0 && (
-          <p className="px-1 py-6 text-xs text-text-muted">Nothing here.</p>
+          <p className="px-1 py-6 text-xs text-text-muted">{empty}</p>
         )}
 
         {!isLoading &&
@@ -267,6 +334,7 @@ export default function OrderBoard({ onSelectOrder, staffId }: OrderBoardProps):
             status={column.status}
             label={column.label}
             accent={column.accent}
+            empty={column.empty}
             onSelectOrder={onSelectOrder}
             isDropTarget={column.status !== 'CANCELLED'}
             staffId={staffId}

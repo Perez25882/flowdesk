@@ -87,6 +87,25 @@ export function customerLabel(
   fallback = 'Unknown number',
 ): string {
   if (!customer) return fallback;
-  if (customer.name && customer.name.trim().length > 0) return customer.name;
+  if (isNameLike(customer.name)) return customer.name!.trim();
   return formatPhone(customer.waNumber) || fallback;
+}
+
+/**
+ * Whether a WhatsApp profile name is usable as a name on screen.
+ *
+ * The name comes from the customer's own WhatsApp profile, and people set it to
+ * whatever they like — including a single emoji. Rendering that produced a
+ * customer called "😏", an order card headed by an emoji, and a greeting that
+ * read "Hi 😏!". It looks like the product is broken even though the data is
+ * exactly what WhatsApp sent.
+ *
+ * One letter or digit anywhere is enough to accept it: names in this market are
+ * often short, and stripping decoration from around a real name would be worse
+ * than keeping it. A string with neither is not a name, and the phone number is
+ * the more useful thing to show.
+ */
+function isNameLike(name: string | null | undefined): boolean {
+  if (!name) return false;
+  return /\p{L}|\p{N}/u.test(name);
 }

@@ -604,10 +604,17 @@ summary,
     color: var(--color-text-muted);
   }
 
-  /* Any number a person might read aloud or compare down a column. */
+  /* Any number a person might read aloud or compare down a column.
+   *
+   * Tabular figures in the BODY face, not a monospace one. Both give a column
+   * the digit alignment it needs; only monospace also announces itself as code.
+   * GH¢240.00 set in JetBrains Mono beside prose set in the UI face is the
+   * loudest single tell that a screen was assembled rather than designed —
+   * money on a shop's dashboard should read like money on a receipt, not like
+   * terminal output. */
   .fd-figure {
-    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
     letter-spacing: var(--tracking-tight);
   }
 

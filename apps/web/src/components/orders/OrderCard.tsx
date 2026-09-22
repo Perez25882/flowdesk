@@ -1,6 +1,6 @@
 import { AlertTriangle } from 'lucide-react';
 import type { OrderWithRelations } from '@/types/order';
-import { formatCurrency, timeAgo, getInitials } from '@/lib/utils';
+import { formatCurrency, timeAgo, getInitials, customerLabel, formatPhone } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 
 interface OrderCardProps {
@@ -64,13 +64,25 @@ export default function OrderCard({
         <span className="shrink-0 text-2xs text-text-muted">{timeAgo(order.createdAt)}</span>
       </div>
 
+      {/*
+        `customerLabel` rather than the raw fields. It falls back to a readable
+        +233 XX XXX XXXX when a customer has not given a name — which is most
+        new customers — where this used to print twelve undifferentiated digits
+        an owner cannot match against their phone or read out to a rider. It
+        also refuses a profile name that is only an emoji.
+
+        The number line shows only when the line above it is an actual name,
+        since otherwise the two say the same thing twice.
+      */}
       <div className="flex flex-col gap-0.5">
         <span className="truncate text-sm font-semibold text-text-primary">
-          {order.customer.name ?? 'Unknown customer'}
+          {customerLabel(order.customer, 'Unknown customer')}
         </span>
-        <span className="fd-figure truncate text-2xs text-text-muted">
-          {order.customer.waNumber}
-        </span>
+        {order.customer.name && (
+          <span className="fd-figure truncate text-2xs text-text-muted">
+            {formatPhone(order.customer.waNumber)}
+          </span>
+        )}
       </div>
 
       {topItems.length > 0 && (
