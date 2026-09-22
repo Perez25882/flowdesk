@@ -17,7 +17,7 @@ type Role = 'MANAGER' | 'OPERATIONS' | 'DELIVERY';
  *
  * The role select used to offer three bare words. Choosing wrongly here is how
  * a delivery rider ends up able to see revenue, so each option now states what
- * it grants, and the choice is a radio list rather than a dropdown — the
+ * it grants, and the choice is a radio list rather than a dropdown, the
  * consequences deserve to be visible before you commit to them.
  */
 const ROLES: { value: Role; label: string; scope: string }[] = [
@@ -237,7 +237,7 @@ export default function StaffPage(): React.JSX.Element {
                   {/* Deactivation is the reason this page exists on a phone: a
                       staff member walks out with a phone still signed in, and
                       the owner needs to cut access from wherever they are
-                      standing. It takes effect immediately — the API deletes
+                      standing. It takes effect immediately. The API deletes
                       their sessions and bumps a revocation epoch, so even a
                       token issued a minute ago stops working. */}
                   <Button

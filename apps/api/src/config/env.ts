@@ -114,9 +114,10 @@ const envSchema = z.object({
   // ── AI / Intent classification ──────────────────────────────────────────
   // Absent = rule engine only. The rule engine handles ~80% of traffic, so the
   // pipeline stays functional; ambiguous messages fall through to review.
-  AI_PROVIDER: z.enum(['anthropic', 'nvidia']).default('anthropic'),
+  AI_PROVIDER: z.enum(['anthropic', 'nvidia', 'groq']).default('anthropic'),
   ANTHROPIC_API_KEY: optionalString,
   NVIDIA_API_KEY: optionalString,
+  GROQ_API_KEY: optionalString,
   NVIDIA_MODEL: z.string().min(1).default('meta/llama-3.1-8b-instruct'),
   HAIKU_FALLBACK_ENABLED: booleanFromString.default(true),
   HAIKU_CONFIDENCE_THRESHOLD: z.coerce
@@ -134,6 +135,15 @@ const envSchema = z.object({
   // right default follows AI_PROVIDER instead of being pinned to one vendor.
   ASSISTANT_MODEL: optionalString,
   /**
+   * A vision model, for reading a shop's own Status photos.
+   *
+   * No default on purpose. A hosted model name baked in as a default outlives
+   * the model — that is exactly how the text provider spent six days serving
+   * canned templates behind a 410. Unset means the assistant asks a good
+   * question about the picture instead of describing it, which it does well.
+   */
+  VISION_MODEL: optionalString,
+  /**
    * Sampling temperature for the assistant. Warm enough that two customers
    * asking the same question do not get a byte-identical sentence, low enough
    * that the model still fills the decision contract reliably.
@@ -145,13 +155,33 @@ const envSchema = z.object({
   // Caps reasoning AND the reply together, so it needs room for both.
   ASSISTANT_MAX_TOKENS: z.coerce.number().int().min(512).max(16_000).default(2_048),
 
-  // ── AWS S3 (media) ──────────────────────────────────────────────────────
+  // ── Object storage (media) ──────────────────────────────────────────────
   // Absent = inbound media is recorded but not archived. Meta media URLs
   // expire in ~5 minutes, so production requires this.
+  //
+  // The variables are still named AWS_* because that is what every deployment
+  // already sets, but the client speaks plain S3 and therefore also speaks to
+  // any S3-compatible bucket. Point S3_ENDPOINT at one — Supabase Storage,
+  // Cloudflare R2, MinIO — and the same three credentials work unchanged.
   AWS_ACCESS_KEY_ID: optionalString,
   AWS_SECRET_ACCESS_KEY: optionalString,
   AWS_REGION: z.string().min(1).default('eu-west-1'),
   AWS_S3_BUCKET: optionalString,
+  /**
+   * Base endpoint of an S3-compatible service. Empty means real AWS S3.
+   *
+   * Supabase: https://<project-ref>.storage.supabase.co/storage/v1/s3
+   * with AWS_REGION set to the project's region and the access key pair taken
+   * from Storage → S3 access keys (NOT the anon or service-role JWT).
+   */
+  S3_ENDPOINT: optionalString,
+  /**
+   * Path-style addressing (`<endpoint>/<bucket>/<key>`) rather than putting the
+   * bucket in the hostname. Required by Supabase, R2 and MinIO; AWS deprecated
+   * it, so it defaults off and is turned on automatically whenever an endpoint
+   * is configured.
+   */
+  S3_FORCE_PATH_STYLE: z.coerce.boolean().optional(),
 
   // ── Email ───────────────────────────────────────────────────────────────
   RESEND_API_KEY: optionalString,
@@ -178,6 +208,32 @@ const envSchema = z.object({
   PAYSTACK_PLAN_BUSINESS: optionalString,
   PAYSTACK_PLAN_GROWTH: optionalString,
   PAYSTACK_PUBLIC_KEY: optionalString,
+
+  // ── Taking money for shops (Paystack subaccounts) ───────────────────────
+  /**
+   * Flowdesk's share of each customer payment, as a percentage.
+   *
+   * This is `percentage_charge` on the subaccount, which Paystack defines as
+   * what the MAIN account keeps — so 1.5 means Flowdesk keeps 1.5% and the
+   * shop is settled the rest. A per-business override lives on
+   * `Business.commissionPercent`.
+   */
+  PLATFORM_COMMISSION_PERCENT: z.coerce.number().min(0).max(100).default(1.5),
+  /**
+   * Who absorbs Paystack's own fee on a customer payment.
+   *
+   * `subaccount` — the shop pays the gateway, and Flowdesk's commission sits on
+   * top of that. `account` — Flowdesk absorbs it, which turns the commission
+   * into a much thinner margin. Configuration rather than a constant because it
+   * is a pricing decision, and pricing should not need a deploy.
+   */
+  PAYSTACK_FEE_BEARER: z.enum(['subaccount', 'account']).default('subaccount'),
+  /**
+   * Where Paystack returns the customer after a hosted checkout. Empty leaves
+   * them on Paystack's own confirmation page, which is a perfectly good place
+   * to end up and is the right default before a receipt page exists.
+   */
+  PAYSTACK_CALLBACK_URL: optionalString,
 
   // ── Monitoring ──────────────────────────────────────────────────────────
   SENTRY_DSN: optionalString.refine(
@@ -250,9 +306,19 @@ function computeFeatures(parsed: Env): Features {
         parsed.META_VERIFY_TOKEN,
     ),
     whatsappSignup: Boolean(parsed.META_APP_ID && parsed.META_APP_SECRET && parsed.META_CONFIG_ID),
+    // Keyed on the provider actually selected. A lookup rather than a ternary
+    // because a two-branch conditional silently reports on the wrong credential
+    // the moment a third provider exists — which is how a shop ends up being
+    // told the assistant is configured while every request returns 401.
     aiClassification:
       parsed.HAIKU_FALLBACK_ENABLED &&
-      Boolean(parsed.AI_PROVIDER === 'nvidia' ? parsed.NVIDIA_API_KEY : parsed.ANTHROPIC_API_KEY),
+      Boolean(
+        {
+          anthropic: parsed.ANTHROPIC_API_KEY,
+          nvidia: parsed.NVIDIA_API_KEY,
+          groq: parsed.GROQ_API_KEY,
+        }[parsed.AI_PROVIDER],
+      ),
     mediaStorage: Boolean(
       parsed.AWS_ACCESS_KEY_ID && parsed.AWS_SECRET_ACCESS_KEY && parsed.AWS_S3_BUCKET,
     ),

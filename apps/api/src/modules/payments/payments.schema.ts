@@ -6,6 +6,7 @@ export const PaymentMethodSchema = z.enum([
   'MOMO_AIRTELTIGO',
   'CASH',
   'BANK_TRANSFER',
+  'CARD',
   'OTHER',
 ]);
 
@@ -93,3 +94,32 @@ export type ConfirmPaymentInput = z.infer<typeof ConfirmPaymentSchema>;
 export type ReviewQueueQueryInput = z.infer<typeof ReviewQueueQuerySchema>;
 export type VoidPaymentInput = z.infer<typeof VoidPaymentSchema>;
 export type ListPaymentsQueryInput = z.infer<typeof ListPaymentsQuerySchema>;
+
+// ── Payment links ───────────────────────────────────────────────────────────
+
+export const CreatePaymentLinkSchema = z.object({
+  customerId: z.string().min(1),
+  orderId: z.string().optional(),
+  amount: z.coerce.number().positive().max(1_000_000),
+  /** Send it on WhatsApp now. Default true — a link nobody sees is not a link. */
+  send: z.boolean().default(true),
+  /** Replaces the default sentence carrying the link. */
+  message: z.string().max(900).optional(),
+});
+
+export const ListPaymentLinksQuerySchema = z.object({
+  status: z.enum(['PENDING', 'PAID', 'FAILED', 'EXPIRED', 'CANCELLED']).optional(),
+  customerId: z.string().optional(),
+  orderId: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(200).default(50),
+});
+
+export const ConnectPayoutSchema = z.object({
+  /** A code from GET /payouts/destinations, never a name. */
+  bankCode: z.string().min(1).max(20),
+  accountNumber: z.string().min(6).max(20),
+});
+
+export type CreatePaymentLinkInput = z.infer<typeof CreatePaymentLinkSchema>;
+export type ListPaymentLinksQueryInput = z.infer<typeof ListPaymentLinksQuerySchema>;
+export type ConnectPayoutInput = z.infer<typeof ConnectPayoutSchema>;

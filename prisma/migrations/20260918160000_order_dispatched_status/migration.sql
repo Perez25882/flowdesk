@@ -1,0 +1,11 @@
+-- "It has left the shop" is a different fact from "it is being packed" and from
+-- "it is done", and the customer notification for it has to say something
+-- different too. Without its own value, dispatch would have to masquerade as
+-- PROCESSING or jump straight to FULFILLED, and an order would be marked
+-- complete before anyone had received it.
+--
+-- Alone in its own migration on purpose: Postgres will not let a new enum value
+-- be *used* in the same transaction that adds it, and Prisma runs each
+-- migration file in one transaction. Splitting it means the next migration, and
+-- every later one, can reference 'DISPATCHED' freely.
+ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'DISPATCHED' BEFORE 'FULFILLED';

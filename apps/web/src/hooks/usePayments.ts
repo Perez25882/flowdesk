@@ -72,7 +72,7 @@ export function useAttestPayment(): UseMutationResult<Payment, Error, string> {
 }
 
 /**
- * Reverses a payment without deleting it. The reason is required by the API —
+ * Reverses a payment without deleting it. The reason is required by the API , 
  * an unexplained reversal is not evidence of anything.
  */
 export function useVoidPayment(): UseMutationResult<void, Error, { id: string; reason: string }> {
@@ -93,7 +93,7 @@ export function useVoidPayment(): UseMutationResult<void, Error, { id: string; r
  *
  * `SCREENSHOT` is a MoMo receipt image the customer sent; `LOGGED` is an amount
  * a staff member wrote down but is not allowed to attest to themselves. Both ask
- * the owner the same question — did this money actually arrive — which is why
+ * the owner the same question, did this money actually arrive, which is why
  * they share one queue.
  */
 export interface ReviewQueueItem {
@@ -119,7 +119,7 @@ export interface ReviewQueueItem {
     amountPaid: number;
     outstanding: number;
   } | null;
-  /** Null for a LOGGED claim — there is no image behind it. */
+  /** Null for a LOGGED claim, there is no image behind it. */
   screenshot: {
     available: boolean;
     /** Path relative to the API base, to be fetched with the auth header. */
@@ -138,7 +138,7 @@ export const REVIEW_QUEUE_KEY = ['payments', 'review-queue'] as const;
  * Everything waiting on a person, newest first.
  *
  * The Payments page previously built this list from `?attested=false&hasScreenshot=true`,
- * which filtered on `screenshotUrl` — a column that is null for exactly the
+ * which filtered on `screenshotUrl`, a column that is null for exactly the
  * screenshots that failed to archive, and null for every logged claim. The tab
  * was therefore permanently empty while claims piled up behind it.
  */
@@ -165,7 +165,7 @@ export interface ConfirmPaymentInput {
  * someone looks, and letting either of those be attested by omission would put
  * a placeholder into the revenue figures with a single tap.
  *
- * A 400 back means the claim was already confirmed or voided by somebody else —
+ * A 400 back means the claim was already confirmed or voided by somebody else , 
  * two people at the same counter with the same queue open.
  */
 export function useConfirmPayment(): UseMutationResult<
@@ -202,7 +202,7 @@ export interface ScreenshotImage {
  * through the API client instead and wrapped in a Blob URL.
  *
  * The URL is revoked on unmount and whenever the path changes. Without that,
- * every screenshot the owner opens stays resident for the life of the tab —
+ * every screenshot the owner opens stays resident for the life of the tab , 
  * which on the phone this is used from is a few hundred kilobytes each, in a
  * queue that can hold fifty.
  */
@@ -262,5 +262,135 @@ export function useRevenueStats(): UseQueryResult<RevenueStats, Error> {
     queryKey: ['payments', 'stats'],
     queryFn: () => apiFetch<RevenueStats>('/payments/stats'),
     staleTime: 60_000,
+  });
+}
+
+// ── Payment links ───────────────────────────────────────────────────────────
+
+export interface PaymentLink {
+  id: string;
+  amount: number;
+  currency: string;
+  reference: string;
+  url: string;
+  status: 'PENDING' | 'PAID' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+  orderId: string | null;
+  customerId: string;
+  channel: string | null;
+  paidAt: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface CreatePaymentLinkInput {
+  customerId: string;
+  orderId?: string;
+  amount: number;
+  /** Send it on WhatsApp now. */
+  send?: boolean;
+  message?: string;
+}
+
+export function usePaymentLinks(filters: {
+  orderId?: string;
+  customerId?: string;
+  status?: PaymentLink['status'];
+} = {}): UseQueryResult<PaymentLink[], Error> {
+  const params = new URLSearchParams();
+  if (filters.orderId) params.set('orderId', filters.orderId);
+  if (filters.customerId) params.set('customerId', filters.customerId);
+  if (filters.status) params.set('status', filters.status);
+  const query = params.toString() ? `?${params.toString()}` : '';
+
+  return useQuery({
+    queryKey: ['payment-links', filters.orderId, filters.customerId, filters.status],
+    queryFn: () => apiFetch<PaymentLink[]>(`/payments/links${query}`),
+    staleTime: 15_000,
+  });
+}
+
+export function useCreatePaymentLink(): UseMutationResult<
+  PaymentLink,
+  Error,
+  CreatePaymentLinkInput
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CreatePaymentLinkInput) =>
+      apiFetch<PaymentLink>('/payments/links', { method: 'POST', body: data }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['payment-links'] });
+      qc.invalidateQueries({ queryKey: ['orders'] });
+    },
+  });
+}
+
+export function useCancelPaymentLink(): UseMutationResult<void, Error, string> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<void>(`/payments/links/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['payment-links'] }),
+  });
+}
+
+// ── Payouts ─────────────────────────────────────────────────────────────────
+
+export interface PayoutStatus {
+  connected: boolean;
+  /** Masked, the full number is never sent back. */
+  accountNumber: string | null;
+  accountName: string | null;
+  bankCode: string | null;
+  bankName: string | null;
+  connectedAt: string | null;
+  commissionPercent: number;
+  /** False when this deployment has no Paystack keys. */
+  available: boolean;
+}
+
+export interface SettlementDestination {
+  name: string;
+  slug: string;
+  code: string;
+  type: string;
+}
+
+export function usePayoutStatus(): UseQueryResult<PayoutStatus, Error> {
+  return useQuery({
+    queryKey: ['payouts'],
+    queryFn: () => apiFetch<PayoutStatus>('/payouts'),
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * The networks and banks a shop can be settled to.
+ *
+ * Fetched rather than hardcoded, and cached for the session: it is Paystack's
+ * list, it changes without warning, and a stale copy in our source is how a
+ * shop ends up picking "Vodafone Cash" from a menu two years after the network
+ * was renamed.
+ */
+export function useSettlementDestinations(
+  enabled: boolean,
+): UseQueryResult<SettlementDestination[], Error> {
+  return useQuery({
+    queryKey: ['payouts', 'destinations'],
+    queryFn: () => apiFetch<SettlementDestination[]>('/payouts/destinations'),
+    enabled,
+    staleTime: 60 * 60 * 1000,
+  });
+}
+
+export function useConnectPayout(): UseMutationResult<
+  PayoutStatus,
+  Error,
+  { bankCode: string; accountNumber: string }
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { bankCode: string; accountNumber: string }) =>
+      apiFetch<PayoutStatus>('/payouts', { method: 'PUT', body: data }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['payouts'] }),
   });
 }

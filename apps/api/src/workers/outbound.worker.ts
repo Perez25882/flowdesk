@@ -5,11 +5,13 @@ import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
 import {
   loadTenantCredentials,
+  sendImage,
   sendTemplate,
   sendText,
   type SendResult,
   type TenantCredentials,
 } from '../services/whatsapp/client.js';
+import { resolveProductImageMediaId } from '../services/whatsapp/product-photo.js';
 import { WhatsAppSendError, describeForOwner } from '../services/whatsapp/meta-errors.js';
 import { recordOutboundConversation } from '../services/plan/plan.service.js';
 import {
@@ -37,7 +39,14 @@ const WORKER_CONCURRENCY = 5;
 async function recordSentMessage(
   data: OutboundJobData,
   waMessageId: string,
+  channel: SentChannel,
 ): Promise<void> {
+  // The type reflects what was actually sent, not what was asked for. A photo
+  // that failed to upload went out as text, and logging it as an IMAGE would
+  // leave the owner looking at a conversation claiming to contain a picture
+  // their customer never received.
+  const sentAsImage = channel === 'image';
+
   await prisma.message
     .create({
       data: {
@@ -45,7 +54,7 @@ async function recordSentMessage(
         customerId: data.customerId,
         waMessageId,
         direction: MessageDirection.OUTBOUND,
-        type: MessageType.TEXT,
+        type: sentAsImage ? MessageType.IMAGE : MessageType.TEXT,
         body: data.body,
         processed: true,
         processedAt: new Date(),
@@ -74,15 +83,39 @@ async function recordSentMessage(
  * — or, before that, dropped at the gate with nothing but a log line while the
  * owner believed the customer had been told.
  */
+/** What actually went down the wire, so the log records the right message type. */
+type SentChannel = 'text' | 'image' | 'template';
+
 async function send(
   credentials: TenantCredentials,
   data: OutboundJobData,
-): Promise<SendResult> {
+): Promise<SendResult & { channel: SentChannel }> {
   if (!data.template) {
-    return sendText(credentials, data.to, data.body);
+    // Already resolved by the caller — a receipt's logo, uploaded once and
+    // cached on the business row. Checked first because it needs no lookup.
+    if (data.waMediaId) {
+      return { ...(await sendImage(credentials, data.to, data.waMediaId, data.body)), channel: 'image' };
+    }
+
+    // A photo is an enhancement to the sentence, never a replacement for it. If
+    // the image cannot be resolved — object gone, Meta refusing the upload —
+    // the text still goes out, because a customer who asked about a jacket is
+    // better served by the price arriving without the picture than by silence.
+    if (data.productImageId) {
+      const mediaId = await resolveProductImageMediaId(credentials, data.productImageId);
+      if (mediaId) {
+        return { ...(await sendImage(credentials, data.to, mediaId, data.body)), channel: 'image' };
+      }
+      logger.warn(
+        { businessId: data.businessId, productImageId: data.productImageId },
+        'Product photo could not be prepared; sending the reply as text only',
+      );
+    }
+
+    return { ...(await sendText(credentials, data.to, data.body)), channel: 'text' };
   }
 
-  return sendTemplate(
+  const result = await sendTemplate(
     credentials,
     data.to,
     data.template.name,
@@ -96,6 +129,8 @@ async function send(
         ]
       : undefined,
   );
+
+  return { ...result, channel: 'template' };
 }
 
 /**
@@ -149,7 +184,7 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
     // a conversation log missing the template sends would show the customer
     // being ignored for a day when they had in fact been told.
     await Promise.all([
-      recordSentMessage(data, result.waMessageId),
+      recordSentMessage(data, result.waMessageId, result.channel),
       recordOutboundConversation(data.businessId),
     ]);
 
@@ -158,7 +193,7 @@ async function processOutbound(data: OutboundJobData): Promise<void> {
         businessId: data.businessId,
         waMessageId: result.waMessageId,
         template: data.templateKey,
-        channel: data.template ? 'template' : 'text',
+        channel: result.channel,
         metaTemplate: data.template?.name,
       },
       'Outbound WhatsApp message delivered',

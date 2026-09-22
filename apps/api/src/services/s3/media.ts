@@ -1,4 +1,9 @@
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+} from '@aws-sdk/client-s3';
 import type { Readable } from 'node:stream';
 import { env, features } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
@@ -14,12 +19,23 @@ function getS3Client(): S3Client {
     throw new Error('Media storage is not configured (AWS_* environment variables missing)');
   }
 
+  // `S3_ENDPOINT` points this same client at any S3-compatible bucket —
+  // Supabase Storage, Cloudflare R2, MinIO. Those address objects path-style
+  // (`<endpoint>/<bucket>/<key>`) rather than putting the bucket in the
+  // hostname, so configuring an endpoint turns path-style on unless the
+  // deployment says otherwise. Left empty, this is an ordinary AWS S3 client
+  // and nothing about the previous behaviour changes.
   s3ClientInstance ??= new S3Client({
     region: env.AWS_REGION,
     credentials: {
       accessKeyId: env.AWS_ACCESS_KEY_ID as string,
       secretAccessKey: env.AWS_SECRET_ACCESS_KEY as string,
     },
+    ...(env.S3_ENDPOINT
+      ? { endpoint: env.S3_ENDPOINT, forcePathStyle: env.S3_FORCE_PATH_STYLE ?? true }
+      : env.S3_FORCE_PATH_STYLE
+        ? { forcePathStyle: true }
+        : {}),
   });
 
   return s3ClientInstance;
@@ -46,9 +62,43 @@ export async function uploadBufferToS3(
     }),
   );
 
-  const url = `https://${bucket}.s3.${env.AWS_REGION}.amazonaws.com/${key}`;
-  logger.info({ key, contentType, size: buffer.length }, 'Uploaded media to S3');
-  return { url, key };
+  logger.info({ key, contentType, size: buffer.length }, 'Uploaded media to object storage');
+  return { url: objectUrl(bucket, key), key };
+}
+
+/**
+ * The object's address in the bucket.
+ *
+ * Recorded for diagnostics and for a possible future move to signed URLs; it is
+ * never what a browser loads, because the bucket is private and the bytes are
+ * streamed back through the API instead (see `getArchivedMedia`). A configured
+ * endpoint is addressed path-style, matching the client above.
+ */
+function objectUrl(bucket: string, key: string): string {
+  if (env.S3_ENDPOINT) {
+    return `${env.S3_ENDPOINT.replace(/\/+$/, '')}/${bucket}/${key}`;
+  }
+  return `https://${bucket}.s3.${env.AWS_REGION}.amazonaws.com/${key}`;
+}
+
+/**
+ * Removes an object.
+ *
+ * Used when the owner deletes a product photo. A failure is logged and
+ * swallowed: the row is what the dashboard reads, and an orphaned object costs
+ * a fraction of a pesewa, whereas a delete that appears to fail after the row
+ * is already gone leaves the owner staring at a photo they just removed.
+ */
+export async function deleteObject(key: string): Promise<void> {
+  if (!features.mediaStorage) return;
+
+  try {
+    await getS3Client().send(
+      new DeleteObjectCommand({ Bucket: env.AWS_S3_BUCKET as string, Key: key }),
+    );
+  } catch (error: unknown) {
+    logger.error({ error, key }, 'Failed to remove an object from storage; it is now orphaned');
+  }
 }
 
 /**

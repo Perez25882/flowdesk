@@ -45,7 +45,7 @@ export function getInitials(name: string): string {
 /**
  * A Ghanaian number in the shape people actually read.
  *
- * WhatsApp hands numbers over as bare digits in wire format — 233201847733 —
+ * WhatsApp hands numbers over as bare digits in wire format, 233201847733 , 
  * and that string was being rendered straight into the UI wherever a customer
  * had not given their name yet, which is most new customers. Twelve
  * undifferentiated digits is not something an owner can match against the
@@ -53,7 +53,7 @@ export function getInitials(name: string): string {
  *
  * Ghanaian numbers are written 0XX XXX XXXX locally and +233 XX XXX XXXX
  * internationally. Anything that is not a recognisable Ghana number is returned
- * untouched rather than forced into a shape it does not have — diaspora
+ * untouched rather than forced into a shape it does not have, diaspora
  * customers are common and a mangled foreign number is worse than a raw one.
  */
 export function formatPhone(raw: string | null | undefined): string {

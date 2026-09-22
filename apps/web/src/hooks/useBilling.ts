@@ -30,14 +30,14 @@ const PLAN_RANK: Record<BillablePlan, number> = {
  * Negative when `a` is below `b`. Mirrors `comparePlans` in the API's
  * `plan.service.ts`; a plan outside the billable three (ENTERPRISE, SUSPENDED)
  * is ranked below everything, so moving off it always reads as an upgrade and
- * goes to checkout — which is what a suspended account needs.
+ * goes to checkout, which is what a suspended account needs.
  */
 export function comparePlans(a: string, b: string): number {
   return (PLAN_RANK[a as BillablePlan] ?? -1) - (PLAN_RANK[b as BillablePlan] ?? -1);
 }
 
 /**
- * POST /billing/checkout — initialises a Paystack transaction for the requested plan.
+ * POST /billing/checkout, initialises a Paystack transaction for the requested plan.
  * The returned authorizationUrl is where the browser should navigate to complete payment.
  */
 export function useCheckout(): UseMutationResult<CheckoutResponse, Error, BillablePlan> {
@@ -55,7 +55,7 @@ export type TrialStage = 'none' | 'prompt' | 'final_day' | 'ended' | 'lapsed';
 
 export interface BillingLimit {
   used: number;
-  /** Null means the plan sets no ceiling — never zero. */
+  /** Null means the plan sets no ceiling, never zero. */
   limit: number | null;
   remaining: number | null;
   nearLimit: boolean;
@@ -84,7 +84,7 @@ export interface ScheduledChange {
 
 export interface BillingState {
   plan: string;
-  /** What is being enforced right now — differs from `plan` once a trial lapses. */
+  /** What is being enforced right now, differs from `plan` once a trial lapses. */
   effectivePlan: string;
   planLabel: string;
   suspended: boolean;
@@ -151,8 +151,8 @@ export interface DowngradeResult {
 /**
  * Moves to a cheaper plan at the end of the period already paid for.
  *
- * Two calls by design. Without `confirm` the server returns a preview — what
- * would be over the line, and the date it happens — and changes nothing, so the
+ * Two calls by design. Without `confirm` the server returns a preview, what
+ * would be over the line, and the date it happens, and changes nothing, so the
  * owner sees the consequences before anything is committed. With `confirm: true`
  * it schedules. Both come back on the same shape, distinguished by `scheduled`.
  */
@@ -183,7 +183,7 @@ export interface EndSubscriptionResult {
   scheduled: boolean;
   kind: 'cancel' | 'pause';
   currentPlan: string;
-  /** Everything keeps working until this date — neither call cuts access today. */
+  /** Everything keeps working until this date, neither call cuts access today. */
   accessUntil: string;
   effectiveAt: string;
   resumable: boolean;
@@ -193,7 +193,7 @@ export interface EndSubscriptionResult {
 /**
  * Stops the subscription renewing, or pauses it.
  *
- * Mechanically the same call — Paystack has no pause — but pausing records the
+ * Mechanically the same call, Paystack has no pause, but pausing records the
  * plan being left, so resuming can offer it straight back. Neither takes effect
  * today: the plan runs to the end of the period already paid for.
  */

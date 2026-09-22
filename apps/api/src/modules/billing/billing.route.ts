@@ -6,6 +6,10 @@ import { redis } from '../../config/redis.js';
 import { success } from '../../utils/response.js';
 import { disableSubscription, fetchSubscription, verifyWebhookSignature } from '../../services/billing/paystack.js';
 import {
+  isPaymentLinkReference,
+  settleFromWebhook,
+} from '../payments/payment-links.service.js';
+import {
   applyDueScheduledChange,
   clearSchedule,
   readSchedule,
@@ -123,7 +127,17 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
       }
 
       if (event === 'charge.success') {
-        await applyChargeSuccess(data);
+        // One Paystack account carries two completely different kinds of money:
+        // a shop paying Flowdesk for a subscription, and a shop's own customer
+        // paying the shop. They arrive on the same webhook and are told apart
+        // by the reference, which is generated on our side precisely so this
+        // branch can exist. Without it a customer's GHS 40 for a pair of shoes
+        // would be read as a subscription renewal.
+        if (isPaymentLinkReference(data.reference)) {
+          await settleFromWebhook(String(data.reference));
+        } else {
+          await applyChargeSuccess(data);
+        }
       }
 
       // Paystack does not retry a failed subscription charge, so this is the

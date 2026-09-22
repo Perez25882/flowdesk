@@ -147,6 +147,47 @@ describe('assembleContext', () => {
     expect(context.evidence.allowedAmounts.has(toMinorUnits(12.5 * 7))).toBe(false);
   });
 
+  /**
+   * Replies to a WhatsApp Status.
+   *
+   * A great many Ghanaian shops sell by posting goods to Status and answering
+   * whoever replies. Those replies arrive as "how much?" — a pronoun whose noun
+   * sits in the post, not in the message. Meta names the post in `context.id`,
+   * so the shop's own words become the subject of the question.
+   *
+   * Without this the assistant had no honest option but to ask what they meant,
+   * which is exactly the behaviour that made it look like it was not paying
+   * attention.
+   */
+  it('puts the post a customer replied to in front of the model', () => {
+    const context = assembleContext({
+      ...base,
+      message: 'how much?',
+      replyingTo: { body: 'Fresh Malta Guinness in stock today', fromShop: true },
+    });
+
+    expect(context.userPrompt).toContain('WHAT THEY ARE REPLYING TO');
+    expect(context.userPrompt).toContain('Fresh Malta Guinness in stock today');
+    // The instruction matters as much as the quote: without it the model reads
+    // the text as background and still asks which product they mean.
+    expect(context.userPrompt).toContain('do not ask them what they mean');
+  });
+
+  it("marks a reply to the customer's own message as theirs, not the shop's", () => {
+    const context = assembleContext({
+      ...base,
+      message: 'actually make it 3',
+      replyingTo: { body: 'I want 2 malta', fromShop: false },
+    });
+
+    expect(context.userPrompt).toContain('replying to their own earlier message');
+  });
+
+  it('says nothing about replies when the message was not one', () => {
+    const context = assembleContext({ ...base, message: 'how much is malta?' });
+    expect(context.userPrompt).not.toContain('WHAT THEY ARE REPLYING TO');
+  });
+
   it("treats the shop's own number as its own however it is written", () => {
     // The profile carries the local form and WhatsApp the international one;
     // without normalisation the validator flags the shop for quoting itself.

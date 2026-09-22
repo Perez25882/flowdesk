@@ -23,7 +23,7 @@ const METHOD_LABEL: Record<string, string> = {
  * One customer's record.
  *
  * The edit affordance used to be a button that silently switched between
- * "Edit" and "Save" — pressing it while editing committed the changes with no
+ * "Edit" and "Save", pressing it while editing committed the changes with no
  * way to abandon them, and there was no indication anything was in flight.
  * Editing is now an explicit mode with Save and Cancel, and Save reports both
  * its progress and its failures.
@@ -78,8 +78,8 @@ export default function CustomerProfilePage(): React.JSX.Element {
   /**
    * Flips a flag on its own rather than through the edit form.
    *
-   * Both take effect the moment they are set — there is nothing to review and
-   * nothing to save — and putting them behind "Edit details / Save changes"
+   * Both take effect the moment they are set, there is nothing to review and
+   * nothing to save, and putting them behind "Edit details / Save changes"
    * would mean an owner blocking a difficult customer has to find and open a
    * form first.
    */
@@ -184,7 +184,7 @@ export default function CustomerProfilePage(): React.JSX.Element {
               checked={customer.blacklisted}
               disabled={updateCustomer.isPending}
               onChange={(e) => {
-                // Blocking is not a label — it stops the assistant replying to
+                // Blocking is not a label, it stops the assistant replying to
                 // this person at all. Saying so is the difference between a
                 // deliberate act and a switch someone flicked to see what it did.
                 if (e.target.checked && !window.confirm(

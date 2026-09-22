@@ -6,7 +6,7 @@ export default {
     extend: {
       colors: {
         primary: {
-          DEFAULT: 'var(--color-primary)',
+          DEFAULT: 'rgb(var(--color-primary-rgb) / <alpha-value>)',
           hover: 'var(--color-primary-hover)',
           active: 'var(--color-primary-active)',
           light: 'var(--color-primary-light)',
@@ -15,7 +15,7 @@ export default {
           contrast: 'var(--color-primary-contrast)',
         },
         accent: {
-          DEFAULT: 'var(--color-accent)',
+          DEFAULT: 'rgb(var(--color-accent-rgb) / <alpha-value>)',
           hover: 'var(--color-accent-hover)',
           light: 'var(--color-accent-light)',
           border: 'var(--color-accent-border)',
@@ -43,22 +43,22 @@ export default {
         'text-on-ink': 'var(--color-text-on-ink)',
         'text-on-ink-muted': 'var(--color-text-on-ink-muted)',
         success: {
-          DEFAULT: 'var(--color-success)',
+          DEFAULT: 'rgb(var(--color-success-rgb) / <alpha-value>)',
           muted: 'var(--color-success-muted)',
           border: 'var(--color-success-border)',
         },
         warning: {
-          DEFAULT: 'var(--color-warning)',
+          DEFAULT: 'rgb(var(--color-warning-rgb) / <alpha-value>)',
           muted: 'var(--color-warning-muted)',
           border: 'var(--color-warning-border)',
         },
         danger: {
-          DEFAULT: 'var(--color-danger)',
+          DEFAULT: 'rgb(var(--color-danger-rgb) / <alpha-value>)',
           muted: 'var(--color-danger-muted)',
           border: 'var(--color-danger-border)',
         },
         info: {
-          DEFAULT: 'var(--color-info)',
+          DEFAULT: 'rgb(var(--color-info-rgb) / <alpha-value>)',
           muted: 'var(--color-info-muted)',
           border: 'var(--color-info-border)',
         },
@@ -66,6 +66,7 @@ export default {
           pending: 'var(--color-status-pending)',
           confirmed: 'var(--color-status-confirmed)',
           processing: 'var(--color-status-processing)',
+          dispatched: 'var(--color-status-dispatched)',
           fulfilled: 'var(--color-status-fulfilled)',
           cancelled: 'var(--color-status-cancelled)',
         },
@@ -115,6 +116,7 @@ export default {
         out: 'var(--ease-out)',
         'in-out': 'var(--ease-in-out)',
         drawer: 'var(--ease-drawer)',
+        spring: 'var(--ease-spring)',
       },
       transitionDuration: {
         instant: 'var(--duration-instant)',

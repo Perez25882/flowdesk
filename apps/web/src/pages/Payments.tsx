@@ -33,7 +33,7 @@ const METHOD_LABEL: Record<string, string> = {
  * The money.
  *
  * Deleting a payment used to be a single unlabelled red icon button sitting
- * beside the verify button, with no confirmation — one mis-tap on a phone and
+ * beside the verify button, with no confirmation, one mis-tap on a phone and
  * a customer's record silently loses a payment. It now confirms first, and
  * both actions state what they do.
  */
@@ -145,7 +145,7 @@ export default function PaymentsPage(): React.JSX.Element {
                       {isConfirming ? (
                         // Inline confirmation rather than a modal: the row is
                         // already the subject, so a dialog would only restate it.
-                        // The reason itself is collected via window.prompt — a
+                        // The reason itself is collected via window.prompt, a
                         // stopgap until a proper dialog lands in a later phase.
                         <span className="flex items-center gap-1.5">
                           <span className="text-xs text-text-secondary">Void this?</span>

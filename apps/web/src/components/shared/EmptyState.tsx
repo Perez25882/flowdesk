@@ -22,8 +22,8 @@ interface EmptyStateProps {
  * Empty states.
  *
  * Deliberately not the icon-in-a-rounded-tile pattern. An empty list on an
- * operations screen is usually good news — no pending orders means the morning
- * is clear — so it should read as a calm statement of fact, not as a gap
+ * operations screen is usually good news, no pending orders means the morning
+ * is clear, so it should read as a calm statement of fact, not as a gap
  * apologising for itself.
  *
  * The icon, where present, is drawn on the rule rather than mounted in a

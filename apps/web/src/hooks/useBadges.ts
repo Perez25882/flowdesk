@@ -13,7 +13,7 @@ export interface DashboardBadges {
 export const BADGES_QUERY_KEY = ['dashboard', 'badges'] as const;
 
 /**
- * Lightweight badge counts — powers the sidebar and bottom-nav counters.
+ * Lightweight badge counts, powers the sidebar and bottom-nav counters.
  * Fresh every 30s while the dashboard is open; SSE pushes invalidate it when
  * an order arrives or a message gets flagged.
  */

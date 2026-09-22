@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import LandingPage from '@/pages/Landing';
 import LoginPage from '@/pages/Login';
 import { isAuthenticated } from '@/hooks/useAuth';
+import ErrorBoundary from '@/components/shared/ErrorBoundary';
 
 /**
  * Route-level code splitting.
@@ -19,6 +20,7 @@ const LegalPage = lazy(() => import('@/pages/Legal'));
 const ForgotPasswordPage = lazy(() => import('@/pages/ForgotPassword'));
 const ResetPasswordPage = lazy(() => import('@/pages/ResetPassword'));
 const StaffAcceptPage = lazy(() => import('@/pages/StaffAccept'));
+const VerifyEmailPage = lazy(() => import('@/pages/VerifyEmail'));
 
 const Layout = lazy(() => import('@/components/shared/Layout'));
 const DashboardPage = lazy(() => import('@/pages/Dashboard'));
@@ -30,6 +32,8 @@ const PaymentsPage = lazy(() => import('@/pages/Payments'));
 const MessagesPage = lazy(() => import('@/pages/Messages'));
 const StaffPage = lazy(() => import('@/pages/Staff'));
 const SettingsPage = lazy(() => import('@/pages/Settings'));
+const ReportsPage = lazy(() => import('@/pages/Reports'));
+const BookingsPage = lazy(() => import('@/pages/Bookings'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,7 +81,7 @@ function IndexRoute(): React.JSX.Element {
 /**
  * Gates the dashboard on the presence of an access token.
  *
- * This is a UX guard, not a security boundary — every API request is
+ * This is a UX guard, not a security boundary, every API request is
  * authorised server-side regardless of what the client renders.
  */
 function RequireAuth({ children }: { children: React.JSX.Element }): React.JSX.Element {
@@ -91,7 +95,8 @@ export default function App(): React.JSX.Element {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Suspense fallback={<RouteFallback />}>
+        <ErrorBoundary>
+          <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/" element={<IndexRoute />} />
             <Route path="/login" element={<LoginPage />} />
@@ -103,10 +108,24 @@ export default function App(): React.JSX.Element {
             <Route path="/privacy" element={<LegalPage kind="privacy" />} />
             <Route path="/terms" element={<LegalPage kind="terms" />} />
 
+            {/* Inside the guard but outside the Layout: it is a full-page
+                step, not a screen of the dashboard, and wrapping it in the
+                sidebar would invite someone to wander off mid-verification. */}
+            <Route
+              path="/verify-email"
+              element={
+                <RequireAuth>
+                  <VerifyEmailPage />
+                </RequireAuth>
+              }
+            />
+
             <Route
               element={
                 <RequireAuth>
-                  <Layout />
+                  <ErrorBoundary label="This page">
+                    <Layout />
+                  </ErrorBoundary>
                 </RequireAuth>
               }
             >
@@ -116,6 +135,12 @@ export default function App(): React.JSX.Element {
               <Route path="/customers/:id" element={<CustomerProfilePage />} />
               <Route path="/products" element={<ProductsPage />} />
               <Route path="/payments" element={<PaymentsPage />} />
+              <Route path="/reports" element={<ReportsPage />} />
+              {/* Registered unconditionally. The nav item is hidden until the
+                  owner switches bookings on, but a bookmarked URL must still
+                  resolve rather than 404, the page explains the empty state
+                  better than a wrong-turn screen does. */}
+              <Route path="/bookings" element={<BookingsPage />} />
               <Route path="/messages" element={<MessagesPage />} />
               <Route path="/staff" element={<StaffPage />} />
               <Route path="/settings" element={<SettingsPage />} />
@@ -126,7 +151,8 @@ export default function App(): React.JSX.Element {
                 mistyped a URL. */}
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
-        </Suspense>
+          </Suspense>
+        </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>
   );

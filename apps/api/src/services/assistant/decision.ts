@@ -76,6 +76,8 @@ export const ASSISTANT_DECISION_JSON_SCHEMA: Record<string, unknown> = {
     'clarification',
     'order',
     'escalate',
+    'priceOffer',
+    'booking',
   ],
   properties: {
     intent: { type: 'string', enum: [...MODEL_INTENTS] },
@@ -179,6 +181,54 @@ export const ASSISTANT_DECISION_JSON_SCHEMA: Record<string, unknown> = {
         },
       },
     },
+    // A negotiated price has to be DECLARED, not merely written in the reply.
+    // Reading a discount back out of "okay, GHS 40 then" means parsing prose to
+    // decide what the shop just committed to, and prose is exactly what the
+    // model controls. Asking for the number as a field moves the check to
+    // arithmetic the server does on a value the model had to state plainly.
+    priceOffer: {
+      anyOf: [
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['productId', 'unitPrice', 'quantity'],
+          properties: {
+            productId: { type: 'string', description: 'The catalogue id being priced.' },
+            unitPrice: {
+              type: 'number',
+              description: 'The price per unit you are offering, in cedis.',
+            },
+            quantity: { type: 'number', description: 'How many, at that price.' },
+          },
+        },
+        { type: 'null' },
+      ],
+      description:
+        'Set this ONLY when your reply offers a price below the one you were shown. Null otherwise.',
+    },
+    // A time, declared rather than left in the sentence, for exactly the same
+    // reason as the price. An appointment that exists only in prose is one the
+    // server cannot check and will not write into the diary, so the customer
+    // gets a confirmation and the owner gets nothing.
+    booking: {
+      anyOf: [
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['serviceId', 'startsAt'],
+          properties: {
+            serviceId: { type: 'string', description: 'The service id from AVAILABLE TIMES.' },
+            startsAt: {
+              type: 'string',
+              description: 'One of the exact times listed for that service, copied unchanged.',
+            },
+          },
+        },
+        { type: 'null' },
+      ],
+      description:
+        'Set this ONLY when your reply agrees a specific appointment time. Null otherwise.',
+    },
   },
 };
 
@@ -246,6 +296,19 @@ const decisionSchema = z.object({
       reason: z.enum(ESCALATION_REASONS).nullish(),
     })
     .default({}),
+  priceOffer: z
+    .object({
+      productId: z.string(),
+      unitPrice: z.number(),
+      quantity: z.number(),
+    })
+    .nullish(),
+  booking: z
+    .object({
+      serviceId: z.string(),
+      startsAt: z.string(),
+    })
+    .nullish(),
 });
 
 /** Parses the model's JSON. Returns null rather than throwing — a bad response is expected traffic. */
@@ -285,6 +348,16 @@ export function parseDecision(raw: unknown): AssistantDecision | null {
       needed: value.escalate.needed,
       reason: value.escalate.reason ?? null,
     },
+    priceOffer: value.priceOffer
+      ? {
+          productId: value.priceOffer.productId,
+          unitPrice: value.priceOffer.unitPrice,
+          quantity: value.priceOffer.quantity,
+        }
+      : null,
+    booking: value.booking
+      ? { serviceId: value.booking.serviceId, startsAt: value.booking.startsAt }
+      : null,
   };
 }
 

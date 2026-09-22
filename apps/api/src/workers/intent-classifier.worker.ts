@@ -8,6 +8,7 @@ import { classifyMessage } from '../services/intent/index.js';
 import { runAssistant } from '../services/assistant/index.js';
 import { requiresReview } from '../services/assistant/router.js';
 import {
+  notifyAssistantHold,
   notifyIntentReply,
   notifyOrderStatus,
   notifyOrderStatusCheck,
@@ -305,7 +306,13 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
           ruleIntent: result.intent,
           ruleConfidence: result.confidence,
         })
-      : { action: 'template_reply' as const, escalated: false, intent: null, confidence: null };
+      : {
+          action: 'template_reply' as const,
+          escalated: false,
+          intent: null,
+          confidence: null,
+          holdingText: null,
+        };
 
   // The assistant reads the message with the shop's catalogue in front of it, so
   // where it disagrees with the rule engine it is better informed.
@@ -340,12 +347,35 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
     return;
   }
 
-  // `draft` sends the courtesy template too. The owner has a reply waiting, but
-  // writing it takes them however long it takes, and leaving the customer with
-  // silence in the meantime is worse than a holding message — the owner's real
-  // answer follows it rather than replacing it.
+  // `draft` answers the customer too. The owner has a reply waiting, but writing
+  // it takes them however long it takes, and leaving the customer with silence
+  // in the meantime is worse than a holding message — the owner's real answer
+  // follows it rather than replacing it.
+  //
+  // What gets sent matters as much as that it is sent. The courtesy template —
+  // "Thanks for your question. Please share more details and we'll get back to
+  // you right away" — asks a customer who has just asked a perfectly clear
+  // question to ask it again, and it is identical for every shop and every
+  // message. When the assistant produced a holding line naming what they
+  // actually asked about, that goes instead; the template is what is left when
+  // the assistant produced nothing at all.
   if (assisted.action === 'template_reply' || assisted.action === 'draft') {
+    // Resolved before the branch because both paths are the same reply as far
+    // as the owner is concerned. The holding line replaces this template; it
+    // must not escape the switch that governs it just by taking the other road.
     const templateKey = INTENT_TEMPLATE[finalIntent] ?? 'fallback';
+
+    if (assisted.holdingText && message.customer) {
+      await notifyAssistantHold(
+        message.businessId,
+        message.customer.id,
+        assisted.holdingText,
+        message.id,
+        templateKey,
+      );
+      return;
+    }
+
     await handleAutoReplyIntent(message, templateKey);
   }
 }

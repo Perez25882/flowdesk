@@ -87,6 +87,41 @@ const EMAIL_PATTERN = /\b[\w.+-]+@[\w-]+\.[\w.-]+\b/;
 const ORDER_REF_PATTERN = /\bFD-[A-Z0-9]{3,}\b/gi;
 const PHONE_PATTERN = /\+?\d[\d\s-]{6,}\d/g;
 
+/**
+ * A run of number words, which `PHONE_PATTERN` cannot see because it reads
+ * figures. Ghanaian numbers are routinely dictated this way — "oh two four" —
+ * so a spelled-out run is a phone number far more often than it is prose.
+ *
+ * Three or more, because "one moment" and "two things" are ordinary speech and
+ * a run of three is not.
+ */
+const NUMBER_WORD = 'zero|oh|one|two|three|four|five|six|seven|eight|nine';
+const SPELLED_NUMBER_RUN = new RegExp(
+  `\\b(?:${NUMBER_WORD})\\b(?:[\\s,.-]+\\b(?:${NUMBER_WORD})\\b){2,}`,
+  'i',
+);
+
+/**
+ * Phrases that move a customer's money or contact somewhere the shop has not
+ * told us about. Not facts we can check — claims we can never allow a model to
+ * make unread, because the damage lands on the shop's own number.
+ */
+const REDIRECTION_PHRASES = [
+  'send to',
+  'send it to',
+  'send the money to',
+  'pay to',
+  'pay into',
+  'transfer to',
+  'new number',
+  'new momo',
+  'new account',
+  'changed to',
+  'use this number',
+  'call this number',
+  'contact us on',
+];
+
 const AVAILABILITY_AFFIRMATIONS = [
   'in stock',
   'we have',
@@ -183,11 +218,43 @@ export function typeNumbers(text: string): TypedNumber[] {
 export function assertsCheckableFact(text: string): boolean {
   const lowered = text.toLowerCase();
 
+  // Any digit at all is a specific claim about the world.
+  //
+  // The typed checks below catch money and stock, which were the obvious
+  // dangers. They do not catch an opening time, and that gap reached a customer:
+  // asked "what time do you open?" for a shop with no hours recorded, the model
+  // answered "We open at 8am". No currency, no stock count, so every check here
+  // passed it as claim-free. A wrong opening time costs a shop a morning of
+  // customers standing at a closed door, which is worse than a wrong price they
+  // would at least have argued about.
+  //
+  // Rather than enumerate times, dates, weights and delivery fees one pattern at
+  // a time, treat a digit as what it is: the shop asserting something specific,
+  // which must rest on a row somebody supplied. Replies with nothing to verify —
+  // "hello", "we don't sell that", "alright, anytime" — carry no digits and are
+  // unaffected.
+  if (/\d/.test(text)) return true;
+
   if (AVAILABILITY_AFFIRMATIONS.some((phrase) => lowered.includes(phrase))) return true;
   if (ORDER_REF_PATTERN.test(text)) return true;
 
   // Reset: both patterns are /g and carry lastIndex between calls.
   ORDER_REF_PATTERN.lastIndex = 0;
+
+  // A digit sequence spelled out is still a digit sequence. Every numeric check
+  // in this file reads figures, so "send to zero two four four, one two three"
+  // carries a whole MoMo number past all of them and out to the customer under
+  // the shop's own name. Three in a row, because "one moment" is not a number.
+  if (SPELLED_NUMBER_RUN.test(text)) return true;
+
+  // Sending a customer's money or attention somewhere new is a claim about the
+  // shop — and the one with the worst consequences if it is wrong. It cites
+  // nothing, contradicts no stock and contains no figure, so nothing else here
+  // would stop it.
+  if (REDIRECTION_PHRASES.some((phrase) => lowered.includes(phrase))) return true;
+
+  // A link asserts something we have no evidence for and cannot check at all.
+  if (/https?:\/\/|\bwww\./i.test(lowered)) return true;
 
   return typeNumbers(text).some(
     (number) => number.kind === 'currency' || number.kind === 'stock',

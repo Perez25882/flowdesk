@@ -41,6 +41,30 @@ export interface OutboundJobData {
    * `sendTemplate`; absent, `sendText`.
    */
   template?: OutboundTemplate;
+  /**
+   * Send `body` as the caption on a product photo rather than as a plain text.
+   *
+   * Carries only the image id, never the bytes: a BullMQ job lives in Redis, and
+   * putting five megabytes of base64 in one would make a busy shop's queue the
+   * largest thing in the process. The worker resolves the id to a Meta media id
+   * at send time, which is also when the tenant's credentials are known.
+   *
+   * Ignored when `template` is set — Meta will not accept a free-form image
+   * outside the 24-hour window, so a photo queued there is sent as the template
+   * text alone rather than failing.
+   */
+  productImageId?: string;
+  /**
+   * An image to send that is ALREADY a Meta media id, rather than something to
+   * be resolved at send time.
+   *
+   * Separate from `productImageId` because the two differ in who owns the
+   * upload: a product photo is resolved per send against the tenant's number,
+   * whereas this is a caller that has already done that work — the shop logo on
+   * a receipt, uploaded once and cached on the business row. Collapsing them
+   * would mean the worker guessing which kind of string it was handed.
+   */
+  waMediaId?: string;
   /** Template that produced the text, for auditing which auto-reply fired. */
   templateKey?: string;
   /** Order the message concerns, when applicable. */

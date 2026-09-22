@@ -12,7 +12,33 @@ import {
   TEMPLATE_VARIABLES,
   parseTemplateConfig,
 } from '../../services/templates/template-engine.js';
+import { z } from 'zod';
 import { UpdateBusinessSchema } from './settings.schema.js';
+import { getLogo, readLogoFile, setLogo } from '../../services/notifications/receipts.js';
+import { getOnboardingState } from './onboarding.service.js';
+import { MAX_IMAGE_BYTES } from '../../services/media/image-file.js';
+
+/** Same reasoning as the product-photo route: raised here and nowhere else. */
+const LOGO_BODY_LIMIT = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 4096;
+
+const UploadLogoSchema = z.object({ data: z.string().min(1) });
+
+const AcceptAutonomySchema = z.object({ accepted: z.boolean() });
+
+/**
+ * What a shop is agreeing to when they hand the conversation over.
+ *
+ * Written plainly and kept short, because a wall of text is a thing people
+ * click past and the point of recording it is that they read it. Stored
+ * verbatim on the business row at the moment of acceptance.
+ */
+export const AUTONOMY_ACCEPTANCE_TEXT = [
+  'I am turning on autonomous replies.',
+  'Flowdesk will answer my customers, take orders and send payment links from my WhatsApp number without showing me first.',
+  'It will answer questions even when it cannot check the answer against my catalogue or my saved details, which means it can state a price, a delivery charge or an opening time that I never set.',
+  'Anything sent this way is sent in my name and is mine to honour with my customer.',
+  'I can turn this off at any time in Settings.',
+].join(' ');
 
 /**
  * Fields returned by `GET /businesses/me`.
@@ -32,6 +58,11 @@ const BUSINESS_SELECT = {
   notifyOnNewOrder: true,
   notifyOnLowStock: true,
   notifyOnPayment: true,
+  receiptsEnabled: true,
+  insightsEnabled: true,
+  bargainingEnabled: true,
+  bookingsEnabled: true,
+  insightsToWhatsApp: true,
   replyTemplates: true,
   businessType: true,
   businessTypeOther: true,
@@ -39,6 +70,7 @@ const BUSINESS_SELECT = {
   businessPolicyNotes: true,
   profileUpdatedAt: true,
   aiAssistMode: true,
+  autonomyAcceptedAt: true,
   catalogueMode: true,
   createdAt: true,
 } as const;
@@ -97,6 +129,28 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         Object.entries(body).filter(([, v]) => v !== undefined),
       );
 
+      // Autonomy cannot be switched on by a PATCH that happens to carry the
+      // mode. It requires an acceptance that was recorded first — see
+      // POST /settings/autonomy. Enforced here rather than only in the UI,
+      // because the UI is not the security boundary and "the customer was
+      // charged by an assistant nobody approved" is not a defensible position
+      // to reach through an API call a staff account could make.
+      if (body.aiAssistMode === 'AUTONOMOUS') {
+        const accepted = await prisma.business.findUnique({
+          where: { id: request.business!.id },
+          select: { autonomyAcceptedAt: true },
+        });
+
+        if (!accepted?.autonomyAcceptedAt) {
+          return reply.status(409).send({
+            success: false,
+            error:
+              'Autonomous mode has to be accepted before it can be switched on. Open Settings → Assistant.',
+            code: 'AUTONOMY_NOT_ACCEPTED',
+          });
+        }
+      }
+
       // The profile is a JSON column, so it must be merged rather than assigned
       // — see `mergeBusinessProfile`. Touching any profile field also stamps
       // `profileUpdatedAt`, which is how the assistant knows whether a fact is
@@ -140,6 +194,100 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   app.get('/businesses/me/usage', canRead, async (request: FastifyRequest, reply: FastifyReply) => {
     const usage = await getUsage(request.business!.id);
     return success(reply, usage);
+  });
+
+  /**
+   * POST /settings/autonomy
+   *
+   * Records that the owner accepted unreviewed replies going out in their name,
+   * and the exact wording they accepted.
+   *
+   * The wording is stored verbatim rather than referenced by version, because a
+   * later edit to the terms must not retroactively change what somebody agreed
+   * to — which is the entire evidential value of having recorded it. Owner-only:
+   * a staff account cannot sign the shop up to this.
+   */
+  app.post(
+    '/settings/autonomy',
+    { preHandler: requireCapability('settings.write') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { accepted } = AcceptAutonomySchema.parse(request.body);
+
+      if (!accepted) {
+        // Withdrawing it also drops the mode, rather than leaving a shop in
+        // AUTONOMOUS having just said they no longer accept it. Read from the
+        // database rather than from the request context, which carries only
+        // the identity fields.
+        const current = await prisma.business.findUnique({
+          where: { id: request.business!.id },
+          select: { aiAssistMode: true },
+        });
+
+        const business = await prisma.business.update({
+          where: { id: request.business!.id },
+          data: {
+            autonomyAcceptedAt: null,
+            autonomyAcceptedBy: null,
+            autonomyAcceptedText: null,
+            ...(current?.aiAssistMode === 'AUTONOMOUS'
+              ? { aiAssistMode: 'GROUNDED_AUTO' as const }
+              : {}),
+          },
+          select: BUSINESS_SELECT,
+        });
+        return success(reply, business);
+      }
+
+      const business = await prisma.business.update({
+        where: { id: request.business!.id },
+        data: {
+          autonomyAcceptedAt: new Date(),
+          autonomyAcceptedBy: request.user?.staffId ?? 'owner',
+          autonomyAcceptedText: AUTONOMY_ACCEPTANCE_TEXT,
+        },
+        select: BUSINESS_SELECT,
+      });
+
+      return success(reply, business);
+    },
+  );
+
+  /**
+   * GET /onboarding
+   *
+   * Derived from the database on every call rather than from a stored flag, so
+   * a step can go back to incomplete — a revoked WhatsApp token should put
+   * "connect your number" in front of the owner again, not sit under a tick.
+   */
+  app.get('/onboarding', canRead, async (request: FastifyRequest, reply: FastifyReply) => {
+    return success(reply, await getOnboardingState(request.business!.id));
+  });
+
+  // ── Branding ──────────────────────────────────────────────────────────────
+
+  app.get('/settings/logo', canRead, async (request: FastifyRequest, reply: FastifyReply) => {
+    return success(reply, await getLogo(request.business!.id));
+  });
+
+  app.put(
+    '/settings/logo',
+    { preHandler: requireCapability('settings.write'), bodyLimit: LOGO_BODY_LIMIT },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { data } = UploadLogoSchema.parse(request.body);
+      return success(reply, await setLogo(request.business!.id, data));
+    },
+  );
+
+  app.get('/settings/logo/file', canRead, async (request: FastifyRequest, reply: FastifyReply) => {
+    const media = await readLogoFile(request.business!.id);
+    if (!media) {
+      return reply.status(404).send({ success: false, error: 'No logo set', code: 'NOT_FOUND' });
+    }
+
+    return reply
+      .header('Content-Type', media.contentType)
+      .header('Cache-Control', 'private, max-age=300')
+      .send(media.body);
   });
 
   /**

@@ -10,12 +10,16 @@ import {
   MessageSquare,
   UserCog,
   Settings2,
+  BarChart3,
+  CalendarDays,
+  Circle,
   LogOut,
   type LucideIcon,
 } from 'lucide-react';
 import { getNavItemsForRole } from '@/config/navigation';
 import { getUserRole, useLogout } from '@/hooks/useAuth';
 import { useBadges } from '@/hooks/useBadges';
+import { useBusiness } from '@/hooks/useBusiness';
 import {
   Sheet,
   SheetContent,
@@ -26,6 +30,13 @@ import {
 } from '@/components/ui/Sheet';
 import { cn } from '@/lib/utils';
 
+/**
+ * Nav icons, keyed by the name `config/navigation` stores.
+ *
+ * Kept in step with the same map in `Sidebar` — both read the same nav config,
+ * so an icon missing from either one blanks the screen on that breakpoint only,
+ * which is the kind of bug that reaches a shop owner's phone and nobody else's.
+ */
 const iconMap: Record<string, LucideIcon> = {
   LayoutDashboard,
   ShoppingCart,
@@ -35,6 +46,8 @@ const iconMap: Record<string, LucideIcon> = {
   MessageSquare,
   UserCog,
   Settings2,
+  BarChart3,
+  CalendarDays,
 };
 
 /**
@@ -52,7 +65,10 @@ export default function BottomNav(): React.JSX.Element {
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
   const role = getUserRole();
-  const visibleNavItems = getNavItemsForRole(role);
+  const { data: business } = useBusiness();
+  const visibleNavItems = getNavItemsForRole(role, {
+    bookings: business?.bookingsEnabled ?? false,
+  });
   const primaryItems = visibleNavItems.filter((item) => item.mobile);
   const overflowItems = visibleNavItems.filter((item) => !item.mobile);
   const { data: badges } = useBadges();
@@ -78,7 +94,7 @@ export default function BottomNav(): React.JSX.Element {
         className="fixed inset-x-0 bottom-0 z-bottom-nav grid grid-flow-col border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
       >
         {primaryItems.map((item) => {
-          const Icon = iconMap[item.icon]!;
+          const Icon = iconMap[item.icon] ?? Circle;
           const isActive =
             location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
           const badgeCount =
@@ -154,7 +170,7 @@ export default function BottomNav(): React.JSX.Element {
           <SheetBody className="p-3">
             <div className="space-y-px">
               {overflowItems.map((item) => {
-                const Icon = iconMap[item.icon]!;
+                const Icon = iconMap[item.icon] ?? Circle;
                 const isActive = location.pathname.startsWith(item.path);
                 const badgeCount =
                   item.badge === 'reviewMessages' ? (badges?.reviewMessages ?? 0) : 0;

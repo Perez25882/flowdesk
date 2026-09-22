@@ -4,7 +4,7 @@ import { apiFetch } from '@/lib/api';
 
 
 
-/** Mirrors the API's StaffRole enum — a union, so typos fail at compile time. */
+/** Mirrors the API's StaffRole enum, a union, so typos fail at compile time. */
 export type StaffRole = 'MANAGER' | 'OPERATIONS' | 'DELIVERY';
 
 export interface StaffMember {
@@ -50,7 +50,7 @@ export interface UpdateStaffInput {
 /**
  * Changes a staff member's role, or switches their access off.
  *
- * Both take effect the instant this resolves — the API deletes their refresh
+ * Both take effect the instant this resolves, the API deletes their refresh
  * sessions and bumps a revocation epoch, so an access token already on their
  * phone stops working rather than lasting out its fifteen minutes. That is why
  * the calling UI says "signed out immediately" and means it.

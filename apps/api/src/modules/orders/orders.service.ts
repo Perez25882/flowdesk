@@ -38,7 +38,15 @@ import { findProductById } from '../products/products.repository.js';
 const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   PENDING: ['CONFIRMED', 'CANCELLED'],
   CONFIRMED: ['PROCESSING', 'CANCELLED'],
-  PROCESSING: ['FULFILLED', 'CANCELLED'],
+  // PROCESSING keeps its direct route to FULFILLED: a shop where the customer
+  // collects in person never dispatches anything, and forcing those orders
+  // through a shipment they do not have would be a worse lie than the missing
+  // step it was meant to fix.
+  PROCESSING: ['DISPATCHED', 'FULFILLED', 'CANCELLED'],
+  // Cancelling after dispatch is allowed because goods do come back. What is
+  // not allowed is reversing into PROCESSING: once a rider has it, "being
+  // packed" is no longer true of it.
+  DISPATCHED: ['FULFILLED', 'CANCELLED'],
   FULFILLED: [],
   CANCELLED: [],
 };
@@ -480,6 +488,19 @@ export async function markProcessing(
 ): Promise<OrderWithRelations> {
   // Packing an order claims it, but only a real staff member can be assigned.
   return transitionOrder(orderId, businessId, staffId, 'PROCESSING', assignmentFor(staffId));
+}
+
+/**
+ * Moves an order to DISPATCHED. Called by the shipments module once the
+ * shipment row exists, never before: the customer's "on its way" message reads
+ * the courier and tracking off that row.
+ */
+export async function dispatchOrderStatus(
+  orderId: string,
+  businessId: string,
+  staffId: string | null,
+): Promise<OrderWithRelations> {
+  return transitionOrder(orderId, businessId, staffId, 'DISPATCHED', assignmentFor(staffId));
 }
 
 export async function fulfillOrder(

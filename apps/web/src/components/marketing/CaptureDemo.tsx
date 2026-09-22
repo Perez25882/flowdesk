@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
  *
  * Static. No motion, no glass, no floating. It is built from the same tokens
  * as the application, so what a visitor sees here is what they get after
- * signing up — which is the only trust signal on this page that costs nothing
+ * signing up, which is the only trust signal on this page that costs nothing
  * and cannot be faked.
  *
  * Stacks on a phone. The thread sits above the order rather than beside it,

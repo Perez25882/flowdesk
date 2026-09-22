@@ -143,3 +143,40 @@ export async function sendStaffInviteEmail(
     `,
   });
 }
+
+
+/**
+ * A sign-in code.
+ *
+ * Plain text and a large monospaced number, and nothing else. Verification mail
+ * is the most phished category there is, so this carries no link to click, no
+ * button, and no "confirm your account" call to action: there is nothing in it
+ * for an attacker to redirect. The only action it asks for is typing six digits
+ * into a page the recipient already had open.
+ */
+export async function sendVerificationCodeEmail(
+  to: string,
+  ownerName: string,
+  code: string,
+  validMinutes: number,
+): Promise<boolean> {
+  const firstName = ownerName.split(' ')[0] ?? 'there';
+
+  return send({
+    to,
+    subject: `${code} is your Flowdesk code`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your Flowdesk verification code is ${code}.\n\n` +
+      `It is valid for ${validMinutes} minutes and can be used once.\n\n` +
+      'Flowdesk will never ask you for this code by WhatsApp, by phone, or in a reply to this email. ' +
+      'If you did not ask for it, you can ignore this message and nothing will change.',
+    html: `
+      <p>Hi ${escapeHtml(firstName)},</p>
+      <p>Your Flowdesk verification code is:</p>
+      <p style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:32px;font-weight:700;letter-spacing:0.12em;margin:24px 0;color:#0f161a;">${escapeHtml(code)}</p>
+      <p>It is valid for ${validMinutes} minutes and can be used once.</p>
+      <p style="color:#52656f;font-size:14px;">Flowdesk will never ask you for this code by WhatsApp, by phone, or in a reply to this email. If you did not ask for it, you can ignore this message and nothing will change.</p>
+    `,
+  });
+}

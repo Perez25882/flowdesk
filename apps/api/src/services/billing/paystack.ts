@@ -38,7 +38,13 @@ interface PaystackResponse<T> {
   data?: T;
 }
 
-async function paystackRequest<T>(
+/**
+ * Exported so the connect module (subaccounts, hosted charges, verification)
+ * shares one client: one timeout, one auth header, one place errors are logged.
+ * A second copy would drift, and the copy that drifts is always the one
+ * handling money.
+ */
+export async function paystackRequest<T>(
   endpoint: string,
   options: RequestInit = {},
 ): Promise<PaystackResponse<T>> {

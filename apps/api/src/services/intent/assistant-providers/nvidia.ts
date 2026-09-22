@@ -1,5 +1,6 @@
 import { env } from '../../../config/env.js';
 import { logger } from '../../../config/logger.js';
+import { schemaInstruction } from './schema-instruction.js';
 import type {
   AssistantProvider,
   GenerateInput,
@@ -28,16 +29,25 @@ const NVIDIA_API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
 /**
  * Chosen on measured latency, not on size.
  *
- * `meta/llama-3.3-70b-instruct` was the obvious pick and turned out unusable on
- * the shared tier: 46s for one decision, 60s+ without guided decoding, and 503
- * `ResourceExhausted` under no load at all. A reply that arrives a minute later
- * is not a reply. The 8B model answers the same prompt in 2–4s, and on the probe
- * set it produced correct grounded answers — including refusing an out-of-stock
- * item — because the hard part is checked by the server, not the model.
+ * History matters here, because it will repeat. `meta/llama-3.3-70b-instruct`
+ * was the obvious first pick and was unusable on the shared tier: 46s for one
+ * decision and 503 `ResourceExhausted` under no load. `meta/llama-3.1-8b-instruct`
+ * replaced it and answered in 2–4s — until NVIDIA retired it on 2026-08-26,
+ * after which every request returned 410 Gone. The assistant degraded to canned
+ * templates for six days, and nothing failed loudly enough for anyone to notice.
+ *
+ * Re-measured 2026-09-01 with `qa/nv-pick.mjs`, which sends this exact request
+ * shape. Of eight candidates only this one was usable: 4/4 valid JSON at ~6.4s.
+ * Kimi K3, Gemma 4 and DeepSeek V4 Flash each timed out past 75s; the Nemotron
+ * nano and lightning variants returned nothing parseable. It rejects
+ * `guided_json`, which costs one 400 on the first call and nothing afterwards.
+ *
+ * When this one is retired too, re-run `node qa/nv-pick.mjs` rather than
+ * guessing: the NVIDIA catalogue turns over faster than this comment does.
  *
  * Override with ASSISTANT_MODEL if you have dedicated capacity for a larger one.
  */
-const DEFAULT_MODEL = 'meta/llama-3.1-8b-instruct';
+const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 
 /**
  * Turned off for the rest of the process the first time a model rejects it.
@@ -51,28 +61,9 @@ interface ChatCompletionResponse {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
-/**
- * Says in the prompt what guided decoding would otherwise enforce.
- *
- * Belt and braces: on a model without `guided_json` this is the only thing
- * shaping the output, and on a model with it the cost is a few hundred tokens.
- */
-function schemaInstruction(schema: Record<string, unknown>): string {
-  return [
-    'Reply with a single JSON object and nothing else — no prose, no markdown fences.',
-    // "It must match this schema exactly" was, to an 8B model, an instruction it
-    // could satisfy by printing the schema. It did, on 10 of 22 messages in the
-    // eval — and a decision that fails to parse falls through to the canned
-    // template, so nearly half of all customers were answered by a form letter
-    // while the logs showed the assistant "running". Naming the distinction
-    // between a schema and an instance of one fixes it.
-    'Output an INSTANCE of the schema below — the filled-in object with real values.',
-    'Do NOT output the schema itself. A reply containing "type", "properties" or',
-    '"required" as top-level keys is wrong.',
-    'The schema:',
-    JSON.stringify(schema),
-  ].join('\n');
-}
+// `schemaInstruction` now lives in ./schema-instruction.ts, shared with the Groq
+// provider. Its wording came out of a failed eval rather than reasoning, so it
+// is worth one import to stop a second provider rediscovering it the hard way.
 
 function classifyStatus(status: number): ProviderFailure {
   if (status === 429) return 'rate_limited';

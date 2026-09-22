@@ -24,7 +24,7 @@ import { formatCurrency, cn } from '@/lib/utils';
  *
  *   1. The customer picker was unreachable. `isNewCustomer` was derived as
  *      `!customerId`, so the form opened in "new customer" mode and the only
- *      button offered set `customerId` back to `''` — meaning the search box
+ *      button offered set `customerId` back to `''`, meaning the search box
  *      for existing customers could never be shown. It is now an explicit mode.
  *   2. The submit button sat at the bottom of a scrolling dialog. It is now
  *      pinned, with the running total beside it, so the person entering a
@@ -68,7 +68,7 @@ export default function ManualOrderModal(): React.JSX.Element {
   // Stock level is deliberately NOT a filter here. Every product starts at zero
   // and a great many shops never enter stock at all, so filtering on it hid the
   // entire catalogue from the picker with no explanation. Selling something the
-  // count says you do not have is also an ordinary event — the PRD allows
+  // count says you do not have is also an ordinary event, the PRD allows
   // negative stock precisely because the shelf is the source of truth, not the
   // database.
   const activeProducts = useMemo(() => products.filter((p) => p.active), [products]);
@@ -239,7 +239,7 @@ export default function ManualOrderModal(): React.JSX.Element {
                   <option value="">Choose a customer</option>
                   {customers.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name ? `${c.name} — ${c.waNumber}` : c.waNumber}
+                      {c.name ? `${c.name} · ${c.waNumber}` : c.waNumber}
                     </option>
                   ))}
                 </select>
@@ -301,7 +301,7 @@ export default function ManualOrderModal(): React.JSX.Element {
                         <option value="">Choose a product</option>
                         {activeProducts.map((p) => (
                           <option key={p.id} value={p.id}>
-                            {p.name} — {formatCurrency(Number(p.price))}
+                            {p.name} · {formatCurrency(Number(p.price))}
                           </option>
                         ))}
                       </select>

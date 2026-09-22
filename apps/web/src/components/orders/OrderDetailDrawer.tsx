@@ -2,7 +2,12 @@ import { AlertTriangle, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import type { OrderStatus } from '@/types/order';
 import { useOrderDetail, useUpdateOrderStatus, useAssignOrder } from '@/hooks/useOrders';
-import { useCreatePayment } from '@/hooks/usePayments';
+import {
+  useCreatePayment,
+  useCreatePaymentLink,
+  usePaymentLinks,
+  usePayoutStatus,
+} from '@/hooks/usePayments';
 import { useStaff } from '@/hooks/useStaff';
 import {
   Sheet,
@@ -24,8 +29,9 @@ import {
 } from '@/components/ui/Dialog';
 import { TextAreaField } from '@/components/ui/Field';
 import { OrderStatusBadge } from '@/components/ui/Badge';
+import DispatchPanel from '@/components/orders/DispatchPanel';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { formatCurrency, timeAgo, cn } from '@/lib/utils';
+import { formatCurrency, formatPhone, timeAgo, cn } from '@/lib/utils';
 
 interface OrderDetailDrawerProps {
   orderId: string | null;
@@ -35,8 +41,8 @@ interface OrderDetailDrawerProps {
 /**
  * The order record.
  *
- * The single most consequential change here is that the primary action —
- * "Confirm order", the reason the drawer was opened at all — used to sit at
+ * The single most consequential change here is that the primary action , 
+ * "Confirm order", the reason the drawer was opened at all, used to sit at
  * the very bottom, below the items, the status history, the staff picker and
  * the payment form. On a phone that is four screens of scrolling to press one
  * button. It now lives in a footer pinned to the bottom of the sheet.
@@ -48,7 +54,13 @@ interface OrderDetailDrawerProps {
 const NEXT_ACTION: Record<OrderStatus, { label: string; next: OrderStatus } | null> = {
   PENDING: { label: 'Confirm order', next: 'CONFIRMED' },
   CONFIRMED: { label: 'Start packing', next: 'PROCESSING' },
+  // PROCESSING keeps "delivered" as its one-tap next step: a shop that hands
+  // the parcel over the counter never dispatches anything, and making them pass
+  // through a delivery state they do not use would add a tap to every order.
+  // Sending it out is a deliberate act with its own panel, which is where
+  // DISPATCHED is entered from.
   PROCESSING: { label: 'Mark delivered', next: 'FULFILLED' },
+  DISPATCHED: { label: 'Mark delivered', next: 'FULFILLED' },
   FULFILLED: null,
   CANCELLED: null,
 };
@@ -123,6 +135,11 @@ export default function OrderDetailDrawer({
   const updateStatus = useUpdateOrderStatus();
   const assignOrder = useAssignOrder();
   const createPayment = useCreatePayment();
+  const createLink = useCreatePaymentLink();
+  const { data: payoutStatus } = usePayoutStatus();
+  const { data: openLinks = [] } = usePaymentLinks(
+    orderId ? { orderId, status: 'PENDING' } : {},
+  );
   const { data: staffList = [] } = useStaff();
 
   const [assignStaffId, setAssignStaffId] = useState('');
@@ -151,7 +168,7 @@ export default function OrderDetailDrawer({
   /**
    * Cancelling asks for a reason first.
    *
-   * The API requires one — it ends up on the order, in the status history, and
+   * The API requires one, it ends up on the order, in the status history, and
    * in the message the customer receives, so "cancelled, no reason given" is not
    * something the server will accept. The button used to send the status with no
    * note at all, which came back 400 and was never rendered anywhere: the
@@ -163,7 +180,7 @@ export default function OrderDetailDrawer({
 
     const reason = cancelReason.trim();
     if (reason.length === 0) {
-      setCancelError('Please give a reason — the customer is told why.');
+      setCancelError('Please give a reason. The customer is told why.');
       return;
     }
 
@@ -352,7 +369,7 @@ export default function OrderDetailDrawer({
                       .filter((s) => s.active)
                       .map((s) => (
                         <option key={s.id} value={s.id}>
-                          {s.name} — {s.role.toLowerCase().replace('_', ' ')}
+                          {s.name}, {s.role.toLowerCase().replace('_', ' ')}
                         </option>
                       ))}
                   </select>
@@ -369,8 +386,74 @@ export default function OrderDetailDrawer({
                 </div>
               </Section>
 
+              {remaining > 0 && payoutStatus?.available && (
+                <Section title="Ask for payment">
+                  <div className="flex flex-col gap-2">
+                    {openLinks.length > 0 ? (
+                      <div className="rounded-lg border border-border bg-surface-hover p-3">
+                        <p className="text-sm text-text-primary">
+                          A link for {formatCurrency(openLinks[0]!.amount)} is already with them.
+                        </p>
+                        <p className="mt-1 break-all text-xs text-text-muted">
+                          {openLinks[0]!.url}
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="mt-2 h-9"
+                          onClick={() =>
+                            createLink.mutate({
+                              customerId: order.customer.id,
+                              orderId: order.id,
+                              amount: openLinks[0]!.amount,
+                              send: true,
+                            })
+                          }
+                          isLoading={createLink.isPending}
+                        >
+                          Send it again
+                        </Button>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm text-text-muted">
+                          Sends them a link for {formatCurrency(remaining)}. They pay with momo or
+                          a card, and it lands in your books confirmed, with no screenshot to check.
+                        </p>
+                        <Button
+                          size="sm"
+                          className="h-10"
+                          onClick={() =>
+                            createLink.mutate({
+                              customerId: order.customer.id,
+                              orderId: order.id,
+                              amount: remaining,
+                              send: true,
+                            })
+                          }
+                          disabled={!payoutStatus.connected}
+                          isLoading={createLink.isPending}
+                        >
+                          Send payment link for {formatCurrency(remaining)}
+                        </Button>
+                        {!payoutStatus.connected && (
+                          <p className="text-xs text-text-muted">
+                            Add where you want to be paid in Settings → Payouts first.
+                          </p>
+                        )}
+                        {createLink.isError && (
+                          <p role="alert" className="text-xs text-danger">
+                            {createLink.error.message}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </Section>
+              )}
+
               {remaining > 0 && (
-                <Section title="Record a payment">
+                <Section title="Or record one you already took">
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <input
@@ -425,6 +508,59 @@ export default function OrderDetailDrawer({
                       </p>
                     )}
                   </div>
+                </Section>
+              )}
+
+              {/* Where it is going, then what carried it. Both sit below the
+                  money and above the audit trail, which is the order someone
+                  actually works an order in: confirm it, take payment, send
+                  it, and only then look back at what happened. */}
+              {(order.deliveryAddress || order.recipientName || order.contactPhone) && (
+                <Section title="Delivering to">
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+                    {order.recipientName && (
+                      <>
+                        <dt className="text-text-muted">Name</dt>
+                        <dd className="text-text-primary">{order.recipientName}</dd>
+                      </>
+                    )}
+                    {order.deliveryAddress && (
+                      <>
+                        <dt className="text-text-muted">Address</dt>
+                        <dd className="text-text-primary">{order.deliveryAddress}</dd>
+                      </>
+                    )}
+                    {order.contactPhone && (
+                      <>
+                        <dt className="text-text-muted">Call</dt>
+                        <dd className="fd-figure text-text-primary">
+                          {formatPhone(order.contactPhone)}
+                        </dd>
+                      </>
+                    )}
+                  </dl>
+                </Section>
+              )}
+
+              {/* Said plainly rather than shown as blanks: an owner looking at
+                  an order with no address needs to know whether nobody asked
+                  or the customer has not answered yet. */}
+              {!order.deliveryCapturedAt &&
+                !order.deliveryAddress &&
+                order.status !== 'PENDING' &&
+                order.status !== 'CANCELLED' && (
+                  <Section title="Delivering to">
+                    <p className="text-sm text-text-muted">
+                      Flowdesk is still asking the customer for a name, address and number.
+                    </p>
+                  </Section>
+                )}
+
+              {(order.status === 'PROCESSING' ||
+                order.status === 'DISPATCHED' ||
+                order.status === 'FULFILLED') && (
+                <Section title="Dispatch">
+                  <DispatchPanel orderId={order.id} status={order.status} />
                 </Section>
               )}
 

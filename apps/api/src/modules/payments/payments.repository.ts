@@ -1,5 +1,5 @@
 import { prisma } from '../../config/database.js';
-import { Prisma } from '@prisma/client';
+import { Prisma, type PaymentMethod } from '@prisma/client';
 import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
 import { recalculateCustomerTotals } from '../customers/customers.repository.js';
@@ -75,6 +75,62 @@ export async function createPayment(
       }
       await recalculateCustomerTotals(payment.customerId, tx);
     }
+
+    return payment as unknown as PaymentWithCustomer;
+  });
+}
+
+/**
+ * Records money a payment gateway confirmed.
+ *
+ * Its own function rather than a flag on `createPayment`, because it is the one
+ * path where nobody's word is involved. A screenshot claim is CLAIMED until a
+ * person attests it; an owner's own entry is SELLER_ATTESTED on their say-so.
+ * This is GATEWAY_CONFIRMED: Paystack settled it, the reference can be checked
+ * against Paystack's own record, and no human attestation would add anything.
+ *
+ * Totals move immediately for the same reason — there is nothing left to
+ * verify, so an order that is now paid should say so before the owner opens it.
+ */
+export async function createGatewayPayment(
+  businessId: string,
+  data: {
+    customerId: string;
+    orderId: string | null;
+    amount: number;
+    method: PaymentMethod;
+    reference: string;
+    notes?: string | null;
+  },
+): Promise<PaymentWithCustomer> {
+  return prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.create({
+      data: {
+        businessId,
+        customerId: data.customerId,
+        orderId: data.orderId,
+        amount: new Prisma.Decimal(data.amount),
+        method: data.method,
+        direction: 'IN',
+        reference: data.reference,
+        notes: data.notes ?? null,
+        confidence: 'GATEWAY_CONFIRMED',
+        // Recorded as attested by the gateway rather than by a person, so the
+        // audit trail never implies someone signed off on something no human
+        // ever looked at.
+        attestedBy: 'paystack',
+        attestedAt: new Date(),
+      },
+      include: {
+        customer: { select: { id: true, name: true, waNumber: true } },
+        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
+      },
+    });
+
+    if (payment.orderId) {
+      await recalculateOrderPaid(payment.orderId, tx);
+    }
+    await recalculateCustomerTotals(payment.customerId, tx);
 
     return payment as unknown as PaymentWithCustomer;
   });

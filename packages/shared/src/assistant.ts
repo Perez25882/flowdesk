@@ -100,6 +100,34 @@ export interface AssistantDecision {
     needed: boolean;
     reason: EscalationReason | null;
   };
+  /**
+   * A price below the one the model was shown, stated as a number rather than
+   * left in the prose.
+   *
+   * Null in the overwhelming majority of replies. When it is set, the server
+   * checks it against the product's floor and refuses the whole reply if it is
+   * under — which is why it must be declared: a discount that only exists in a
+   * sentence is a discount the server cannot check before the customer reads it.
+   */
+  priceOffer: {
+    productId: string;
+    unitPrice: number;
+    quantity: number;
+  } | null;
+  /**
+   * A time the reply just agreed to, stated as data rather than left in prose.
+   *
+   * Null in almost every reply. When it is set, the server checks the instant
+   * against the free slots it computed BEFORE the model ran, and refuses the
+   * whole reply if it is not one of them — which is why it has to be declared.
+   * An appointment that exists only inside a sentence is one that nothing can
+   * check and nothing will write down.
+   */
+  booking: {
+    serviceId: string;
+    /** ISO 8601, exactly one of the times the prompt offered. */
+    startsAt: string;
+  } | null;
 }
 
 /** What the server decided to do, after checking the decision. */

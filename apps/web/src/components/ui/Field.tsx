@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
  * Every control gets a real `<label>` bound by id, an optional hint, and an
  * error that is announced rather than merely coloured red. Previously each
  * page hand-rolled these, so some inputs had no label at all and errors were
- * conveyed by border colour alone — invisible to a screen reader and to
+ * conveyed by border colour alone, invisible to a screen reader and to
  * anyone with a red-green deficiency.
  */
 
@@ -20,7 +20,7 @@ interface FieldShellProps {
    *
    * `| undefined` is spelled out on the optional props because the project
    * runs with `exactOptionalPropertyTypes`, under which `hint?: string` and
-   * `hint?: string | undefined` are different types — the former refuses an
+   * `hint?: string | undefined` are different types, the former refuses an
    * explicitly-passed `undefined`, which is exactly what forwarding an
    * optional prop through produces.
    */

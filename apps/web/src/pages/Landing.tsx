@@ -17,13 +17,13 @@ import { cn } from '@/lib/utils';
  * The old version ran roughly 620 words before the pricing table; this one is
  * under 300, and reads as more confident for it.
  *
- * Structurally it follows the operations-landing pattern — product first,
- * proof second, mechanism third, price fourth — with one inverted band to
+ * Structurally it follows the operations-landing pattern, product first,
+ * proof second, mechanism third, price fourth, with one inverted band to
  * give the page a spine.
  *
  * A third rule, added after a pre-launch audit found four claims the product
  * does not honour: every sentence on this page has to be checkable against the
- * API. Not "defensible" — checkable, by opening the file that implements it.
+ * API. Not "defensible", checkable, by opening the file that implements it.
  * The claims that failed that test are noted where they were replaced, because
  * a copy change with no reason attached is a copy change someone reverts.
  */
@@ -133,20 +133,46 @@ function Hero(): React.JSX.Element {
   const navigate = useNavigate();
 
   return (
-    <section className="relative overflow-hidden border-b border-border pt-24 lg:pt-32">
+    <section className="fd-aurora relative overflow-hidden border-b border-border pt-28 lg:pt-36">
+      {/* Two layers, and they do different jobs. The aurora on the section
+          itself is colour, three wide washes that give the top of the page
+          somewhere to start. The ruling over it is structure. Colour alone
+          reads as a template gradient; structure alone reads as a spreadsheet. */}
       <div
         aria-hidden="true"
-        className="fd-ruled pointer-events-none absolute inset-0 opacity-70 [mask-image:radial-gradient(130%_75%_at_50%_0%,#000_15%,transparent_72%)]"
+        className="fd-ruled pointer-events-none absolute inset-0 opacity-50 [mask-image:radial-gradient(130%_75%_at_50%_0%,#000_15%,transparent_72%)]"
       />
 
       <div className="relative mx-auto max-w-shell px-5 lg:px-8">
-        <div className="grid items-center gap-10 pb-14 lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1fr)] lg:gap-14 lg:pb-20">
+        <div className="grid items-center gap-12 pb-16 lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1fr)] lg:gap-16 lg:pb-20">
           <Reveal>
-            <p className="fd-label">WhatsApp commerce, Ghana</p>
-
-            <h1 className="mt-4 text-display-lg font-extrabold tracking-tighter">
+            <h1 className="text-display-lg font-extrabold leading-[0.95] tracking-tighter">
               Every order, out of
-              <br className="hidden sm:block" /> your chats.
+              <br className="hidden sm:block" />{' '}
+              <span className="relative inline-block">
+                {/*
+                  A highlighter stroke, in CSS, sitting across the baseline so
+                  the descenders cut through it, which is what stops it
+                  reading as a border under the words.
+
+                  Two things went wrong getting here, both worth keeping
+                  written down. `-z-10` on a child of a section that paints its
+                  own background sends the stroke behind THAT, not behind the
+                  text, so it vanished completely. And `bg-primary/12` compiled
+                  to nothing at all, because a Tailwind alpha modifier needs
+                  RGB channels and the token held a hex, see the alpha
+                  channels in globals.css, which that bug is the reason for.
+
+                  It is a solid tint rather than a transparency now: the brand
+                  blue at 14% over white is indistinguishable from grey, and a
+                  grey bar under a heading reads as a rendering fault.
+                */}
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-x-[-0.06em] bottom-[0.18em] h-[0.3em] rounded-[0.06em] bg-primary-light"
+                />
+                <span className="relative">your chats.</span>
+              </span>
             </h1>
 
             {/* "…and matches the payment" was the old third clause. Nothing in
@@ -154,12 +180,12 @@ function Hero(): React.JSX.Element {
                 and every payment is recorded and confirmed by a person. What
                 Flowdesk actually does with a payment is refuse to let it stay
                 buried in a chat thread. */}
-            <p className="mt-5 max-w-prose text-md leading-relaxed text-text-secondary sm:text-lg">
+            <p className="mt-6 max-w-prose text-md leading-relaxed text-text-secondary sm:text-lg">
               Flowdesk reads your WhatsApp, builds the order, and puts the payment in front of
               you to confirm.
             </p>
 
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+            <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
               <Button
                 size="lg"
                 onClick={() => navigate('/register')}
@@ -175,7 +201,12 @@ function Hero(): React.JSX.Element {
           </Reveal>
 
           <Reveal delay={70}>
-            <CaptureDemo />
+            {/* Seated in a tray rather than sitting flat on the page. This is
+                the one element on the site the eye is meant to treat as a
+                physical object, it is a picture of the product. */}
+            <div className="fd-bezel">
+              <CaptureDemo />
+            </div>
           </Reveal>
         </div>
       </div>
@@ -187,17 +218,17 @@ function Hero(): React.JSX.Element {
  * The inverted band.
  *
  * One dark section, full-bleed, carrying four facts about the offer. It is
- * what stops a long light page reading as flat — and every figure in it is
+ * what stops a long light page reading as flat, and every figure in it is
  * checkable, rather than the invented traction numbers ("10,000+ businesses")
  * that this kind of band usually carries.
  *
  * Two of the four used to fail their own test. "Every feature" was untrue: the
  * trial runs on a real plan with real ceilings, so the honest version of that
  * line is about the card, not the feature set. And "2 minutes to connect your
- * number" was a number nobody had measured — replaced with the one thing about
+ * number" was a number nobody had measured, replaced with the one thing about
  * the assistant a shop owner most needs to believe, which the grounding
  * validator and `resolveOrderItems` both enforce: a price the customer is
- * quoted comes out of the catalogue, never out of the model.
+ * quoted comes out of the catalogue, and out of nothing else.
  */
 const FACTS = [
   { figure: String(TRIAL_DAYS), unit: 'days free', note: 'No card to start.' },
@@ -207,7 +238,7 @@ const FACTS = [
     unit: 'cedis after',
     note: 'Starter, per month.',
   },
-  { figure: '1', unit: 'source for prices', note: 'Your catalogue. Never the model.' },
+  { figure: '1', unit: 'source for prices', note: 'Your catalogue. Nowhere else.' },
 ];
 
 function Facts(): React.JSX.Element {
@@ -220,13 +251,13 @@ function Facts(): React.JSX.Element {
 
       <h2 className="sr-only">Flowdesk in four figures</h2>
 
-      <div className="relative mx-auto grid max-w-shell grid-cols-2 gap-x-6 gap-y-9 px-5 py-14 md:grid-cols-4 lg:gap-x-10 lg:px-8 lg:py-18">
+      <div className="relative mx-auto grid max-w-shell grid-cols-2 gap-x-6 gap-y-10 px-5 py-16 md:grid-cols-4 lg:gap-x-10 lg:px-8 lg:py-20">
         {FACTS.map((f, i) => (
           <Reveal key={f.unit} delay={i * 45}>
-            <p className="fd-figure text-3xl font-extrabold tracking-tighter text-white">
+            <p className="fd-figure text-4xl font-extrabold leading-none tracking-tighter text-white lg:text-5xl">
               {f.figure}
             </p>
-            <p className="mt-1 text-sm font-semibold text-text-on-ink">{f.unit}</p>
+            <p className="mt-2.5 text-sm font-semibold text-text-on-ink">{f.unit}</p>
             <p className="mt-0.5 text-xs text-text-on-ink-muted">{f.note}</p>
           </Reveal>
         ))}
@@ -260,7 +291,7 @@ const STEPS = [
 
 function HowItWorks(): React.JSX.Element {
   return (
-    <section id="how" className="border-b border-border py-16 lg:py-24">
+    <section id="how" className="border-b border-border py-20 lg:py-32">
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <div className="grid gap-8 lg:grid-cols-[minmax(0,0.38fr)_minmax(0,1fr)] lg:gap-16">
           <Reveal>
@@ -272,8 +303,10 @@ function HowItWorks(): React.JSX.Element {
           <div className="divide-y divide-border">
             {STEPS.map((s, i) => (
               <Reveal key={s.n} delay={i * 45} className="py-6 first:pt-0 last:pb-0">
-                <div className="grid gap-2 sm:grid-cols-[48px_minmax(0,1fr)] sm:gap-6">
-                  <span className="fd-figure text-sm font-bold text-primary">{s.n}</span>
+                <div className="grid gap-3 sm:grid-cols-[56px_minmax(0,1fr)] sm:gap-6">
+                  <span className="fd-figure inline-flex h-9 w-9 items-center justify-center rounded-lg border border-primary-border bg-primary-light text-xs font-bold text-primary">
+                    {s.n}
+                  </span>
                   <div>
                     <h3 className="text-lg font-bold tracking-tight">{s.title}</h3>
                     <p className="mt-1 max-w-prose text-base text-text-secondary">{s.body}</p>
@@ -292,8 +325,8 @@ function HowItWorks(): React.JSX.Element {
  * Six things, each one a screen in the product.
  *
  * "Every chat, searchable" and "Matched payments" are both gone. Search on the
- * Messages page filters the page of results already loaded — there is no search
- * parameter on the messages endpoint at all — and no payment is matched to
+ * Messages page filters the page of results already loaded, there is no search
+ * parameter on the messages endpoint at all, and no payment is matched to
  * anything. What survives is what the screens actually do.
  */
 const FEATURES = [
@@ -307,26 +340,27 @@ const FEATURES = [
 
 function Features(): React.JSX.Element {
   return (
-    <section id="features" className="border-b border-border bg-surface py-16 lg:py-24">
+    <section id="features" className="border-b border-border bg-surface py-20 lg:py-32">
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <Reveal>
           <h2 className="text-display-sm font-extrabold tracking-tighter">What you get.</h2>
         </Reveal>
 
-        <div className="mt-10 grid border-t border-border sm:grid-cols-2">
+        {/* Cards rather than grid cells with rules between them.
+            The ruled version was honest and completely flat, six equal
+            rectangles reading as a table of contents. These lift a hair on
+            hover, which is the smallest possible way of saying each one is a
+            screen you can actually go and look at. */}
+        <div className="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((f, i) => (
-            <Reveal
-              key={f.title}
-              delay={(i % 2) * 40}
-              className={cn('border-b border-border py-6 pr-6', i % 2 === 1 && 'sm:border-l sm:pl-8')}
-            >
-              <div className="flex items-baseline gap-3">
-                <span className="fd-figure text-xs text-text-muted">
+            <Reveal key={f.title} delay={(i % 3) * 55}>
+              <div className="h-full rounded-xl bg-surface p-5 shadow-sm ring-1 ring-border-subtle transition-[transform,box-shadow] duration-200 ease-out [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-1 [@media(hover:hover)_and_(pointer:fine)]:hover:shadow-md">
+                <span className="fd-figure text-2xs font-bold text-primary/70">
                   {String(i + 1).padStart(2, '0')}
                 </span>
-                <h3 className="text-lg font-bold tracking-tight">{f.title}</h3>
+                <h3 className="mt-2 text-lg font-bold tracking-tight">{f.title}</h3>
+                <p className="mt-1.5 text-base text-text-secondary">{f.body}</p>
               </div>
-              <p className="mt-1.5 pl-[30px] text-base text-text-secondary">{f.body}</p>
             </Reveal>
           ))}
         </div>
@@ -339,12 +373,12 @@ function Pricing(): React.JSX.Element {
   const navigate = useNavigate();
 
   return (
-    <section id="pricing" className="border-b border-border py-16 lg:py-24">
+    <section id="pricing" className="border-b border-border py-20 lg:py-32">
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <Reveal>
           <h2 className="text-display-sm font-extrabold tracking-tighter">Pricing.</h2>
-          {/* "Everything unlocked" was not true — a trial runs on a real plan
-              with that plan's ceilings — and "cancel from Settings" described a
+          {/* "Everything unlocked" was not true, a trial runs on a real plan
+              with that plan's ceilings, and "cancel from Settings" described a
               button the billing screen does not have. */}
           <p className="mt-3 max-w-prose text-base text-text-secondary">
             The {TRIAL_DAYS} days are free and need no card. Every plan runs the whole product;
@@ -364,7 +398,7 @@ function Pricing(): React.JSX.Element {
  * The four hardest questions, plus the two the old version dodged.
  *
  * "It flags it instead of guessing. Nothing reaches a customer without you"
- * was false in every configuration — order confirmations, status answers,
+ * was false in every configuration, order confirmations, status answers,
  * clarifying questions and the standing templates all go out unattended, which
  * is the product working as designed and as the rest of this page describes.
  * Pretending otherwise sold a different, worse product to anyone who read
@@ -383,11 +417,11 @@ const QUESTIONS = [
   },
   {
     q: 'Does it reply to customers by itself?',
-    a: 'Yes — that is the job. Order confirmations with the reference number, answers to “where is my order”, your own standing replies and any question it needs to ask before it can build an order all go out on their own. Replies the assistant writes in its own words stay off until you turn them on.',
+    a: 'Yes, that is the job. Order confirmations with the reference number, answers to “where is my order”, your own standing replies and any question it needs to ask before it can build an order all go out on their own. Replies the assistant writes in its own words stay off until you turn them on.',
   },
   {
     q: 'What if it reads an order wrong?',
-    a: 'It answers out of your records or not at all. Prices come from the catalogue row, never from the model, and any reply carrying a figure that does not match your own data is held back as a draft for you. Where the message is ambiguous it asks the customer rather than choosing for them, and bargaining, complaints and policy questions go straight to you.',
+    a: 'It answers out of your records or not at all. Prices come from the catalogue row and nowhere else, and any reply carrying a figure that does not match your own data is held back as a draft for you. Where the message is ambiguous it asks the customer rather than choosing for them, and bargaining, complaints and policy questions go straight to you.',
   },
   {
     q: 'Can I still reply from my own phone?',
@@ -401,7 +435,7 @@ const QUESTIONS = [
 
 function Questions(): React.JSX.Element {
   return (
-    <section className="border-b border-border bg-surface py-16 lg:py-24">
+    <section className="border-b border-border bg-surface py-20 lg:py-32">
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <Reveal>
           <h2 className="text-display-sm font-extrabold tracking-tighter">Questions.</h2>
@@ -424,7 +458,7 @@ function CallToAction(): React.JSX.Element {
   const navigate = useNavigate();
 
   return (
-    <section className="border-b border-border py-16 lg:py-24">
+    <section className="border-b border-border py-20 lg:py-32">
       <div className="mx-auto max-w-shell px-5 lg:px-8">
         <Reveal className="flex flex-col items-start gap-7 lg:flex-row lg:items-end lg:justify-between">
           <h2 className="max-w-xl text-display-sm font-extrabold tracking-tighter">

@@ -7,9 +7,11 @@ import { useMessages } from '@/hooks/useMessages';
 import { useLowStockProducts } from '@/hooks/useProducts';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
 import PageHeader from '@/components/shared/PageHeader';
+import SetupChecklist from '@/components/shared/SetupChecklist';
+import DailyInsight from '@/components/shared/DailyInsight';
 import { Metric, MetricStrip } from '@/components/shared/MetricStrip';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
-import { SkeletonRows } from '@/components/ui/Skeleton';
+import { SkeletonMetric, SkeletonRows } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import EmptyState from '@/components/shared/EmptyState';
 import { formatCurrency, timeAgo, customerLabel } from '@/lib/utils';
@@ -18,7 +20,7 @@ import { formatCurrency, timeAgo, customerLabel } from '@/lib/utils';
  * The morning screen.
  *
  * The previous version laid this out as four identical metric cards, then a
- * 2+1 grid, then a 1+1 grid — nine bordered boxes of equal visual weight. The
+ * 2+1 grid, then a 1+1 grid, nine bordered boxes of equal visual weight. The
  * effect was that nothing on the page claimed to matter more than anything
  * else, which is the opposite of what this screen is for.
  *
@@ -27,7 +29,7 @@ import { formatCurrency, timeAgo, customerLabel } from '@/lib/utils';
  *   1. The figures. What did last night earn, and what is still open.
  *   2. Orders waiting. The one list that is actually work, given the width.
  *   3. Money owed. The one list that is actually risk.
- *   4. Exceptions — flagged messages, low stock — below the fold, because
+ *   4. Exceptions, flagged messages, low stock, below the fold, because
  *      they are usually empty and an empty panel should not occupy prime
  *      space every single day.
  */
@@ -35,18 +37,18 @@ export default function DashboardPage(): React.JSX.Element {
   const navigate = useNavigate();
 
   const { data: pendingOrders, isLoading: pendingLoading } = useOrdersByStatus('PENDING');
-  const { data: stats } = useOrderStats('today');
-  const { data: customers } = useCustomers(undefined, undefined, true);
-  const { data: unconfirmedPayments } = usePayments(false);
-  const { data: revenueStats } = useRevenueStats();
-  const { data: reviewMessages } = useMessages(true);
-  const { data: lowStockProducts } = useLowStockProducts();
+  const { data: stats, isLoading: statsLoading } = useOrderStats('today');
+  const { data: customers, isLoading: customersLoading } = useCustomers(undefined, undefined, true);
+  const { data: unconfirmedPayments, isLoading: paymentsLoading } = usePayments(false);
+  const { data: revenueStats, isLoading: revenueLoading } = useRevenueStats();
+  const { data: reviewMessages, isLoading: messagesLoading } = useMessages(true);
+  const { data: lowStockProducts, isLoading: lowStockLoading } = useLowStockProducts();
 
   useRealtimeOrders();
 
   const pendingCount = stats?.byStatus?.PENDING ?? pendingOrders?.length ?? 0;
   const pendingValue = pendingOrders?.reduce((sum, o) => sum + (o.totalAmount ?? 0), 0) ?? 0;
-  // Money actually received today, from attested payments — NOT the sum of
+  // Money actually received today, from attested payments, NOT the sum of
   // today's order values, which is what `stats.totalRevenue` returns. That
   // figure counts orders that are still pending and orders that were cancelled,
   // so it reads high and it reads high in the owner's favour. Abena's stated
@@ -77,9 +79,18 @@ export default function DashboardPage(): React.JSX.Element {
         }
       />
 
+      {/* Above everything, and gone the moment setup is finished. */}
+      <SetupChecklist />
+
+      {/* What yesterday MEANT. The figures below say what happened. */}
+      <DailyInsight />
+
       {/* Revenue leads. It is the number the owner opened the app for, so it
           gets the wider column and the larger figure. */}
       <MetricStrip>
+        {revenueLoading || statsLoading ? (
+          <SkeletonMetric emphasis />
+        ) : (
         <Metric
           label="Money in today"
           value={formatCurrency(revenue)}
@@ -92,18 +103,30 @@ export default function DashboardPage(): React.JSX.Element {
           }
           emphasis
         />
+        )}
+        {pendingLoading ? (
+          <SkeletonMetric />
+        ) : (
         <Metric
           label="Awaiting confirmation"
           value={pendingCount}
           detail={pendingCount > 0 ? `worth ${formatCurrency(pendingValue)}` : 'nothing waiting'}
           tone={pendingCount > 0 ? 'warning' : 'default'}
         />
+        )}
+        {paymentsLoading ? (
+          <SkeletonMetric />
+        ) : (
         <Metric
           label="Payments to verify"
           value={reviewCount}
           detail={reviewCount > 0 ? 'waiting on you' : 'all confirmed'}
           tone={reviewCount > 0 ? 'danger' : 'default'}
         />
+        )}
+        {customersLoading ? (
+          <SkeletonMetric />
+        ) : (
         <Metric
           label="Money owed to you"
           value={formatCurrency(owedTotal)}
@@ -114,6 +137,7 @@ export default function DashboardPage(): React.JSX.Element {
           }
           tone={owedTotal > 0 ? 'warning' : 'default'}
         />
+        )}
       </MetricStrip>
 
       {/* Two columns, deliberately unequal. The order queue is work in
@@ -176,7 +200,9 @@ export default function DashboardPage(): React.JSX.Element {
             }
           />
 
-          {topDebtors.length === 0 ? (
+          {customersLoading ? (
+            <SkeletonRows count={5} />
+          ) : topDebtors.length === 0 ? (
             <EmptyState
               icon={Users}
               title="All settled"
@@ -216,7 +242,9 @@ export default function DashboardPage(): React.JSX.Element {
             }
           />
 
-          {!reviewMessages || reviewMessages.length === 0 ? (
+          {messagesLoading ? (
+            <SkeletonRows count={3} />
+          ) : !reviewMessages || reviewMessages.length === 0 ? (
             <EmptyState
               icon={MessageSquare}
               title="All clear"
@@ -256,7 +284,9 @@ export default function DashboardPage(): React.JSX.Element {
             }
           />
 
-          {!lowStockProducts || lowStockProducts.length === 0 ? (
+          {lowStockLoading ? (
+            <SkeletonRows count={3} />
+          ) : !lowStockProducts || lowStockProducts.length === 0 ? (
             <EmptyState
               icon={AlertTriangle}
               title="Stock is healthy"

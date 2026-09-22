@@ -1,5 +1,5 @@
 /**
- * Flowdesk brand geometry — the single source of truth for the mark.
+ * Flowdesk brand geometry, the single source of truth for the mark.
  *
  * The symbol is drawn on the brand sheet's 10x10 construction grid, expressed
  * here at 100 units so every value stays a whole number: stroke 1.5x = 15,
@@ -20,7 +20,7 @@ export const SYMBOL_OUTLINE =
  * The counter punched out of the outline.
  *
  * Drawn as a second subpath on the same `<path>` with `fill-rule="evenodd"`,
- * not as a background-coloured shape on top — the mark has to work on any
+ * not as a background-coloured shape on top, the mark has to work on any
  * surface, and a painted-on counter would show its seams over a photo.
  */
 export const SYMBOL_COUNTER =
@@ -33,17 +33,29 @@ export const SYMBOL_BAR_BOTTOM = 'M15 60 H60 A5 5 0 0 1 65 65 V70 A5 5 0 0 1 60 
 /** The symbol's artboard is square. */
 export const SYMBOL_BOX = 100;
 
+/**
+ * The mark's own colours, outside the CSS token system on purpose.
+ *
+ * These are baked into static SVGs in public/ and into a `theme-color` meta
+ * tag, none of which can read a custom property. They have to be literals, and
+ * they have to be changed in step with the palette, which is why they are
+ * named for their role rather than for the hue, so the next change does not
+ * leave a constant called `sage` holding a blue.
+ */
 export const BRAND = {
-  sage: '#3d6b52',
-  sageLight: '#4d8a68',
-  offWhite: '#f8f7f4',
-  surface: '#161616',
-  nearBlack: '#0f0f0f',
+  /** The mark's fill, and the browser chrome colour. Matches --blue-800. */
+  primary: '#2a3e4b',
+  /** One step lighter, for the mark on a dark ground. Matches --blue-600. */
+  primaryLight: '#4d7489',
+  /** The lightest surface in the palette. Matches --blue-50. */
+  offWhite: '#f7fbfd',
+  surface: '#152029',
+  nearBlack: '#0f161a',
 } as const;
 
 /**
  * Lockup ratios, taken from the brand sheet's ARTWORK rather than its
- * annotations — the two disagree.
+ * annotations, the two disagree.
  *
  * The annotations call for a symbol matched to the x-height with a one-stroke
  * gap. The drawn lockup sets the symbol to the full ascender height and the gap

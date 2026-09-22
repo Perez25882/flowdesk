@@ -138,18 +138,18 @@ function holdingPhrases(language: AssistantLanguage): { named: (item: string) =>
   switch (language) {
     case 'pidgin':
       return {
-        named: (item) => `Let me check the ${item} for you — I go come back you now now.`,
-        unnamed: 'Let me check that for you — I go come back you now now.',
+        named: (item) => `Let me ask about the ${item} and come back to you now now.`,
+        unnamed: 'Let me ask about that and come back to you now now.',
       };
     case 'twi_mix':
       return {
-        named: (item) => `Let me check the ${item} for you — I'll come back to you shortly.`,
-        unnamed: "Let me check that for you — I'll come back to you shortly.",
+        named: (item) => `Let me ask about the ${item} and come back to you shortly.`,
+        unnamed: "Let me ask about that and come back to you shortly.",
       };
     default:
       return {
-        named: (item) => `Let me check on ${item} for you — I'll come right back.`,
-        unnamed: "Let me check that for you — I'll come right back.",
+        named: (item) => `Let me ask about the ${item} and come right back.`,
+        unnamed: "Let me ask about that and come right back.",
       };
   }
 }
@@ -167,6 +167,18 @@ export interface EnquiryHoldInput {
  * happen with these templates but is checked rather than assumed — a template
  * edited later into something that quotes a price must fail closed, not ship.
  */
+/**
+ * The same holding line, for any shop rather than only a catalogue-less one.
+ *
+ * `composeEnquiryHold` exists because an enquiry-led shop has nothing to answer
+ * from. A catalogue shop whose answer failed validation is in the same position
+ * from the customer's side — somebody has to look — so it gets the same
+ * sentence rather than the courtesy template.
+ */
+export function composeHold(input: EnquiryHoldInput): string | null {
+  return composeEnquiryHold(input);
+}
+
 export function composeEnquiryHold(input: EnquiryHoldInput): string | null {
   const phrases = holdingPhrases(input.decision.language);
 

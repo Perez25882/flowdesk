@@ -20,6 +20,7 @@ const TAB_OPTIONS: readonly TabOption<OrderStatus>[] = [
   { value: 'PENDING', label: 'Pending' },
   { value: 'CONFIRMED', label: 'Confirmed' },
   { value: 'PROCESSING', label: 'Packing' },
+  { value: 'DISPATCHED', label: 'On the way' },
   { value: 'FULFILLED', label: 'Delivered' },
   { value: 'CANCELLED', label: 'Cancelled' },
 ];
@@ -30,6 +31,7 @@ const EMPTY_COPY: Record<OrderStatus, string> = {
   PENDING: 'Nothing waiting to be confirmed.',
   CONFIRMED: 'Nothing confirmed yet.',
   PROCESSING: 'Nothing being packed.',
+  DISPATCHED: 'Nothing on the way.',
   FULFILLED: 'Nothing delivered yet.',
   CANCELLED: 'Nothing cancelled.',
 };

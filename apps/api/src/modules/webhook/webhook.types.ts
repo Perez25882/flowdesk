@@ -214,6 +214,14 @@ export interface ParsedIncomingMessage {
     emoji: string;
     reactedToWaMessageId: string;
   } | undefined;
+  /**
+   * The message being replied to, from Meta's `context.id`. Null when the
+   * customer wrote a fresh message rather than replying to something.
+   *
+   * Carried across the queue rather than re-read from `rawPayload`, so the
+   * worker never has to know the shape of Meta's envelope.
+   */
+  replyToWaId: string | null;
   rawPayload: MetaMessage;
 }
 

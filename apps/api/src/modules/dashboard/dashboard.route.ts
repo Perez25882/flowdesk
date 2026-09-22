@@ -3,6 +3,7 @@ import { hasCapability, type StaffRole } from '@flowdesk/shared';
 import { assignedStaffScope, isOwner, requireCapability } from '../../middleware/role.middleware.js';
 import { success } from '../../utils/response.js';
 import { prisma } from '../../config/database.js';
+import { buildReport, reportToCsv, type ReportWindow } from './reports.service.js';
 
 export interface DashboardBadges {
   pendingOrders: number;
@@ -64,4 +65,50 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
       return success(reply, badges);
     },
   );
+
+  /**
+   * GET /reports?days=30|60|90
+   *
+   * `revenue.read`, because it is the takings. A staff account that may not see
+   * the money may not see a chart of the money either.
+   */
+  app.get(
+    '/reports',
+    { preHandler: requireCapability('revenue.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { days } = request.query as { days?: string };
+      return success(reply, await buildReport(request.business!.id, parseWindow(days)));
+    },
+  );
+
+  /**
+   * GET /reports/export.csv?days=30
+   *
+   * Served as a download rather than JSON the dashboard turns into a file, so
+   * the same URL works from a phone, from an email to an accountant, and from
+   * curl. The filename carries the range — a folder of files all called
+   * `report.csv` helps nobody.
+   */
+  app.get(
+    '/reports/export.csv',
+    { preHandler: requireCapability('revenue.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { days } = request.query as { days?: string };
+      const report = await buildReport(request.business!.id, parseWindow(days));
+
+      return reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header(
+          'Content-Disposition',
+          `attachment; filename="flowdesk-${report.from}-to-${report.to}.csv"`,
+        )
+        .send(reportToCsv(report));
+    },
+  );
+}
+
+/** 30, 60 or 90. Anything else is 30 rather than an error nobody can act on. */
+function parseWindow(raw: string | undefined): ReportWindow {
+  const value = Number(raw);
+  return value === 60 || value === 90 ? value : 30;
 }

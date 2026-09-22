@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
  * So: one strip, divided by hairlines. Figures are set in the mono face at a
  * size that makes them the loudest thing on the page. One metric may be marked
  * `emphasis` to take a wider column and a larger figure. Icons are gone
- * entirely — a shopping-cart glyph next to the words "Orders today" carries no
+ * entirely, a shopping-cart glyph next to the words "Orders today" carries no
  * information that the words do not.
  */
 

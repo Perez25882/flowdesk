@@ -33,6 +33,7 @@ function decisionFor(overrides: Partial<AssistantDecision> = {}): AssistantDecis
     clarification: { needed: false, missing: [] },
     order: { isOrder: false, complete: false },
     escalate: { needed: false, reason: null },
+    priceOffer: null,
     ...overrides,
   };
 }
@@ -195,9 +196,36 @@ describe('routeDecision — everything that blocks auto-send', () => {
     ).toBe('clarify');
   });
 
-  it('drafts intents outside the sendable slice', () => {
+  /**
+   * The intent allow-list is gone, deliberately, on the owner's instruction.
+   *
+   * It used to draft anything that was not an INQUIRY or a STATUS_CHECK. That
+   * read well as a policy and behaved badly as a product: "alright, thanks" and
+   * "no, we don't sell corporate attire" are neither of those intents, state no
+   * fact, and were still queued for a human to approve. The shop looked slow and
+   * evasive about things it already knew.
+   *
+   * What a reply CLAIMS now decides, not what the message was about. The money
+   * cases are still covered, by better gates than an intent name:
+   *
+   *   - anything the model escalates (bargaining, complaints, policy) drafts
+   *   - anything order-shaped goes through order creation, never a chat reply
+   *   - any figure not in the catalogue fails grounding and drafts
+   */
+  it('no longer drafts on intent alone when the reply claims nothing', () => {
     for (const intent of [IntentType.PAYMENT, IntentType.COMPLAINT]) {
-      expect(routeFor({ decision: decisionFor({ intent }) }).action, intent).toBe('draft');
+      expect(routeFor({ decision: decisionFor({ intent }) }).action, intent).toBe('auto_send');
+    }
+  });
+
+  it('still drafts a payment or complaint the model escalated', () => {
+    for (const intent of [IntentType.PAYMENT, IntentType.COMPLAINT]) {
+      expect(
+        routeFor({
+          decision: decisionFor({ intent, escalate: { needed: true, reason: 'complaint' } }),
+        }).action,
+        intent,
+      ).toBe('draft');
     }
   });
 
@@ -407,5 +435,180 @@ describe('requiresReview', () => {
   it('queues an unclassified or low-confidence message however it was routed', () => {
     expect(requiresReview(IntentType.UNCLASSIFIED, 0.9, 'auto_send', false)).toBe(true);
     expect(requiresReview(IntentType.INQUIRY, 0.4, 'auto_send', false)).toBe(true);
+  });
+});
+
+/**
+ * Which photo, if any, rides along with an answer.
+ *
+ * The decision is the server's, not the model's, so it is tested here rather
+ * than inferred from a prompt. Two failures are worth more than the happy path:
+ * sending a picture nobody asked for, and sending one picture as the answer to
+ * a question that covered two products.
+ */
+describe('routeDecision — attaching a product photo', () => {
+  const withPhotos: EvidenceProduct[] = [
+    { ...products[0]!, photoId: 'img_rice5' },
+    { ...products[1]!, photoId: 'img_rice25' },
+    { ...products[2]!, photoId: null },
+  ];
+
+  it('attaches the photo when the customer asked to see the item', () => {
+    const result = routeFor({
+      products: withPhotos,
+      message: 'do you have rice 5kg? send picture',
+    });
+    expect(result.action).toBe('auto_send');
+    expect(result.photoImageId).toBe('img_rice5');
+  });
+
+  it('understands the Pidgin forms, not only "send a picture"', () => {
+    for (const message of ['abeg send am make i see', 'how e dey look?', 'show me the rice 5kg']) {
+      expect(routeFor({ products: withPhotos, message }).photoImageId).toBe('img_rice5');
+    }
+  });
+
+  it('sends nothing when the customer only asked the price', () => {
+    const result = routeFor({ products: withPhotos, message: 'how much be rice 5kg' });
+    expect(result.action).toBe('auto_send');
+    expect(result.photoImageId).toBeNull();
+  });
+
+  it('sends nothing when the shop has no photo for that product', () => {
+    const result = routeFor({
+      products: withPhotos,
+      decision: decisionFor({
+        answer: {
+          canAnswer: true,
+          text: 'Malta is GHS 12.50 per bottle, but we are out of stock right now.',
+          groundedOn: [{ kind: 'product', id: 'p_malta', field: 'price' }],
+        },
+      }),
+      message: 'send me a picture of the malta',
+    });
+    expect(result.photoImageId).toBeNull();
+  });
+
+  it('sends nothing when the answer rests on a business fact rather than a product', () => {
+    const result = routeFor({
+      products: withPhotos,
+      decision: decisionFor({
+        answer: {
+          canAnswer: true,
+          text: 'Delivery to Tema is GHS 20.',
+          groundedOn: [{ kind: 'business_fact', id: 'deliveryFee' }],
+        },
+      }),
+      message: 'send picture of the delivery van',
+    });
+    expect(result.photoImageId).toBeNull();
+  });
+
+  it('never attaches a photo to a draft, which the owner has not approved yet', () => {
+    const result = routeFor({
+      products: withPhotos,
+      // Low confidence forces the draft path while everything else stays valid.
+      decision: decisionFor({ confidence: 0.4 }),
+      message: 'send me a picture of the rice 5kg',
+    });
+    expect(result.action).toBe('draft');
+    expect(result.photoImageId).toBeNull();
+  });
+});
+
+/**
+ * AUTONOMOUS mode.
+ *
+ * The shop has switched off the evidence gate on purpose. These tests pin down
+ * exactly what that does and — more importantly — what it does not, because the
+ * failure mode of a mode like this is that it quietly turns off more than it
+ * says on the tin.
+ */
+describe('routeDecision — autonomous mode', () => {
+  const ungrounded = decisionFor({
+    answer: {
+      canAnswer: true,
+      // GHS 45 is in no catalogue row and no business fact. Below AUTONOMOUS
+      // this is exactly what `unverified_amount` holds back.
+      text: 'Delivery to Kumasi is GHS 45.',
+      groundedOn: [],
+    },
+  });
+
+  it('sends a figure it could not verify, which is the whole point', () => {
+    const result = routeFor({ mode: 'AUTONOMOUS', decision: ungrounded });
+    expect(result.action).toBe('auto_send');
+    expect(result.text).toContain('GHS 45');
+  });
+
+  it('holds that same reply in every other mode', () => {
+    expect(routeFor({ mode: 'GROUNDED_AUTO', decision: ungrounded }).action).toBe('draft');
+    expect(routeFor({ mode: 'DRAFT_ONLY', decision: ungrounded }).action).toBe('draft');
+  });
+
+  it('still records what it could not verify', () => {
+    // The gate is off; the record is not. This is what a dispute three weeks
+    // later has to read, and it is the only thing left once the checks are
+    // gone — so it must never come back empty just because the send succeeded.
+    const result = routeFor({ mode: 'AUTONOMOUS', decision: ungrounded });
+    expect(result.action).toBe('auto_send');
+    expect(result.validationFailures.length).toBeGreaterThan(0);
+    expect(result.validationFailures).toContain('unverified_amount');
+  });
+
+  it('sends below the confidence floor', () => {
+    const result = routeFor({ mode: 'AUTONOMOUS', decision: decisionFor({ confidence: 0.3 }) });
+    expect(result.action).toBe('auto_send');
+  });
+
+  it('still refuses to settle anything the model escalated', () => {
+    // Bargaining, complaints and policy are the owner's authority, not an
+    // accuracy check. Turning off accuracy checks did not give those away.
+    const result = routeFor({
+      mode: 'AUTONOMOUS',
+      decision: decisionFor({
+        escalate: { needed: true, reason: 'bargaining' },
+      }),
+    });
+    expect(result.action).not.toBe('auto_send');
+    expect(result.escalated).toBe(true);
+  });
+
+  it('still refuses when the server escalated on its own', () => {
+    const result = routeFor({ mode: 'AUTONOMOUS', serverEscalation: true });
+    expect(result.action).not.toBe('auto_send');
+  });
+
+  it('still sends nothing outside the 24-hour window', () => {
+    // Meta's rule, not ours. No amount of autonomy makes a free-form message
+    // deliverable there.
+    const result = routeFor({ mode: 'AUTONOMOUS', canDeliver: false });
+    expect(result.action).not.toBe('auto_send');
+  });
+
+  it('lets an order through, where every other mode holds it', () => {
+    const order = decisionFor({
+      order: { isOrder: true, complete: true },
+      // The server resolves the items itself, so the mention has to name a real
+      // product — otherwise both modes ask a clarifying question instead, which
+      // is correct and not what this test is about.
+      entities: {
+        products: [{ productId: 'p_rice5', mention: 'rice 5kg', quantity: 2 }],
+        orderReferences: [],
+        deliveryArea: null,
+      },
+      answer: {
+        canAnswer: true,
+        text: 'Got it — 2 bags of Rice 5kg, GHS 160.',
+        groundedOn: [{ kind: 'product', id: 'p_rice5', field: 'price' }],
+      },
+    });
+
+    expect(routeFor({ mode: 'AUTONOMOUS', decision: order }).action).toBe('auto_send');
+    expect(routeFor({ mode: 'GROUNDED_AUTO', decision: order }).action).not.toBe('auto_send');
+  });
+
+  it('still sends nothing at all when the assistant is off', () => {
+    expect(routeFor({ mode: 'OFF', decision: ungrounded }).action).toBe('template_reply');
   });
 });

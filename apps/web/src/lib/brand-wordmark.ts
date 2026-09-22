@@ -1,12 +1,12 @@
 /**
- * The "flowdesk" wordmark as outlines — DM Sans Medium, tracking -0.025em,
+ * The "flowdesk" wordmark as outlines, DM Sans Medium, tracking -0.025em,
  * exactly as the brand guidelines specify.
  *
  * Outlines rather than live text, for three reasons: it renders identically
  * everywhere without shipping a whole font family for eight characters, it
  * cannot flash an unstyled fallback on a slow connection, and the raster
  * generator can draw it without the font being installed on the build machine
- * (which it is not — an earlier attempt fell back to monospace).
+ * (which it is not, an earlier attempt fell back to monospace).
  *
  * Regenerate with DM Sans Medium (Google Fonts, OFL) and opentype.js:
  * lay out each glyph with charToGlyph/getPath at em size 100, advance by the

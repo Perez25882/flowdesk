@@ -69,7 +69,7 @@ export default function ReplyEditor({ message }: Props): React.JSX.Element | nul
 
       {failed.length > 0 && (
         <p className="mb-2 rounded-sm border border-warning-border bg-warning-muted px-2 py-1.5 text-xs text-text-primary">
-          Worth checking before you send — the assistant could not verify:{' '}
+          Worth checking before you send. The assistant could not verify:{' '}
           {failed.join(', ')}.
         </p>
       )}

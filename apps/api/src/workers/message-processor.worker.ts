@@ -299,6 +299,11 @@ async function processMessage(jobData: MessageJobData): Promise<void> {
   const body = optionalStringUpdate(jobData.message.body);
   if (body !== undefined) messageCreate.body = body;
 
+  // Only set when the customer was actually replying to something. Deliberately
+  // absent from the update path: a redelivery of the same webhook must not blank
+  // a reply target the first delivery already recorded.
+  if (jobData.message.replyToWaId) messageCreate.replyToWaId = jobData.message.replyToWaId;
+
   const messageUpdate: Prisma.MessageUpdateInput = {
     type: jobData.message.type,
     rawPayload,

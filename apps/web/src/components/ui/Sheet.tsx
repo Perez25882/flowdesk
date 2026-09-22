@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
  * Slide-over panel.
  *
  * Used instead of a modal wherever the user needs to keep the list behind it
- * in view — order detail, navigation, secondary menus. Modals interrupt;
+ * in view, order detail, navigation, secondary menus. Modals interrupt;
  * sheets sit alongside.
  *
  * Enters on the drawer curve (the iOS easing from Ionic), which decelerates

@@ -3,14 +3,14 @@
  *
  * Every hook routes through here so that authentication, token refresh and
  * error shape are handled once. Previously each hook carried its own copy of
- * `fetchJson`, none of which refreshed the access token — since access tokens
+ * `fetchJson`, none of which refreshed the access token, since access tokens
  * live for 15 minutes, users were silently signed out mid-session.
  */
 
 const API_BASE = '/api/v1';
 
 /**
- * The access token is held in memory only — never in `localStorage`.
+ * The access token is held in memory only, never in `localStorage`.
  *
  * It lives 15 minutes, and the long-lived refresh token now sits in an
  * httpOnly cookie the browser sends automatically to `/auth/*`. Nothing
@@ -56,7 +56,7 @@ export function getAccessToken(): string | null {
 /** Records the access token from a sign-in or refresh response. */
 export function storeTokens(tokens: { accessToken: string }): void {
   accessToken = tokens.accessToken;
-  // Not a credential — just a flag telling start-up a refresh is worth trying.
+  // Not a credential, just a flag telling start-up a refresh is worth trying.
   localStorage.setItem(SESSION_HINT_KEY, '1');
 }
 
@@ -145,7 +145,7 @@ function redirectToLogin(): void {
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
-  /** Skips the auth header and the refresh retry — used by sign-in itself. */
+  /** Skips the auth header and the refresh retry, used by sign-in itself. */
   anonymous?: boolean;
   signal?: AbortSignal;
 }
@@ -221,7 +221,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 }
 
 /**
- * Fetches a binary response — an image, not JSON — through the same auth and
+ * Fetches a binary response, an image, not JSON, through the same auth and
  * refresh path as everything else.
  *
  * This exists because the access token lives in memory rather than in a cookie

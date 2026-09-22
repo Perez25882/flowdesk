@@ -290,8 +290,31 @@ describe('assertsCheckableFact — what actually needs evidence', () => {
     expect(assertsCheckableFact('Your order FD-00042 is on the way')).toBe(true);
   });
 
-  it('a plain quantity is not a claim about money or stock', () => {
-    expect(assertsCheckableFact('Ok, 2 of them — see you tomorrow')).toBe(false);
+  /**
+   * Reversed deliberately: a digit is now a claim, quantity included.
+   *
+   * The old rule looked only for money, stock and order references, and a real
+   * customer found the hole. Asked "what time do you open?" for a shop with no
+   * opening hours on file, the model answered "We open at 8am" — no currency, no
+   * stock count, so it read as claim-free and would have gone out unread. A
+   * wrong opening time costs a shop a morning of customers at a closed door.
+   *
+   * Enumerating times, then dates, then weights, then delivery fees is a losing
+   * game, so the line moved to where it can hold: a digit is the shop asserting
+   * something specific, and specifics need a row behind them. The cost is that a
+   * quantity echoed back now needs a citation too — cheap, because quantities the
+   * customer wrote are already in the evidence set, and anything order-shaped
+   * goes to the owner regardless.
+   *
+   * Replies with nothing to verify carry no digits and are untouched, which is
+   * what keeps greetings and "we don't sell that" answering instantly.
+   */
+  it('treats any digit as a claim, quantities included', () => {
+    expect(assertsCheckableFact('Ok, 2 of them, see you tomorrow')).toBe(true);
+  });
+
+  it('still reads a sentence with no figures in it as claim-free', () => {
+    expect(assertsCheckableFact('Ok, see you tomorrow')).toBe(false);
   });
 });
 

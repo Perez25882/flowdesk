@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   AI_ASSIST_MODES,
   AI_ASSIST_MODE_LABELS,
+  AI_ASSIST_MODE_DESCRIPTIONS,
   BUSINESS_TYPES,
   BUSINESS_TYPE_LABELS,
   DAYS_OF_WEEK,
@@ -22,13 +23,15 @@ import {
 } from '@flowdesk/shared';
 import { Panel, PanelHead } from '@/components/ui/Panel';
 import { cn } from '@/lib/utils';
+import AutonomyConsent from './AutonomyConsent';
+import DeliveryZones from './DeliveryZones';
 
 /**
  * What the shop is, and how it runs.
  *
  * This is the only place the assistant learns anything it cannot read out of
  * the order book. Without it, "do you deliver to Tema?" can only ever be
- * answered with "please share more details" — which is the behaviour this whole
+ * answered with "please share more details", which is the behaviour this whole
  * feature exists to remove.
  *
  * Every question is skippable on purpose. A half-filled profile still helps: the
@@ -42,6 +45,8 @@ interface Props {
   profile: BusinessProfile | null;
   policyNotes: string | null;
   assistMode: AiAssistMode;
+  /** Whether autonomous replies have been accepted. Gates the AUTONOMOUS option. */
+  autonomyAccepted: boolean;
   catalogueMode: CatalogueMode;
   onChange: (patch: {
     businessType?: BusinessType | null;
@@ -120,6 +125,7 @@ export default function BusinessProfileForm({
   profile,
   policyNotes,
   assistMode,
+  autonomyAccepted,
   catalogueMode,
   onChange,
 }: Props): React.JSX.Element {
@@ -171,7 +177,7 @@ export default function BusinessProfileForm({
 
         <FieldShell
           label="What do you sell?"
-          hint="Shapes how messages are read — “do you have panadol” means something different at a pharmacy than at a hardware shop."
+          hint="Shapes how messages are read. “Do you have panadol” means something different at a pharmacy than at a hardware shop."
           htmlFor="business-type"
         >
           <select
@@ -287,11 +293,25 @@ export default function BusinessProfileForm({
             </button>
           </div>
           <p className="mt-1.5 text-xs text-text-muted">
-            Leave empty if you do not deliver — customers get told that plainly.
+            Leave empty if you do not deliver. Customers get told that plainly.
           </p>
         </FieldShell>
 
-        <FieldShell label="Delivery charge" hint={PROFILE_QUESTIONS[2]!.hint} htmlFor="delivery-fee">
+        <FieldShell
+          label="Delivery charges by place"
+          hint="One flat fee overcharges the customer nearby and loses money on the far one."
+        >
+          <DeliveryZones
+            zones={profile?.deliveryZones ?? []}
+            onChange={(deliveryZones) => patchProfile({ deliveryZones })}
+          />
+        </FieldShell>
+
+        <FieldShell
+          label="Charge for anywhere else"
+          hint="Used only for a place not on the list above. Leave empty to have the assistant ask you instead."
+          htmlFor="delivery-fee"
+        >
           <div className="flex items-center gap-2">
             <span className="fd-figure text-sm text-text-secondary">GHS</span>
             <input
@@ -304,6 +324,31 @@ export default function BusinessProfileForm({
                 const value = toAmount(e.target.value);
                 if (value !== undefined) patchProfile({ deliveryFee: value });
               }}
+            />
+          </div>
+        </FieldShell>
+
+        <FieldShell
+          label="Where is the shop?"
+          hint="A map link or GhanaPost code, sent automatically to anyone who asks where to find you."
+          htmlFor="location-url"
+        >
+          <div className="flex flex-col gap-2">
+            <input
+              id="location-url"
+              className={inputClass}
+              placeholder="https://maps.app.goo.gl/… or GA-123-4567"
+              value={profile?.locationUrl ?? ''}
+              onChange={(e) => patchProfile({ locationUrl: e.target.value.trim() || null })}
+            />
+            <input
+              aria-label="How to find the shop, in words"
+              className={inputClass}
+              placeholder="Behind Melcom, Spintex Road"
+              value={profile?.locationDescription ?? ''}
+              onChange={(e) =>
+                patchProfile({ locationDescription: e.target.value || null })
+              }
             />
           </div>
         </FieldShell>
@@ -436,7 +481,7 @@ export default function BusinessProfileForm({
 
         <FieldShell
           label="Notes for the assistant"
-          hint="Anything unusual about how you work. Used to help write a reply for you to check — never to answer a customer on its own, because wording like this cannot be verified."
+          hint="Anything unusual about how you work. Used to help write a reply for you to check, never to answer a customer on its own, because wording like this cannot be verified."
           htmlFor="policy-notes"
         >
           <textarea
@@ -451,7 +496,7 @@ export default function BusinessProfileForm({
 
         <FieldShell
           label="Do you keep a product list here?"
-          hint="Plenty of shops do not, and never need to. If your stock changes daily or every piece is different, choose the second option — the assistant will stop guessing at prices and start asking you instead."
+          hint="Plenty of shops do not, and never need to. If your stock changes daily or every piece is different, choose the second option. The assistant will stop guessing at prices and start asking you instead."
           htmlFor="catalogue-mode"
         >
           <select
@@ -461,17 +506,17 @@ export default function BusinessProfileForm({
             onChange={(e) => onChange({ catalogueMode: e.target.value as CatalogueMode })}
           >
             <option value="CATALOGUE">
-              Yes — I add my products and prices in Flowdesk
+              Yes, I add my products and prices in Flowdesk
             </option>
             <option value="ENQUIRY_LED">
-              No — customers ask and I tell them what I have
+              No, customers ask and I tell them what I have
             </option>
           </select>
 
           {catalogueMode === 'ENQUIRY_LED' && (
             <p className="mt-2 border-l-2 border-border-strong pl-3 text-sm text-text-secondary">
               When someone asks for something, the assistant replies to hold them
-              — &ldquo;let me check on baggy jeans for you&rdquo; — and puts the question in
+              &ldquo;let me check on baggy jeans for you&rdquo;, and puts the question in
               front of you. It will never tell a customer you have something, or
               that you do not, because only you know.
             </p>
@@ -480,21 +525,48 @@ export default function BusinessProfileForm({
 
         <FieldShell
           label="How much should the assistant do?"
-          hint="You can change this at any time. Answers it sends by itself are only ever built from your catalogue and the facts above."
+          hint="You can change this at any time."
           htmlFor="assist-mode"
         >
-          <select
-            id="assist-mode"
-            className={inputClass}
-            value={assistMode}
-            onChange={(e) => onChange({ aiAssistMode: e.target.value as AiAssistMode })}
-          >
-            {AI_ASSIST_MODES.map((mode) => (
-              <option key={mode} value={mode}>
-                {AI_ASSIST_MODE_LABELS[mode]}
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-col gap-3">
+            <select
+              id="assist-mode"
+              className={inputClass}
+              value={assistMode}
+              onChange={(e) => {
+                const next = e.target.value as AiAssistMode;
+                // Autonomous cannot be selected until it has been accepted, and
+                // the API refuses it anyway, so the select does not pretend
+                // otherwise and quietly fail on save.
+                if (next === 'AUTONOMOUS' && !autonomyAccepted) return;
+                onChange({ aiAssistMode: next });
+              }}
+            >
+              {AI_ASSIST_MODES.map((mode) => (
+                <option
+                  key={mode}
+                  value={mode}
+                  disabled={mode === 'AUTONOMOUS' && !autonomyAccepted}
+                >
+                  {AI_ASSIST_MODE_LABELS[mode]}
+                  {mode === 'AUTONOMOUS' && !autonomyAccepted ? ', needs accepting first' : ''}
+                </option>
+              ))}
+            </select>
+
+            <p className="max-w-prose text-xs text-text-muted">
+              {AI_ASSIST_MODE_DESCRIPTIONS[assistMode]}
+            </p>
+
+            {/* Shown whenever autonomy is in play, either to accept it, or to
+                confirm and withdraw an acceptance already on file. */}
+            {(assistMode === 'AUTONOMOUS' || !autonomyAccepted) && (
+              <AutonomyConsent
+                accepted={autonomyAccepted}
+                onAccepted={() => onChange({})}
+              />
+            )}
+          </div>
         </FieldShell>
       </Panel>
     </div>

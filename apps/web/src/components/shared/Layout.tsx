@@ -34,7 +34,7 @@ export default function Layout(): React.JSX.Element {
   const [collapsed, toggleCollapsed] = useSidebarState();
 
   // Establish the singleton SSE connection for the entire dashboard tree.
-  // Idempotent — multiple components can call useSSE without spawning new
+  // Idempotent, multiple components can call useSSE without spawning new
   // EventSources.
   useSSE();
 

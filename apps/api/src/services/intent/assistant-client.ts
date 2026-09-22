@@ -9,6 +9,7 @@ import {
 } from '../assistant/decision.js';
 import type { EvidenceSet } from '../assistant/evidence.js';
 import { AnthropicAssistantProvider } from './assistant-providers/anthropic.js';
+import { GroqAssistantProvider } from './assistant-providers/groq.js';
 import { NvidiaAssistantProvider } from './assistant-providers/nvidia.js';
 import type { AssistantProvider, ProviderFailure } from './assistant-providers/types.js';
 
@@ -74,7 +75,9 @@ function getProvider(): AssistantProvider {
     cachedProvider =
       env.AI_PROVIDER === 'nvidia'
         ? new NvidiaAssistantProvider()
-        : new AnthropicAssistantProvider();
+        : env.AI_PROVIDER === 'groq'
+          ? new GroqAssistantProvider()
+          : new AnthropicAssistantProvider();
   }
   return cachedProvider;
 }
@@ -160,6 +163,35 @@ export function extractJsonObject(raw: string): unknown {
 
 function fail(reason: AssistantFailureReason): AssistantResult {
   return { ok: false, reason };
+}
+
+/**
+ * A generation that is not a customer reply.
+ *
+ * Shares the provider, the circuit breaker and the timeout with the reply path,
+ * so a Groq outage takes the morning summary down with the assistant rather
+ * than hanging a scheduled job on a dead endpoint — and so there is one place
+ * to look when either misbehaves.
+ *
+ * Returns the raw text. The caller owns its schema and, more importantly, owns
+ * checking what came back: nothing downstream of here verifies anything.
+ */
+export async function requestAssistantText(input: {
+  systemPrompt: string;
+  userPrompt: string;
+  schema: Record<string, unknown>;
+}): Promise<{ ok: true; text: string; model: string } | { ok: false; reason: AssistantFailureReason }> {
+  if (await isCircuitOpen()) return { ok: false, reason: 'circuit_open' };
+
+  const provider = getProvider();
+  const result = await provider.generate(input);
+
+  if (!result.ok) {
+    if (result.reason !== 'not_configured') await recordFailure(result.reason);
+    return { ok: false, reason: result.reason };
+  }
+
+  return { ok: true, text: result.generation.text, model: result.generation.model };
 }
 
 export async function requestAssistantDecision(

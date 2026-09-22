@@ -3,15 +3,14 @@ import { Link } from 'react-router-dom';
 /**
  * Privacy policy and terms of service.
  *
- * These are DRAFTS. They were written against what the code actually does —
- * what is collected, where it goes, who processes it — rather than from a
+ * These are DRAFTS. They were written against what the code actually does, * what is collected, where it goes, who processes it, rather than from a
  * generic template, so the factual claims are accurate. They have not been
  * reviewed by a lawyer, and they must be before launch.
  *
  * Every value a lawyer or the founder has to supply is a `[[TOKEN]]` below.
  * They render visibly on the page on purpose: a placeholder that looks like
  * finished copy is how a company ships its own address as "123 Example Street".
- * `MISSING_DETAILS` lists them in one place — grep for `[[` before going live.
+ * `MISSING_DETAILS` lists them in one place, grep for `[[` before going live.
  */
 
 type LegalKind = 'privacy' | 'terms';
@@ -42,7 +41,7 @@ const PRIVACY: Section[] = [
   {
     heading: 'Two relationships: your business, and your customers',
     paragraphs: [
-      'When you sign up for Flowdesk, we hold data about you and your business — your name, email address, phone number, business details and billing records. For that data we are the data controller under the Data Protection Act, 2012 (Act 843).',
+      'When you sign up for Flowdesk, we hold data about you and your business: your name, email address, phone number, business details and billing records. For that data we are the data controller under the Data Protection Act, 2012 (Act 843).',
       'When your customers message your WhatsApp Business number, we store and process what they send on your behalf. For that data you are the controller and Flowdesk is your processor. You decide why it is collected and what happens to it; we act on your instructions and on the terms of this agreement. That means your customers exercise their rights through you, and we help you answer them.',
       'If you are a customer of a business that uses Flowdesk and you want your data removed, contact that business. If you cannot reach them, write to [[SUPPORT_EMAIL]] and we will help you identify who holds it.',
     ],
@@ -60,18 +59,20 @@ const PRIVACY: Section[] = [
   {
     heading: 'Automated replies, and the AI that writes them',
     paragraphs: [
-      'Flowdesk generates replies to your customers on your behalf. To do that, the text of a customer message is sent to a large language model hosted by NVIDIA, together with the catalogue rows and business details needed to answer it. Those are the only records shared; we do not send your full customer list, your order history or your financial data.',
-      'The model provider processes the message to generate a response and does not use it to train models. Replies are checked against your own records before they are sent, and prices always come from your catalogue rather than from the model.',
-      'No decision with a legal or similarly significant effect on a person is made by the system alone. Orders, cancellations and payments are confirmed by you or your staff.',
+      'Flowdesk generates replies to your customers on your behalf. To do that, the text of a customer message is sent to a large language model hosted by Groq, together with the catalogue rows and business details needed to answer it. Those are the only records shared; we do not send your full customer list, your order history or your financial data.',
+      'The provider processes the message to generate a response and does not use it to train on it. Replies are checked against your own records, and what happens when a check fails depends on the setting you have chosen, see “Automated replies are sent in your name” in the terms.',
+      'What the system does without a person depends on the mode you choose. In draft mode it writes and you send. In automatic mode it sends answers it could verify against your records. In autonomous mode it also answers questions it could not verify, creates orders, and sends payment links to your customers, with no person reviewing any of it.',
+      'Autonomous mode is off unless you turn it on, and turning it on requires you to accept in writing what it does. We record the date, the account that accepted it and the exact wording accepted.',
+      'Cancellations, refunds, price negotiations and complaints are never settled by the system in any mode; they are escalated to you.',
     ],
   },
   {
     heading: 'Who else processes your data',
     paragraphs: [
-      'Meta Platforms — the WhatsApp Business Platform, which delivers the messages themselves.',
-      'NVIDIA — the language model that drafts replies, as described above.',
-      'Paystack — card and mobile money payments for your Flowdesk subscription.',
-      'Amazon Web Services — hosting and encrypted storage of media files.',
+      'Meta Platforms, the WhatsApp Business Platform, which delivers the messages themselves.',
+      'Groq, the service that writes replies, as described above.',
+      'Paystack, card and mobile money payments, both for your Flowdesk subscription and, if you use payment links, for money your own customers pay you. Payments from your customers settle to the account you nominate; they do not pass through an account we control.',
+      'Supabase, our database, and encrypted storage of media files such as product photos and payment screenshots.',
       'Our hosting and database providers, listed on request.',
       'We do not sell personal data, and we do not share it for advertising.',
     ],
@@ -132,10 +133,30 @@ const TERMS: Section[] = [
   {
     heading: 'Automated replies are sent in your name',
     paragraphs: [
-      'This is the most important thing in this document. When you enable automatic replies, messages are sent to your customers from your WhatsApp number, without you seeing them first. They are written from your catalogue, your prices and the business details you record, and they are checked against those records before being sent — but they are generated by software, and software makes mistakes.',
-      'You choose how much it does. In draft mode it prepares replies for you to send. In automatic mode it answers grounded questions on its own and escalates anything about price negotiation, complaints or policy to you.',
+      'This is the most important thing in this document. When you enable automatic replies, messages are sent to your customers from your WhatsApp number, without you seeing them first. They are generated by software, and software makes mistakes.',
+      'You choose how much it does, and the three settings are meaningfully different.',
+      'Draft mode: it writes replies and you send them. Nothing reaches a customer unread.',
+      'Automatic mode: it sends answers it could check against your catalogue and your saved business details. Anything it could not check is held for you.',
+      'Autonomous mode: it sends answers it could NOT check as well. It will state a price, a delivery charge or an opening time that you never recorded, because you have asked it to answer rather than to ask you. It also creates orders and sends payment links to your customers on its own.',
+      'Autonomous mode is off unless you deliberately turn it on. Before you can, you must accept a statement describing what it does; we record when you accepted it, which account accepted it, and the exact wording. You can turn it off at any time.',
+      'In every mode: price negotiation, complaints, refunds and policy questions are escalated to you rather than settled by the assistant.',
       'Keep your catalogue, prices, stock and business details accurate. A reply built from a wrong price is a wrong price quoted to your customer in your name.',
-      'You remain responsible for what is sent from your number, and for honouring what your customers are told.',
+      'You remain responsible for what is sent from your number, and for honouring what your customers are told. This is not a formality. Your customer has no agreement with us and cannot look to us: as far as they are concerned the message came from your shop, and it did.',
+      'We keep a record of every automatic reply, including which claims in it could not be verified against your records. You can read it in the dashboard. If a customer disputes what they were told, that record is what exists.',
+      'In autonomous mode we add one short line to the first reply a customer gets, telling them the replies are automated and can be wrong. It appears once per customer, not on every message. We do this because your customer has no agreement with us and no way of knowing a machine wrote to them, and because a customer who knows will treat a mistake as a mistake rather than as your shop misleading them.',
+    ],
+  },
+  {
+    heading: 'Replies can be wrong, and here is how',
+    paragraphs: [
+      'The assistant writes from a language model. Models are confident when they are right and confident when they are wrong, and there is no setting that removes that. What Flowdesk does is narrow where it can happen and tell you when it did.',
+      'It can quote the wrong price when your catalogue is out of date, because the reply is only ever as right as the record it was built from.',
+      'It can misread what a customer meant: the wrong size, the wrong variant, the wrong one of two similar products.',
+      'It can state something confidently that it could not check. In draft and automatic modes that reply is held for you. In autonomous mode it is sent, and we record on the message which claims could not be verified.',
+      'It can be wrong about anything you have never told it. It does not know your stock unless you keep it current, and it does not know a policy you have only ever explained on the phone.',
+      'Every automatic reply is kept with the checks it passed and failed, so when something goes wrong you can see what was actually sent and why. That record is in the dashboard, and it is what a dispute turns on.',
+      'The daily summary is written the same way: the figures come from your own records and are checked before it is shown, and a summary whose numbers could not be verified is replaced by a plainer one built directly from the data.',
+      'What we ask of you: keep your prices, stock and business details accurate, read what the assistant sends for the first few days of any mode you switch on, and use draft mode if you would rather check everything. None of that is boilerplate, it is the difference between this working and it embarrassing you.',
     ],
   },
   {
@@ -181,7 +202,10 @@ const TERMS: Section[] = [
     paragraphs: [
       'Nothing here limits liability that cannot be limited by law, including for death, personal injury or fraud.',
       'Subject to that, our total liability to you in any twelve-month period is limited to the amount you paid us in that period. We are not liable for lost profits, lost business or lost data beyond what a backup would have restored.',
-      'Flowdesk is provided as it is. We do not warrant that automatic replies will be correct in every case, which is why you can review them and why you control how much is sent automatically.',
+      'Flowdesk is provided as it is. We do not warrant that automatic replies will be correct, complete or suitable for any particular customer, and in autonomous mode we do not warrant that a reply corresponds to anything in your records at all. That is what the setting does.',
+      'We are not liable for the content of a reply the assistant sent on your behalf, for an order it created, or for a payment link it issued, nor for what follows from any of those, including an order you have to honour at a price you did not set, a refund you choose to give, or a customer you lose. You chose the level of automation; the words went out in your name.',
+      'Two things this does not do. It does not limit liability that cannot be limited by law. And it does not affect your own customers, who are not party to this agreement: your obligations to them are yours, and nothing here transfers them to us or limits them.',
+      'If you disagree with any of this, use draft mode. It is the default, and everything the product does is available through it.',
     ],
   },
   {

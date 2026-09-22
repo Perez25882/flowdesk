@@ -17,7 +17,7 @@ type MessageTab = 'all' | 'review';
 const MESSAGE_TABS = ['all', 'review'] as const;
 
 /**
- * Exactly the intents the classifier can hold — no more, no fewer.
+ * Exactly the intents the classifier can hold, no more, no fewer.
  *
  * This list used to offer "A cancellation" and "Thanks", neither of which is a
  * member of `IntentType`. Picking either sent a value Prisma refused, and the
@@ -70,8 +70,8 @@ const INTENT_LABEL: Record<string, string> = {
  * previous version presented that as a bare dropdown labelled "Correct intent"
  * listing nine engineering enum names.
  *
- * Now the question is asked in words a shop owner uses — "What was this
- * message actually about?" — and the options are phrases, not enum labels. The
+ * Now the question is asked in words a shop owner uses, "What was this
+ * message actually about?", and the options are phrases, not enum labels. The
  * confidence score is spelled out too, since "62% conf" means nothing to
  * someone who has never seen a classifier.
  */
@@ -239,7 +239,7 @@ export default function MessagesPage(): React.JSX.Element {
                         </div>
                       )}
 
-                      {/* Inbound only — there is nothing to reply to on a
+                      {/* Inbound only, there is nothing to reply to on a
                           message the business itself sent. */}
                       {msg.direction === 'INBOUND' && <ReplyEditor message={msg} />}
                     </div>

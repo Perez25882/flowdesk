@@ -8,6 +8,7 @@ import SearchInput from '@/components/ui/SearchInput';
 import { Panel, Row, RowList } from '@/components/ui/Panel';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import { formatCurrency, cn } from '@/lib/utils';
+import CustomerInsights from '@/components/customers/CustomerInsights';
 
 /**
  * The customer ledger.
@@ -20,8 +21,11 @@ import { formatCurrency, cn } from '@/lib/utils';
  * On a phone the same records become rows, since a six-column table at 360px
  * is either unreadable or requires horizontal scrolling.
  */
+type Tab = 'list' | 'insights';
+
 export default function CustomersPage(): React.JSX.Element {
   const navigate = useNavigate();
+  const [tab, setTab] = useState<Tab>('list');
   const [search, setSearch] = useState('');
   const [tag, setTag] = useState('');
   const { data: customers, isLoading } = useCustomers(search || undefined, tag || undefined);
@@ -33,28 +37,58 @@ export default function CustomersPage(): React.JSX.Element {
     <div className="flex flex-col gap-5">
       <PageHeader
         title="Customers"
-        description="Who buys, and who owes."
+        description="Who buys, who owes, and who is drifting away."
         actions={
-          <>
-            <SearchInput
-              label="Search customers by name or number"
-              placeholder="Name or number"
-              value={search}
-              onChange={setSearch}
-              className="w-full sm:w-56"
-            />
-            <input
-              type="text"
-              value={tag}
-              onChange={(e) => setTag(e.target.value)}
-              aria-label="Filter customers by tag"
-              placeholder="Tag"
-              className="fd-input fd-input-compact h-10 w-full py-0 sm:h-9 sm:w-28"
-            />
-          </>
+          tab === 'list' ? (
+            <>
+              <SearchInput
+                label="Search customers by name or number"
+                placeholder="Name or number"
+                value={search}
+                onChange={setSearch}
+                className="w-full sm:w-56"
+              />
+              <input
+                type="text"
+                value={tag}
+                onChange={(e) => setTag(e.target.value)}
+                aria-label="Filter customers by tag"
+                placeholder="Tag"
+                className="fd-input fd-input-compact h-10 w-full py-0 sm:h-9 sm:w-28"
+              />
+            </>
+          ) : null
         }
       />
 
+      <span className="flex items-center gap-1 border-b border-border" role="tablist">
+        {(
+          [
+            ['list', 'Everyone'],
+            ['insights', 'Patterns'],
+          ] as Array<[Tab, string]>
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={tab === value}
+            onClick={() => setTab(value)}
+            className={cn(
+              '-mb-px border-b-2 px-3 py-2 text-sm transition-colors',
+              tab === value
+                ? 'border-primary font-medium text-text-primary'
+                : 'border-transparent text-text-secondary hover:text-text-primary',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </span>
+
+      {tab === 'insights' && <CustomerInsights />}
+
+      {tab === 'list' && (
       <Panel>
         {isLoading && <SkeletonRows count={6} />}
 
@@ -168,7 +202,7 @@ export default function CustomersPage(): React.JSX.Element {
                           owes > 0 ? 'font-semibold text-danger' : 'text-text-muted',
                         )}
                       >
-                        {owes > 0 ? formatCurrency(owes) : '—'}
+                        {owes > 0 ? formatCurrency(owes) : '\u2013'}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className="flex flex-wrap gap-1">
@@ -238,6 +272,7 @@ export default function CustomersPage(): React.JSX.Element {
           </>
         )}
       </Panel>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 /**
- * Plans — the single source of truth.
+ * Plans, the single source of truth.
  *
  * The marketing page and the billing screen were quoting different products.
  * Landing said GHS 149 and GHS 399 with 2,000 conversations on the middle
@@ -14,8 +14,8 @@
  * That rule held for price and then quietly failed for everything else: this
  * file went on advertising unlimited products, unlimited orders and unlimited
  * staff seats that `PLAN_LIMITS` in
- * `apps/api/src/services/plan/plan.service.ts` refuses, and features — weekly
- * reports, broadcasts, priority payment matching — that no code implements.
+ * `apps/api/src/services/plan/plan.service.ts` refuses, and features, weekly
+ * reports, broadcasts, priority payment matching, that no code implements.
  * A limit quoted more generously than the API enforces is not marketing, it is
  * a support ticket with a delay on it.
  *
@@ -32,7 +32,7 @@
  * There is deliberately no `TRIAL` member. A trial is not a plan: registration
  * stamps `trialEndsAt` and leaves the business on whatever plan its row holds,
  * so a `TRIAL` entry here could only ever be a set of numbers nothing enforces
- * — which is precisely what the old one was.
+ *, which is precisely what the old one was.
  */
 export type PlanCode = 'STARTER' | 'BUSINESS' | 'GROWTH' | 'ENTERPRISE' | 'SUSPENDED';
 
@@ -49,12 +49,11 @@ export const TRIAL_GRACE_HOURS = 48;
 /**
  * What the conversation allowance actually counts.
  *
- * One unit is one WhatsApp message Flowdesk sends on the shop's behalf —
- * counted in the outbound worker, not per thread — so the figure is worth
+ * One unit is one WhatsApp message Flowdesk sends on the shop's behalf, * counted in the outbound worker, not per thread, so the figure is worth
  * spelling out wherever it is quoted.
  */
 export const CONVERSATION_UNIT_NOTE =
-  'One conversation is one message Flowdesk sends for you. Go past the monthly allowance and automatic replies pause until the month turns over or you move up a plan — incoming messages and orders keep being recorded either way.';
+  'One conversation is one message Flowdesk sends for you. Go past the monthly allowance and automatic replies pause until the month turns over or you move up a plan, incoming messages and orders keep being recorded either way.';
 
 export interface Plan {
   code: PlanCode;
@@ -89,7 +88,7 @@ export const PLANS: Record<PlanCode, Plan> = {
     staffSeats: 1,
     products: 50,
     features: {
-      // Every plan can rewrite the automatic replies — nothing in the API
+      // Every plan can rewrite the automatic replies, nothing in the API
       // gates `replyTemplates` by plan, so this row cannot claim otherwise.
       customTemplates: true,
       namedSupport: false,
@@ -147,7 +146,7 @@ export const PLANS: Record<PlanCode, Plan> = {
   SUSPENDED: {
     code: 'SUSPENDED',
     name: 'Suspended',
-    price: '—',
+    price: '\u2013',
     period: '',
     audience: '',
     // Zeroes rather than nulls: `PLAN_LIMITS.SUSPENDED` is zero across the

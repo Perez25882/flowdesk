@@ -1,0 +1,136 @@
+﻿
+==============================================================================
+meta/llama-3.1-8b-instruct
+==============================================================================
+  guided_json    3209ms  ok               "Good morning"
+               ΓåÆ Good morning, welcome to Ama's Provisions!
+  guided_json    3004ms  ok               "I want 2 bags of rice 50kg"
+               ΓåÆ Each bag of rice 50kg costs GHS 620.00. We have 14 in stock.
+  guided_json    3070ms  ok               "wetin you get?"
+               ΓåÆ We dey sell rice, Malta Guinness, and other things. What you dey look for?
+  guided_json    9703ms  ok               "How much be rice 50kg?"
+               ΓåÆ Rice 50kg is GHS 620.00 per bag.
+  guided_json  SCORE 4/4 valid, avg 4747ms
+
+  json_schema    1924ms  ok               "Good morning"
+               ΓåÆ Good morning, welcome to Ama's Provisions
+  json_schema    3177ms  ok               "I want 2 bags of rice 50kg"
+               ΓåÆ We have 2 bags of rice 50kg available. Each bag costs GHS 620.00.
+  json_schema   12682ms  ok               "wetin you get?"
+               ΓåÆ We get Rice 50kg for GHS 620.00, Rice 25kg for GHS 330.00, and Malta Guinness 33cl for GHS 132.00.
+  json_schema   10058ms  ok               "How much be rice 50kg?"
+               ΓåÆ Rice 50kg is GHS 620.00 per bag.
+  json_schema  SCORE 4/4 valid, avg 6960ms
+
+  example        2524ms  MALFORMED        "Good morning"
+               ΓåÆ { "intent": "GREETING", "confidence": 0.9, "language": "en", "sentiment": "positiv
+  example        3035ms  MALFORMED        "I want 2 bags of rice 50kg"
+               ΓåÆ { "intent": "ORDER", "confidence": 0.9, "language": "en", "sentiment": "neutral", 
+  example        1712ms  MALFORMED        "wetin you get?"
+               ΓåÆ { "intent": "INQUIRY", "confidence": 0.9, "language": "pidgin", "sentiment": "neut
+  example        1969ms  MALFORMED        "How much be rice 50kg?"
+               ΓåÆ { "intent": "INQUIRY", "confidence": 0.9, "language": "en", "sentiment": "neutral"
+  example      SCORE 0/4 valid, avg 2310ms
+
+
+==============================================================================
+meta/llama-3.3-70b-instruct
+==============================================================================
+  guided_json   36823ms  HTTP 503         "Good morning"
+               ΓåÆ {"error":{"message":"ResourceExhausted: Worker local total request limit reached (16/16)",
+  guided_json   60011ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TimeoutError: The operation was aborted due to timeout
+  guided_json   42378ms  ok               "wetin you get?"
+               ΓåÆ We get rice and Malta Guinness
+  guided_json   14204ms  ok               "How much be rice 50kg?"
+               ΓåÆ Rice 50kg is GHS 620.00 per bag
+  guided_json  SCORE 2/4 valid, avg 38354ms
+
+  json_schema   15310ms  ok               "Good morning"
+               ΓåÆ Good morning
+  json_schema   29183ms  ok               "I want 2 bags of rice 50kg"
+               ΓåÆ You want to buy 2 bags of Rice 50kg. The price is GHS 620.00 per bag.
+  json_schema   12085ms  ok               "wetin you get?"
+               ΓåÆ We have rice and Malta Guinness available
+  json_schema   15749ms  ok               "How much be rice 50kg?"
+               ΓåÆ Rice 50kg is GHS 620.00 per bag.
+  json_schema  SCORE 4/4 valid, avg 18082ms
+
+  example        9182ms  MALFORMED        "Good morning"
+               ΓåÆ {"intent": "GREETING", "confidence": 0.9, "language": "en", "sentiment": "positive", "enti
+  example        5930ms  HTTP 503         "I want 2 bags of rice 50kg"
+               ΓåÆ {"error":{"message":"ResourceExhausted: Worker local total request limit reached (20/16)",
+  example       16562ms  ok               "wetin you get?"
+               ΓåÆ We have Rice and Malta Guinness available.
+  example       10273ms  HTTP 503         "How much be rice 50kg?"
+               ΓåÆ {"error":{"message":"ResourceExhausted: Worker local total request limit reached (16/16)",
+  example      SCORE 1/4 valid, avg 10487ms
+
+
+==============================================================================
+nvidia/llama-3.3-nemotron-super-49b-v1.5
+==============================================================================
+  guided_json   60015ms  THREW            "Good morning"
+               ΓåÆ TimeoutError: The operation was aborted due to timeout
+  guided_json   60016ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TimeoutError: The operation was aborted due to timeout
+  guided_json   60001ms  THREW            "wetin you get?"
+               ΓåÆ TimeoutError: The operation was aborted due to timeout
+  guided_json   49914ms  ok               "How much be rice 50kg?"
+               ΓåÆ Rice 50kg be GHS 620.00 per bag.
+  guided_json  SCORE 1/4 valid, avg 57487ms
+
+  json_schema   60016ms  THREW            "Good morning"
+               ΓåÆ TimeoutError: The operation was aborted due to timeout
+  json_schema   10240ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TypeError: fetch failed
+  json_schema   10659ms  THREW            "wetin you get?"
+               ΓåÆ TypeError: fetch failed
+  json_schema   10638ms  THREW            "How much be rice 50kg?"
+               ΓåÆ TypeError: fetch failed
+  json_schema  SCORE 0/4 valid, avg 22888ms
+
+  example       10531ms  THREW            "Good morning"
+               ΓåÆ TypeError: fetch failed
+  example       10610ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TypeError: fetch failed
+  example       10668ms  THREW            "wetin you get?"
+               ΓåÆ TypeError: fetch failed
+  example       60008ms  THREW            "How much be rice 50kg?"
+               ΓåÆ TimeoutError: The operation was aborted due to timeout
+  example      SCORE 0/4 valid, avg 22954ms
+
+
+==============================================================================
+nvidia/nemotron-3.5-lightning-30b-a3b
+==============================================================================
+  guided_json   10479ms  THREW            "Good morning"
+               ΓåÆ TypeError: fetch failed
+  guided_json   10542ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TypeError: fetch failed
+  guided_json   10549ms  THREW            "wetin you get?"
+               ΓåÆ TypeError: fetch failed
+  guided_json      27ms  THREW            "How much be rice 50kg?"
+               ΓåÆ TypeError: fetch failed
+  guided_json  SCORE 0/4 valid, avg 7899ms
+
+  json_schema       9ms  THREW            "Good morning"
+               ΓåÆ TypeError: fetch failed
+  json_schema       5ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TypeError: fetch failed
+  json_schema       7ms  THREW            "wetin you get?"
+               ΓåÆ TypeError: fetch failed
+  json_schema       3ms  THREW            "How much be rice 50kg?"
+               ΓåÆ TypeError: fetch failed
+  json_schema  SCORE 0/4 valid, avg 6ms
+
+  example           5ms  THREW            "Good morning"
+               ΓåÆ TypeError: fetch failed
+  example           5ms  THREW            "I want 2 bags of rice 50kg"
+               ΓåÆ TypeError: fetch failed
+  example           3ms  THREW            "wetin you get?"
+               ΓåÆ TypeError: fetch failed
+  example           3ms  THREW            "How much be rice 50kg?"
+               ΓåÆ TypeError: fetch failed
+  example      SCORE 0/4 valid, avg 4ms
+

@@ -61,6 +61,73 @@ model Business {
   suspendReason      String?
   paystackCustomerId String?            @unique
   paystackSubCode    String?
+
+  // ── Taking money from customers ─────────────────────────────────────────
+  // Flowdesk is the Paystack merchant and every shop is a subaccount of it.
+  // Paystack splits each payment at the moment it settles, so the shop is paid
+  // directly and Flowdesk never holds, moves or owes anyone's money — which is
+  // the difference between a software product and one that needs a licence.
+  /// `ACCT_...`. Null until the owner has given settlement details.
+  paystackSubaccountCode String?         @unique
+  /// Bank or mobile-money code from Paystack's own list, never hardcoded here:
+  /// Vodafone Cash became Telecel Cash without the code changing, and a list
+  /// baked into the source would have been wrong for a year.
+  payoutBankCode     String?
+  /// Momo number or bank account the shop is settled to. Returned masked.
+  payoutAccountNumber String?
+  /// The holder's name as Paystack resolved it — not as the owner typed it.
+  /// Shown back so a wrong digit is caught before the first payout, not after.
+  payoutAccountName  String?
+  payoutConnectedAt  DateTime?
+
+  // ── Branding ────────────────────────────────────────────────────────────
+  /// Object key of the shop's logo. Private bucket, same as product photos.
+  logoKey            String?
+  logoMimeType       String?
+  /// Meta media id for the logo, cached per phone number — see `ProductImage`
+  /// for why the number is stored beside it.
+  logoWaMediaId      String?
+  logoWaMediaPhoneNumberId String?
+  logoWaMediaUploadedAt DateTime?
+  /// Whether a receipt is sent when a payment confirms. On by default: a
+  /// customer who has just paid a stranger on WhatsApp wants something back.
+  receiptsEnabled    Boolean            @default(true)
+  /// Whether the owner gets a morning summary of the day before.
+  /// Whether the assistant may negotiate at all.
+  ///
+  /// Off by default, and separate from the per-product floor: turning it on
+  /// without setting floors changes nothing, because a product with no floor
+  /// has one price. Both have to be true before a single cedi moves.
+  bargainingEnabled  Boolean            @default(false)
+  /// Whether this business takes appointments at all.
+  ///
+  /// Off by default. A shop selling bags has no use for a diary, and showing
+  /// one to them is a nav item they will never open.
+  bookingsEnabled    Boolean            @default(false)
+  insightsEnabled    Boolean            @default(true)
+  /// Where the summary is sent. Null means the dashboard only.
+  insightsToWhatsApp Boolean            @default(false)
+
+  // ── Autonomy ────────────────────────────────────────────────────────────
+  /// When the owner accepted that unreviewed replies go out in their name.
+  ///
+  /// Recorded rather than inferred from `aiAssistMode`, because the mode can be
+  /// switched off and on again and the acceptance should survive that — and
+  /// because a dated, attributable acceptance is evidence, where a mode is
+  /// only a setting. Null means autonomy has never been accepted, and the API
+  /// refuses to enter AUTONOMOUS without it.
+  autonomyAcceptedAt DateTime?
+  /// Staff id, or 'owner'. Who accepted it.
+  autonomyAcceptedBy String?
+  /// The wording they accepted, kept verbatim so a later edit to the terms
+  /// cannot retroactively change what someone agreed to.
+  autonomyAcceptedText String?
+  /// Flowdesk's cut, as a percentage of each customer payment.
+  ///
+  /// Per business so a plan, a promise made in a sales conversation, or a
+  /// switched-off commission can be honoured without a deploy. Null means the
+  /// platform default in `PLATFORM_COMMISSION_PERCENT`.
+  commissionPercent  Decimal?           @db.Decimal(5, 2)
   monthlyConvoCount  Int                @default(0)
   convoCountResetAt  DateTime?
   monthlyOrderCount  Int                @default(0)
@@ -128,10 +195,17 @@ model Business {
   messages           Message[]
   orders             Order[]
   passwordResets     PasswordResetToken[]
+  dailyInsights      DailyInsight[]
+  services           Service[]
+  appointments       Appointment[]
+  paymentRequests    PaymentRequest[]
   payments           Payment[]
   pendingOrders      PendingOrder[]
+  productImages      ProductImage[]
   products           Product[]
   sessions           Session[]
+  emailOtps          EmailOtp[]
+  shipments          Shipment[]
   staff              Staff[]
   stockMovements     StockMovement[]
 
@@ -208,6 +282,13 @@ model Customer {
   /// Meta, and dead-lettered with nothing shown to the owner.
   lastInboundAt      DateTime?
   firstOrderAt       DateTime?
+  /// The last delivery details this customer gave. Offered back by the
+  /// assistant ("same address as last time?") and never treated as
+  /// authoritative for an order: the order's own columns are.
+  lastRecipientName   String?
+  lastDeliveryAddress String?
+  lastDeliveryArea    String?
+  lastContactPhone    String?
   notes              String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -216,7 +297,9 @@ model Customer {
   messages           Message[]
   orders             Order[]
   pendingOrders      PendingOrder[]
+  paymentRequests    PaymentRequest[]
   payments           Payment[]
+  appointments       Appointment[]
 
   @@unique([businessId, waNumber])
   @@index([businessId])
@@ -248,6 +331,27 @@ model Order {
   cancelledAt     DateTime?
   cancelReason    String?
   notes           String?
+  /// Where this order is going, captured in the chat after confirmation.
+  ///
+  /// Held on the order rather than only on the customer because an address is
+  /// not a fact about a person forever: the same customer sends one order to a
+  /// workplace and the next one home. The customer's copy of these (the
+  /// `last*` fields) exists only so the assistant can offer them back instead
+  /// of asking again.
+  recipientName      String?
+  deliveryAddress    String?
+  deliveryArea       String?
+  /// A number to call on delivery. Deliberately not the WhatsApp number the
+  /// order arrived on: riders phone people, and plenty of customers chat on a
+  /// number they never answer.
+  contactPhone       String?
+  /// Set once the customer has actually answered. Null means "still asking",
+  /// which is what stops the payment link going out early.
+  deliveryCapturedAt DateTime?
+  /// How many delivery questions have gone out for this order. Bounded, so a
+  /// customer who keeps replying "ok" is handed to a person instead of being
+  /// asked the same thing forever.
+  deliveryAsks       Int                  @default(0)
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
   deletedAt       DateTime?
@@ -256,7 +360,9 @@ model Order {
   assignedTo      Staff?               @relation(fields: [assignedStaffId], references: [id])
   business        Business             @relation(fields: [businessId], references: [id])
   customer        Customer             @relation(fields: [customerId], references: [id])
+  paymentRequests PaymentRequest[]
   payments        Payment[]
+  shipment        Shipment?
 
   @@unique([businessId, referenceNumber])
   @@index([businessId])
@@ -317,12 +423,28 @@ model Product {
   price            Decimal         @db.Decimal(12, 2)
   stockQuantity    Decimal         @default(0) @db.Decimal(10, 3)
   reorderThreshold Decimal         @default(0) @db.Decimal(10, 3)
+  /// The lowest the assistant may ever agree to for this item.
+  ///
+  /// Null means this item is not negotiable and the list price is the only
+  /// price. This is enforced in the router against the model's declared offer,
+  /// never by asking the model to respect it in the prompt — a floor that
+  /// lives in a prompt is a suggestion, and the thing on the other side of it
+  /// is the shop's margin.
+  floorPrice       Decimal?        @db.Decimal(12, 2)
+  /// Percentage off the list price while the promotion runs. 1-90.
+  discountPercent  Int?
+  /// What the shop calls it: "Flash Sale", "Easter Special".
+  discountLabel    String?
+  /// When the promotion stops. Null runs until the owner turns it off.
+  discountEndsAt   DateTime?
   active           Boolean         @default(true)
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   deletedAt        DateTime?
   orderItems       OrderItem[]
   business         Business        @relation(fields: [businessId], references: [id])
+  images           ProductImage[]
+  quantityTiers    QuantityTier[]
   stockMovements   StockMovement[]
 
   @@unique([businessId, sku])
@@ -330,6 +452,65 @@ model Product {
   @@index([businessId, active])
   @@index([businessId, stockQuantity])
   @@map("products")
+}
+
+/// Bulk pricing: buy this many, pay this much less per unit.
+///
+/// Held as a percentage rather than an absolute price so a tier keeps working
+/// after the owner changes the list price. A shop that edits a price and
+/// forgets it also set a GHS 12 bulk price would otherwise be selling ten at a
+/// loss without anything on screen having changed.
+model QuantityTier {
+  id          String   @id @default(cuid())
+  productId   String
+  /// The tier applies at this quantity and above, until a higher tier takes over.
+  minQuantity Int
+  /// 1-90. Off the price already in force, promotion included.
+  percentOff  Int
+  createdAt   DateTime @default(now())
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, minQuantity])
+  @@index([productId])
+  @@map("quantity_tiers")
+}
+
+/// A photo of a product.
+///
+/// Its own table rather than a column on `Product` because one photo is rarely
+/// enough. A boutique shows front and back, a pharmacy shows the label and the
+/// expiry, a parts dealer shows the fitting. `position` is the order the owner
+/// arranged them in, and position 0 is the one a customer is sent.
+///
+/// `waMediaId` caches Meta's id for the uploaded bytes. Meta keeps an uploaded
+/// media object for about 30 days, and re-uploading the same JPEG on every
+/// "send me a picture" would be a wasted round trip on the slowest leg of the
+/// send path. `waMediaId` is scoped to the phone number that uploaded it, so
+/// `waMediaPhoneNumberId` is stored alongside: a business that reconnects on a
+/// different number must not try to send an id that number never saw.
+model ProductImage {
+  id                   String    @id @default(cuid())
+  businessId           String
+  productId            String
+  /// Object key in the media bucket. The bucket is private; bytes are served
+  /// back through the API so the tenant check happens on every view.
+  key                  String
+  mimeType             String
+  sizeBytes            Int
+  width                Int?
+  height               Int?
+  position             Int       @default(0)
+  waMediaId            String?
+  waMediaPhoneNumberId String?
+  waMediaUploadedAt    DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  business             Business  @relation(fields: [businessId], references: [id])
+  product              Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+  @@index([businessId])
+  @@map("product_images")
 }
 
 /// Immutable record of every stock change.
@@ -401,6 +582,105 @@ model Payment {
   @@map("payments")
 }
 
+/// A request for money, which is not the same thing as money.
+///
+/// A `Payment` row means the shop was paid. This means the shop asked. Keeping
+/// them apart is the whole point: the previous flow created a payment the
+/// moment a customer sent a screenshot, so "paid today" counted claims, and an
+/// owner reading their own dashboard could not tell the difference between
+/// money received and money promised.
+///
+/// A request becomes a Payment only when Paystack says the charge settled, and
+/// that Payment is written with `GATEWAY_CONFIRMED` — the one confidence level
+/// nobody has to take anyone's word for.
+model PaymentRequest {
+  id            String               @id @default(cuid())
+  businessId    String
+  customerId    String
+  orderId       String?
+  amount        Decimal              @db.Decimal(12, 2)
+  currency      String               @default("GHS")
+  /// Our reference, and Paystack's. Generated here so the webhook can find the
+  /// row it belongs to before trusting anything inside the payload.
+  reference     String               @unique
+  /// The hosted page the customer opens. Paystack owns the PIN prompt and the
+  /// card form; nothing sensitive ever reaches Flowdesk.
+  authorizationUrl String
+  accessCode    String?
+  status        PaymentRequestStatus @default(PENDING)
+  /// What the customer actually paid with, as Paystack reported it.
+  channel       String?
+  /// Paystack's fee, in cedis, off the settled amount.
+  gatewayFee    Decimal?             @db.Decimal(12, 2)
+  /// Flowdesk's cut, in cedis. Recorded per transaction rather than recomputed
+  /// from today's rate, so a commission change never rewrites history.
+  platformFee   Decimal?             @db.Decimal(12, 2)
+  /// The subaccount the split paid, captured at the time. A shop that later
+  /// changes its settlement details must not make old rows describe the new one.
+  subaccountCode String?
+  paidAt        DateTime?
+  /// After this, the link is not offered again and the row stops being chased.
+  expiresAt     DateTime
+  /// The Payment this became. Null until it settles.
+  paymentId     String?              @unique
+  /// The outbound WhatsApp message that carried the link, when it was sent.
+  sentMessageId String?
+  /// Staff member who raised it; null when the assistant or a job did.
+  createdByStaffId String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  business      Business             @relation(fields: [businessId], references: [id])
+  customer      Customer             @relation(fields: [customerId], references: [id])
+  order         Order?               @relation(fields: [orderId], references: [id])
+
+  @@index([businessId, status])
+  @@index([businessId, customerId])
+  @@index([businessId, orderId])
+  @@index([businessId, createdAt(sort: Desc)])
+  @@index([status, expiresAt])
+  @@map("payment_requests")
+}
+
+/// One morning's read of how the shop did yesterday.
+///
+/// Stored rather than generated on demand for two reasons. It is a record: an
+/// owner looking back at a bad week wants what they were told at the time, not
+/// what today's code would say about it. And the figures behind it are frozen
+/// here, so a summary written on Tuesday still adds up on Friday even after
+/// orders have been cancelled and stock has moved.
+///
+/// `facts` holds the numbers the narrative was written from. Every figure in
+/// `body` was checked against it before the row was saved — see
+/// `verifyInsightNarrative`. A narrative that failed that check is not stored;
+/// the deterministic fallback is stored instead, and `model` is null to say so.
+model DailyInsight {
+  id          String   @id @default(cuid())
+  businessId  String
+  /// The day being reported on, at midnight UTC. Ghana is UTC+0, so this is
+  /// the shop's own calendar day with no conversion.
+  forDate     DateTime @db.Date
+  /// One line. What an owner reads standing up.
+  headline    String
+  /// The detail, already formatted for WhatsApp and for the dashboard.
+  body        String
+  /// The figures this was written from, and the only ones it may contain.
+  facts       Json
+  /// The model that wrote it, or null when the fallback wrote it.
+  model       String?
+  /// Set when the summary was also sent to the owner on WhatsApp.
+  sentAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  business    Business @relation(fields: [businessId], references: [id])
+
+  /// One per shop per day. Makes a re-run idempotent, which is what lets the
+  /// job be retried without a second message landing on the owner's phone.
+  @@unique([businessId, forDate])
+  @@index([businessId, forDate(sort: Desc)])
+  @@map("daily_insights")
+}
+
 /// Every WhatsApp message — inbound and outbound.
 /// The primary record for everything that passes through the system.
 model Message {
@@ -416,6 +696,16 @@ model Message {
   mediaType        String?
   reactionEmoji    String?
   reactedToWaId    String?
+  /// The message this one replies to, as WhatsApp's own id.
+  ///
+  /// Meta sends it as `context.id` on any reply — including a reply to a Status
+  /// the owner posted from the Business app, which is how a great many Ghanaian
+  /// shops actually sell: put the goods on Status, field the replies.
+  ///
+  /// Without it, a customer's "how much?" arrives with nothing attached and the
+  /// assistant has no honest option but to ask what they mean. The information
+  /// was always in the webhook; it was being discarded on the way in.
+  replyToWaId      String?
   intent           IntentType            @default(UNCLASSIFIED)
   intentConfidence Float?
   classifiedBy     ClassificationSource?
@@ -430,6 +720,19 @@ model Message {
   /// suppressed for a window after one of these, so the assistant never talks
   /// over a human who has just taken the conversation over.
   sentFromApp      Boolean               @default(false)
+  /// What the picture shows, in words.
+  ///
+  /// A shop posts a flyer to their Status and twenty people reply "how much?".
+  /// Without this the assistant sees a reply with nothing attached and has no
+  /// honest option but to ask what they mean — which is the single most common
+  /// way it looks stupid to a customer who is looking straight at the answer.
+  ///
+  /// Written ONCE per image and reused by every reply to it: the caption when
+  /// there is one, otherwise a description read off the picture. Never written
+  /// by the model that answers the customer.
+  mediaDescription String?
+  /// Where `mediaDescription` came from: CAPTION, VISION, or OWNER.
+  mediaDescribedBy String?
 
   // ── Assistant reply ─────────────────────────────────────────────────────
   // A reply the assistant wrote for THIS inbound message. Kept on the message
@@ -518,6 +821,7 @@ model Staff {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   assignedOrders   Order[]
+  dispatched       Shipment[]
   sessions         Session[]
   business         Business        @relation(fields: [businessId], references: [id])
   activityLog      StaffActivity[]
@@ -585,21 +889,37 @@ enum OrderStatus {
   PENDING
   CONFIRMED
   PROCESSING
+  DISPATCHED
   FULFILLED
   CANCELLED
 }
 
 enum PaymentMethod {
   MOMO_MTN
+  /// Telecel Cash. The value still says Vodafone because that is what is
+  /// already written in every existing row; the label everywhere a person can
+  /// see it says Telecel, which is what the network has been called since 2023.
   MOMO_VODAFONE
   MOMO_AIRTELTIGO
   CASH
   BANK_TRANSFER
+  /// A card charge settled through Paystack.
+  CARD
   OTHER
 }
 
 /// Whose word a payment rests on. See packages/shared/src/payment-integrity.ts —
 /// the member names and their order must stay in step with PAYMENT_CONFIDENCES.
+enum PaymentRequestStatus {
+  PENDING
+  PAID
+  FAILED
+  /// The window closed with no payment. Distinct from FAILED: nobody tried.
+  EXPIRED
+  /// The owner withdrew it — an order cancelled, a price renegotiated.
+  CANCELLED
+}
+
 enum PaymentConfidence {
   CLAIMED
   SELLER_ATTESTED
@@ -635,6 +955,96 @@ enum MessageType {
   BUTTON_REPLY
   LIST_REPLY
   UNKNOWN
+}
+
+/// Something a business does at a time, rather than sells off a shelf.
+///
+/// Deliberately not a flag on Product. A clinic, a school office or a lawyer
+/// has no product catalogue at all — many of them run with catalogueMode NONE —
+/// and the fields that make a Product useful (stock, reorder threshold, bulk
+/// tiers) are meaningless on a consultation. Sharing the table would mean every
+/// stock query had to remember to exclude the rows that are not things, and one
+/// forgotten filter tells a customer the appointment is out of stock.
+model Service {
+  id             String        @id @default(cuid())
+  businessId     String
+  name           String
+  description    String?
+  /// Other names customers use, same idea as a product's aliases.
+  aliases        String[]      @default([])
+  /// How long it takes. The slot is this plus the buffer.
+  durationMinutes Int
+  /// Time held after the appointment for clean-up, notes, or the next person
+  /// to actually get in the door. Blocked in the calendar, never shown to the
+  /// customer as part of their appointment.
+  bufferMinutes  Int           @default(0)
+  /// How many can run at the same time: chairs, rooms, practitioners.
+  capacity       Int           @default(1)
+  /// Display only. There is no payment on a booking — see the migration.
+  price          Decimal?      @db.Decimal(12, 2)
+  active         Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+  business       Business      @relation(fields: [businessId], references: [id])
+  appointments   Appointment[]
+
+  @@index([businessId])
+  @@index([businessId, active])
+  @@map("services")
+}
+
+/// A time held for one customer.
+///
+/// `endsAt` is stored rather than derived from the service's duration, because
+/// the duration can be edited and an appointment already in the diary must not
+/// silently move. It is also what the overlap constraint compares, and a
+/// constraint cannot call a function on another table.
+model Appointment {
+  id          String            @id @default(cuid())
+  businessId  String
+  serviceId   String
+  customerId  String
+  /// `FD-A-XXXXX`. Per-business, like an order reference.
+  reference   String
+  startsAt    DateTime
+  /// The customer's own end time. The slot blocked in the diary runs to
+  /// `blockedUntil`, which includes the service's buffer.
+  endsAt      DateTime
+  blockedUntil DateTime
+  /// Which chair, room or practitioner. Zero-based, always below the service's
+  /// capacity at the time of booking. This is the column that makes a
+  /// capacity of three possible without three separate services.
+  resourceIndex Int             @default(0)
+  status      AppointmentStatus @default(BOOKED)
+  /// Free text from the customer or the owner: "bring your card", "left knee".
+  notes       String?
+  /// True when the assistant booked it rather than a person.
+  bookedByAssistant Boolean     @default(false)
+  remindedAt  DateTime?
+  cancelledAt DateTime?
+  cancelReason String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  business    Business          @relation(fields: [businessId], references: [id])
+  service     Service           @relation(fields: [serviceId], references: [id])
+  customer    Customer          @relation(fields: [customerId], references: [id])
+
+  @@unique([businessId, reference])
+  @@index([businessId])
+  @@index([businessId, startsAt])
+  @@index([businessId, status, startsAt])
+  @@index([customerId])
+  @@index([serviceId, startsAt])
+  @@map("appointments")
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
 }
 
 enum IntentType {
@@ -698,6 +1108,18 @@ enum AiAssistMode {
   /// The assistant answers directly when the answer is grounded and verified,
   /// and drafts everything else.
   GROUNDED_AUTO
+  /// The assistant runs the shop's conversations on its own.
+  ///
+  /// It answers whether or not the answer can be checked against a record,
+  /// completes orders, and sends payment links without anyone approving them.
+  /// The grounding validator still runs and still records what it could not
+  /// verify — it simply no longer stops the send, so `aiValidationFailed` on a
+  /// sent message becomes a log of claims nobody could confirm rather than a
+  /// reason the reply was held.
+  ///
+  /// Switching to this is an explicit, recorded act by the owner; see
+  /// `autonomyAcceptedAt`.
+  AUTONOMOUS
 }
 
 enum ClassificationSource {
@@ -781,4 +1203,80 @@ enum PendingOrderStatus {
   EXPIRED
   /// The customer changed the subject, or a person took the conversation over.
   ABANDONED
+}
+
+/// One shipment per order: what left the shop, when, with whom, and the photo
+/// that proves it.
+///
+/// Separate from the order rather than another handful of columns on it,
+/// because dispatch has its own lifecycle and its own audit question ("who
+/// sent this and what did they photograph"), and because an order that is
+/// never delivered should carry no shipment row at all rather than a spread of
+/// nulls.
+model Shipment {
+  id               String    @id @default(cuid())
+  businessId       String
+  /// Unique: an order has at most one live shipment. A re-dispatch overwrites
+  /// this row rather than adding a second, so "where is my order" always has
+  /// exactly one answer.
+  orderId          String    @unique
+  courier          String?
+  trackingNumber   String?
+  /// S3 object key for the proof-of-dispatch photo, not a URL: the bucket may
+  /// be private and URLs are signed on read. Same convention as archived
+  /// inbound WhatsApp media.
+  proofKey         String?
+  proofMimeType    String?
+  proofUploadedAt  DateTime?
+  dispatchedAt     DateTime?
+  deliveredAt      DateTime?
+  notes            String?
+  createdByStaffId String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  business  Business @relation(fields: [businessId], references: [id])
+  order     Order    @relation(fields: [orderId], references: [id])
+  createdBy Staff?   @relation(fields: [createdByStaffId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, dispatchedAt(sort: Desc)])
+  @@index([businessId, trackingNumber])
+  @@map("shipments")
+}
+
+
+enum OtpPurpose {
+  EMAIL_VERIFICATION
+  LOGIN
+}
+
+/// A one-time code sent to an owner's email address.
+///
+/// A row per issue rather than a column on Business, because the interesting
+/// questions are historical: how many codes went out, how many were guessed at,
+/// was one already used. A single overwritten column answers none of them and
+/// makes "resend" indistinguishable from "replace".
+model EmailOtp {
+  id         String     @id @default(cuid())
+  businessId String
+  purpose    OtpPurpose
+  /// HMAC-SHA256 of the code, keyed with the app's ENCRYPTION_KEY.
+  ///
+  /// A plain hash would be pointless here: the code space is a million values,
+  /// so anyone holding the database could precompute every digest in seconds.
+  /// Keying it means a database leak alone does not reveal a live code. The
+  /// real protection is still the attempt limit and the ten-minute expiry.
+  codeHash   String
+  expiresAt  DateTime
+  /// Set the moment a code is accepted, so one code can never be used twice.
+  consumedAt DateTime?
+  attempts   Int        @default(0)
+  createdAt  DateTime   @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, purpose, createdAt(sort: Desc)])
+  @@index([expiresAt])
+  @@map("email_otps")
 }

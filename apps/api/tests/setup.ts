@@ -34,3 +34,18 @@ for (const [key, value] of Object.entries(TEST_ENV)) {
     process.env[key] = value;
   }
 }
+
+/**
+ * Forced, not defaulted.
+ *
+ * Everything above defers to a value already in the environment, which is right
+ * for a database URL someone wants to point elsewhere. It is wrong for
+ * NODE_ENV: `config/env.ts` validates a different and much stricter set of
+ * rules when it reads 'production', so a shell that happens to export
+ * NODE_ENV=production makes 31 test files fail to import with an error about
+ * Meta credentials and nothing about the real cause.
+ *
+ * That is not hypothetical — it is where an afternoon went. A test run must
+ * validate the same way wherever it runs.
+ */
+process.env.NODE_ENV = 'test';

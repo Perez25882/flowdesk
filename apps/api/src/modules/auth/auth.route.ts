@@ -6,6 +6,12 @@ import { requireAuth } from '../../middleware/auth.middleware.js';
 import { requireOwner } from '../../middleware/role.middleware.js';
 import { attachBusinessContext } from '../../middleware/business-context.middleware.js';
 import { sendPasswordResetEmail } from '../../services/email/transactional.js';
+import { ValidationError } from '../../utils/errors.js';
+import {
+  describeFailure,
+  issueEmailOtp,
+  verifyEmailOtp,
+} from './email-otp.service.js';
 import {
   register,
   login,
@@ -24,6 +30,7 @@ import {
   ForgotPasswordSchema,
   ResetPasswordSchema,
   ChangePasswordSchema,
+  VerifyEmailSchema,
 } from './auth.schema.js';
 import {
   clearRefreshCookie,
@@ -58,7 +65,60 @@ const CREDENTIAL_RATE_LIMIT = {
   },
 };
 
+/**
+ * Codes are cheaper to guess than passwords, so they get their own, tighter
+ * bucket. The service already limits attempts per code; this limits how many
+ * codes one caller can burn through.
+ */
+const OTP_RATE_LIMIT = {
+  config: {
+    rateLimit: {
+      max: 6,
+      timeWindow: '15 minutes',
+    },
+  },
+};
+
 export default async function authRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Sends a fresh code to the signed-in owner's address.
+   *
+   * Behind `requireAuth` on purpose: an unauthenticated version keyed on an
+   * email address would let anyone post someone else's address repeatedly and
+   * use us to mail them. You have to already be in the account to ask.
+   */
+  app.post(
+    '/auth/verify-email/request',
+    { ...OTP_RATE_LIMIT, preHandler: [requireAuth, attachBusinessContext, requireOwner] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const issued = await issueEmailOtp(request.user.businessId, 'EMAIL_VERIFICATION');
+      return success(reply, {
+        expiresAt: issued.expiresAt.toISOString(),
+        // Said plainly so a local run without Resend does not look broken.
+        delivered: issued.delivered,
+      });
+    },
+  );
+
+  app.post(
+    '/auth/verify-email/confirm',
+    { ...OTP_RATE_LIMIT, preHandler: [requireAuth, attachBusinessContext, requireOwner] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = VerifyEmailSchema.parse(request.body);
+      const result = await verifyEmailOtp(
+        request.user.businessId,
+        'EMAIL_VERIFICATION',
+        body.code,
+      );
+
+      if (!result.ok) {
+        throw new ValidationError(describeFailure(result.reason));
+      }
+
+      return success(reply, { message: 'Email verified.' });
+    },
+  );
+
   app.post(
     '/auth/register',
     CREDENTIAL_RATE_LIMIT,

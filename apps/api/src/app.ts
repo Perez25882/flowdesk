@@ -268,13 +268,16 @@ export async function createApp(): Promise<FastifyInstance> {
       protectedApp.addHook('preHandler', requireAuth);
       protectedApp.addHook('preHandler', attachBusinessContext);
       await protectedApp.register((await import('./modules/orders/orders.route.js')).default);
+      await protectedApp.register((await import('./modules/shipments/shipments.route.js')).default);
       await protectedApp.register((await import('./modules/payments/payments.route.js')).default);
       await protectedApp.register((await import('./modules/products/products.route.js')).default);
       await protectedApp.register((await import('./modules/customers/customers.route.js')).default);
+      await protectedApp.register((await import('./modules/bookings/bookings.route.js')).default);
       await protectedApp.register((await import('./modules/messages/messages.route.js')).default);
       await protectedApp.register((await import('./modules/settings/settings.route.js')).default);
       await protectedApp.register((await import('./modules/staff/staff.route.js')).default);
       await protectedApp.register((await import('./modules/dashboard/dashboard.route.js')).default);
+      await protectedApp.register((await import('./modules/settings/insights.route.js')).default);
       await protectedApp.register((await import('./modules/billing/billingCheckout.route.js')).default);
     });
   }, { prefix: '/api/v1' });
