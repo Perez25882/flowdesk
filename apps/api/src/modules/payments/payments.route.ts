@@ -1,15 +1,20 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { requireCapability } from '../../middleware/role.middleware.js';
+import { requireCapability, requireOwner } from '../../middleware/role.middleware.js';
 import { created, success } from '../../utils/response.js';
 import {
   ConfirmPaymentSchema,
+  ConnectPayoutSchema,
+  CreatePaymentLinkSchema,
   CreatePaymentSchema,
+  ListPaymentLinksQuerySchema,
   ListPaymentsQuerySchema,
   ReviewQueueQuerySchema,
   VoidPaymentSchema,
 } from './payments.schema.js';
 import type { ListPaymentsQueryInput } from './payments.schema.js';
 import * as service from './payments.service.js';
+import * as links from './payment-links.service.js';
+import * as payouts from './payouts.service.js';
 
 /**
  * Payment routes.
@@ -23,6 +28,89 @@ import * as service from './payments.service.js';
  * which is also how a screenshot the detector got wrong is dismissed.
  */
 export default async function paymentRoutes(app: FastifyInstance): Promise<void> {
+  // ── Payment links ─────────────────────────────────────────────────────────
+  //
+  // Registered before `/payments/:id` so `/payments/links` is not swallowed by
+  // the id route and read as a payment called "links".
+
+  app.get(
+    '/payments/links',
+    { preHandler: requireCapability('payments.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = ListPaymentLinksQuerySchema.parse(request.query);
+      return success(reply, await links.listPaymentLinks(request.business!.id, query));
+    },
+  );
+
+  // Raising a request for money is `payments.create`, the same capability as
+  // recording one. Attesting stays separate: a link nobody paid still cannot
+  // become attested money without the gateway saying so.
+  app.post(
+    '/payments/links',
+    { preHandler: requireCapability('payments.create') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const data = CreatePaymentLinkSchema.parse(request.body);
+      const link = await links.createPaymentLink(
+        request.business!.id,
+        data,
+        request.user?.staffId ?? null,
+      );
+      return created(reply, link);
+    },
+  );
+
+  app.delete(
+    '/payments/links/:id',
+    { preHandler: requireCapability('payments.create') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      await links.cancelPaymentLink(id, request.business!.id);
+      return reply.status(204).send();
+    },
+  );
+
+  // ── Payouts ───────────────────────────────────────────────────────────────
+  //
+  // Where the shop's money goes belongs to the account holder alone, alongside
+  // paying for the product and revoking everyone's sessions. These are
+  // `requireOwner` rather than a capability because no staff capability is
+  // strict enough: `settings.write` is held by MANAGER, so gating on it let a
+  // single phished day-to-day staff login repoint the shop's entire takings.
+  //
+  // `PUT` rewrites the live Paystack subaccount's settlement bank and account
+  // number IN PLACE, so it redirects money already in flight, not merely future
+  // sales. `GET` is owner-only for a quieter reason: it reads back the account
+  // number and the resolved account-holder name.
+  //
+  // The list of networks and banks carries nothing about this shop, so it stays
+  // readable by anyone who can see settings — the payout form needs it to
+  // render before the owner has connected anything.
+
+  app.get(
+    '/payouts/destinations',
+    { preHandler: requireCapability('settings.read') },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      return success(reply, await payouts.listDestinations());
+    },
+  );
+
+  app.get(
+    '/payouts',
+    { preHandler: requireOwner },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      return success(reply, await payouts.getPayoutStatus(request.business!.id));
+    },
+  );
+
+  app.put(
+    '/payouts',
+    { preHandler: requireOwner },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const data = ConnectPayoutSchema.parse(request.body);
+      return success(reply, await payouts.connectPayout(request.business!.id, data));
+    },
+  );
+
   app.post(
     '/payments',
     { preHandler: requireCapability('payments.create') },

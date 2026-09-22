@@ -11,12 +11,17 @@ import {
   type UpdateBusinessInput,
 } from '@/hooks/useBusiness';
 import BusinessProfileForm from '@/components/settings/BusinessProfileForm';
+import BrandingSettings from '@/components/settings/BrandingSettings';
+import BargainingSettings from '@/components/settings/BargainingSettings';
+import BookingSettings from '@/components/settings/BookingSettings';
+import PayoutSettings from '@/components/settings/PayoutSettings';
 import { useBadges } from '@/hooks/useBadges';
 import { useCheckout, type BillablePlan } from '@/hooks/useBilling';
 import { BILLABLE_PLAN_CODES, PLANS, getPlan, limit, planHighlights } from '@/config/plans';
 import WhatsAppConnection from '@/components/settings/WhatsAppConnection';
 import PageHeader from '@/components/shared/PageHeader';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
+import { isOwner } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Tabs, type TabOption } from '@/components/ui/Tabs';
@@ -57,7 +62,7 @@ function assistantDraftFrom(business: Business): AssistantDraft {
  * Reply template drafts, keyed by the engine's template keys.
  *
  * The keys, labels, placeholders and default wording all come from
- * `GET /settings/templates` — the reply engine's own catalogue. This page used
+ * `GET /settings/templates`, the reply engine's own catalogue. This page used
  * to hold a hand-copied duplicate of all of it, which had to stay byte-identical
  * to the server's with nothing to catch it when it didn't. The API validates
  * keys against that same list, so drift was not cosmetic: it made every save
@@ -66,12 +71,13 @@ function assistantDraftFrom(business: Business): AssistantDraft {
 type ReplyTemplatesDraft = Record<string, string>;
 
 
-type SettingsTab = 'business' | 'assistant' | 'replies' | 'plan';
+type SettingsTab = 'business' | 'assistant' | 'replies' | 'payouts' | 'plan';
 
 const TAB_OPTIONS: readonly TabOption<SettingsTab>[] = [
   { value: 'business', label: 'Business' },
   { value: 'assistant', label: 'Assistant' },
   { value: 'replies', label: 'Automatic replies' },
+  { value: 'payouts', label: 'Payouts' },
   { value: 'plan', label: 'Plan and billing' },
 ];
 
@@ -104,7 +110,7 @@ function resetAllToDefaults(entries: ReplyTemplateEntry[] | undefined): ReplyTem
  *
  * This was one 600-line scroll ending in a Save button. Two consequences: the
  * button was invisible from anywhere you might actually make a change, and the
- * twelve reply templates — the longest and least frequently touched section —
+ * twelve reply templates, the longest and least frequently touched section , 
  * sat between the owner and everything else.
  *
  * It is now three sections, with a save bar that appears only when something is
@@ -127,7 +133,7 @@ export default function SettingsPage(): React.JSX.Element {
   const [confirmingReset, setConfirmingReset] = useState(false);
 
   // Detect a Paystack return. ?billing=return means the user bounced back from
-  // the hosted checkout — refetch so they immediately see the upgraded plan.
+  // the hosted checkout, refetch so they immediately see the upgraded plan.
   // ?billing=cancelled means they bailed before paying.
   const billingReturn = searchParams.get('billing') === 'return';
   const billingCancelled = searchParams.get('billing') === 'cancelled';
@@ -401,17 +407,52 @@ export default function SettingsPage(): React.JSX.Element {
 
           {/* ── Replies ── */}
           {tab === 'assistant' && draftAssistant && (
-            <BusinessProfileForm
-              businessType={draftAssistant.businessType}
-              businessTypeOther={draftAssistant.businessTypeOther}
-              profile={draftAssistant.businessProfile}
-              policyNotes={draftAssistant.businessPolicyNotes}
-              assistMode={draftAssistant.aiAssistMode}
-              catalogueMode={draftAssistant.catalogueMode}
-              onChange={(patch) =>
-                setDraftAssistant((prev) => (prev ? { ...prev, ...patch } : prev))
-              }
-            />
+            <div className="flex flex-col gap-5">
+              <BusinessProfileForm
+                businessType={draftAssistant.businessType}
+                businessTypeOther={draftAssistant.businessTypeOther}
+                profile={draftAssistant.businessProfile}
+                policyNotes={draftAssistant.businessPolicyNotes}
+                assistMode={draftAssistant.aiAssistMode}
+                autonomyAccepted={Boolean(business?.autonomyAcceptedAt)}
+                catalogueMode={draftAssistant.catalogueMode}
+                onChange={(patch) =>
+                  setDraftAssistant((prev) => (prev ? { ...prev, ...patch } : prev))
+                }
+              />
+
+              {/*
+                Sits with the assistant rather than with pricing, because what
+                it changes is what the assistant is allowed to decide. An owner
+                reading this page is asking "what does it do without me", and
+                agreeing a discount is the largest answer on the page.
+              */}
+              <BargainingSettings />
+              <BookingSettings />
+            </div>
+          )}
+
+          {tab === 'payouts' && (
+            <div className="flex flex-col gap-5">
+              {/*
+                Where the shop's money lands is the account holder's alone — the
+                API refuses both the read and the write for anyone else, so
+                rendering the form to staff would only produce a 403 they cannot
+                act on. Branding is not owner-only and stays where it is, which
+                is why this gates the panel rather than the whole tab.
+              */}
+              {isOwner() ? (
+                <PayoutSettings />
+              ) : (
+                <Panel>
+                  <PanelHead title="Payouts" />
+                  <p className="px-4 pb-4 text-sm text-muted">
+                    Only the account owner can see or change where money is paid out.
+                  </p>
+                </Panel>
+              )}
+              <BrandingSettings />
+            </div>
           )}
 
           {tab === 'replies' && (
