@@ -89,6 +89,23 @@ export interface EvaluateDeliveryOptions {
    * see the note on `EnqueueOptions.idempotencyKey`.
    */
   idempotencyKey?: string;
+  /**
+   * Attach a product photo, sending the text as its caption.
+   *
+   * Only honoured inside the 24-hour window. Outside it the send becomes a
+   * template, which cannot carry a free-form image, and the photo is quietly
+   * dropped rather than the message being refused — the customer still gets the
+   * answer, and they will get the picture the moment they reply.
+   */
+  productImageId?: string;
+  /**
+   * An already-uploaded Meta media id to send the text as a caption on.
+   *
+   * Used by receipts, which attach the shop's logo. Like `productImageId` it is
+   * dropped outside the 24-hour window, where a template send cannot carry an
+   * image.
+   */
+  logoMediaId?: string;
 }
 
 /**
@@ -186,7 +203,7 @@ async function ownerRepliedRecently(customerId: string | null): Promise<boolean>
 }
 
 /** The variables a customer template's numbered placeholders stand in for. */
-type TemplateVariableName = 'name' | 'ref' | 'business' | 'amount' | 'reason';
+type TemplateVariableName = 'name' | 'ref' | 'business' | 'amount' | 'reason' | 'details';
 
 export interface CustomerTemplate {
   /** Name the template must be created under in Meta Business Manager. */
@@ -246,6 +263,22 @@ export const CUSTOMER_TEMPLATES: Partial<Record<TemplateKey, CustomerTemplate>> 
     body: 'Your order {{1}} is being packed and prepared for delivery/pickup. — {{2}}',
     variables: ['ref', 'business'],
   },
+  // The status a customer most wants a message about, and the one that was
+  // missing: `template-engine` has mapped DISPATCHED to `order_dispatched`
+  // since the status was added, but there was no template here to find. Outside
+  // the 24-hour window every dispatch notice was refused by Meta as an
+  // unapproved template, and the only trace was a log line.
+  order_dispatched: {
+    name: 'flowdesk_order_dispatched',
+    language: 'en',
+    //
+    // Worded to match `template-engine`'s free-form line exactly, `{details}`
+    // included — the courier and tracking when the shop knows them, empty when
+    // it does not. A customer must read the same sentence whichever channel
+    // carried it, and `wk-customer-templates` asserts that.
+    body: 'Your order {{1}} is on its way. {{2}} — {{3}}',
+    variables: ['ref', 'details', 'business'],
+  },
   order_fulfilled: {
     name: 'flowdesk_order_fulfilled',
     language: 'en',
@@ -281,6 +314,10 @@ const EMPTY_PARAMETER_TEXT: Record<TemplateVariableName, string> = {
   business: 'us',
   amount: '0.00',
   reason: 'No reason was given.',
+  // A shop that dispatched without recording a courier still has a true thing
+  // to say. The free-form path renders this as nothing at all; Meta will not
+  // accept an empty parameter, so it says the plainest true sentence instead.
+  details: 'It should reach you soon.',
 };
 
 /**
@@ -386,6 +423,13 @@ export async function deliverText(
           ? { template: options.templateFallback }
           : {}),
         ...(options.templateKey ? { templateKey: options.templateKey } : {}),
+        // Only inside the window: an image cannot ride on a template send.
+        ...(decision.channel === 'free_form' && options.productImageId
+          ? { productImageId: options.productImageId }
+          : {}),
+        ...(decision.channel === 'free_form' && options.logoMediaId
+          ? { waMediaId: options.logoMediaId }
+          : {}),
         ...(context.relatedOrderId ? { relatedOrderId: context.relatedOrderId } : {}),
         // Automated sends abort if the owner starts replying by hand between now
         // and delivery. Human-initiated sends deliberately carry no such guard.
@@ -487,7 +531,30 @@ export async function notifyOrderStatus(orderId: string, status: OrderStatus): P
     ref: row.referenceNumber,
     reason: row.cancelReason ?? '',
     status: humanizeStatus(status),
+    details: status === 'DISPATCHED' ? await describeShipment(orderId) : '',
   });
+}
+
+/**
+ * The courier and tracking number, as a sentence, or nothing at all.
+ *
+ * Returned as one prebuilt string rather than as two variables because a shop
+ * that dispatches on a motorbike with no waybill would otherwise send "Sent
+ * with  , tracking ." A customer reading that learns less than they would from
+ * silence.
+ */
+async function describeShipment(orderId: string): Promise<string> {
+  const shipment = await prisma.shipment
+    .findUnique({ where: { orderId }, select: { courier: true, trackingNumber: true } })
+    .catch(() => null);
+
+  if (!shipment) return '';
+
+  const { courier, trackingNumber } = shipment;
+  if (courier && trackingNumber) return `Sent with ${courier}, tracking ${trackingNumber}.`;
+  if (courier) return `Sent with ${courier}.`;
+  if (trackingNumber) return `Tracking ${trackingNumber}.`;
+  return '';
 }
 
 /** Replies to a customer asking about an existing order. */
@@ -602,6 +669,41 @@ export async function notifyIntentReply(
  * Free-form reply used when no template applies — currently the "order not
  * found" response to a status check for an unknown reference.
  */
+/**
+ * Sends the assistant's holding line while a draft waits on the owner.
+ *
+ * Deliberately routed through the same `deliverText` as every other free-form
+ * send, so it inherits the owner-takeover gate, the 24-hour window check and
+ * the blacklist — a holding message that talks over an owner already replying
+ * by hand is exactly the failure this gate exists to stop.
+ *
+ * `templateKey` is the template this holding line stands in for, and it is
+ * required rather than optional. The holding line is a substitute for that
+ * reply, not a different kind of message, so it answers to the same switch: an
+ * owner who turned inquiry replies off has said "stop speaking for me", and
+ * honouring that only on the path the assistant happens not to take is the same
+ * as not honouring it at all. Requiring the parameter means the gate cannot be
+ * skipped by forgetting to pass one — the compiler asks instead.
+ *
+ * Keyed on the message id for the same reason the template path is: one
+ * holding line per inbound message, ever.
+ */
+export async function notifyAssistantHold(
+  businessId: string,
+  customerId: string,
+  text: string,
+  messageId: string,
+  templateKey: TemplateKey,
+): Promise<void> {
+  const context = await loadNotificationContext(businessId, customerId);
+  if (!context) return;
+
+  await deliverText(context, text, {
+    templateKey,
+    idempotencyKey: `intent-reply-${messageId}`,
+  });
+}
+
 export async function notifyUnknownOrderReference(
   businessId: string,
   customerId: string,

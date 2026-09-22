@@ -69,6 +69,7 @@ describe('customer templates are shaped the way Meta requires', () => {
     expect(Object.keys(CUSTOMER_TEMPLATES).sort()).toEqual([
       'order_cancelled',
       'order_confirmed',
+      'order_dispatched',
       'order_fulfilled',
       'order_pending',
       'order_processing',
