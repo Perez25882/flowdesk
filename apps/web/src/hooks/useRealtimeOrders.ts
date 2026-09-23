@@ -40,6 +40,10 @@ export function useRealtimeOrders(): void {
     const unsubscribe = sseEventBus.subscribe((event) => {
       if (event.type === 'order.created') {
         queueInvalidate(['orders', 'byStatus']);
+        // The paged list and its tab counts, so a new order appears at the top
+        // of the list without the owner reloading.
+        queueInvalidate(['orders', 'list']);
+        queueInvalidate(['orders', 'counts']);
         queueInvalidate(['orders', 'stats']);
         // Badges & dashboard react to new orders too.
         queueInvalidate(['dashboard', 'badges']);
@@ -50,6 +54,10 @@ export function useRealtimeOrders(): void {
         // detail key resolved to `undefined` and an open drawer never updated.
         const payload = event.payload as OrderUpdatedPayload;
         queueInvalidate(['orders', 'byStatus']);
+        // A status change moves an order between tabs, so both the list and the
+        // counts on every tab can change.
+        queueInvalidate(['orders', 'list']);
+        queueInvalidate(['orders', 'counts']);
         queueInvalidate(['orders', 'stats']);
         queueInvalidate(['orders', 'detail', payload.orderId]);
         // The nav badge counts pending orders, so any transition into or out of

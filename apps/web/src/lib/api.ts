@@ -171,6 +171,20 @@ async function parse<T>(response: Response): Promise<T> {
     return undefined as T;
   }
 
+  const payload = await parseEnvelope<T>(response);
+  return payload.data as T;
+}
+
+/**
+ * The whole response envelope, `meta` included.
+ *
+ * `parse` returns only `data`, which is right for almost every call — but it
+ * also threw away the pagination `meta` on list endpoints, so the dashboard
+ * could not know how many rows existed beyond the page it had. The orders board
+ * fetched a page of 20 per status and silently showed twenty of however many
+ * there were.
+ */
+async function parseEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
   const text = await response.text();
   let payload: ApiEnvelope<T>;
 
@@ -192,7 +206,15 @@ async function parse<T>(response: Response): Promise<T> {
     );
   }
 
-  return payload.data as T;
+  return payload;
+}
+
+/** Pagination details the API attaches to a list response. */
+export interface PageMeta {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
 
 /**
@@ -200,6 +222,27 @@ async function parse<T>(response: Response): Promise<T> {
  * token once if the server reports it has expired.
  */
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return parse<T>(await sendWithRefresh(path, options));
+}
+
+/**
+ * A page of a list, with how many rows exist in total.
+ *
+ * For list endpoints where "there are more" has to be shown. Same auth and
+ * refresh path as `apiFetch`, so the two cannot drift.
+ */
+export async function apiFetchPaged<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<{ data: T; meta: PageMeta }> {
+  const payload = await parseEnvelope<T>(await sendWithRefresh(path, options));
+  return {
+    data: payload.data as T,
+    meta: (payload.meta ?? { page: 1, pageSize: 0, total: 0, totalPages: 0 }) as unknown as PageMeta,
+  };
+}
+
+async function sendWithRefresh(path: string, options: RequestOptions): Promise<Response> {
   let response = await send(path, options, getAccessToken());
 
   if (response.status === 401 && !options.anonymous) {
@@ -217,7 +260,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     }
   }
 
-  return parse<T>(response);
+  return response;
 }
 
 /**

@@ -133,10 +133,19 @@ function buildWhereClause(businessId: string, filters: OrderFilters): Prisma.Ord
   }
 
   if (filters.search) {
+    // Numbers are stored in wire format (233551234567) but owners read and type
+    // them locally (0551234567). Without dropping the leading zero, searching a
+    // number exactly as it appears in their own phone found nothing.
+    const digits = filters.search.replace(/\D/g, '');
+    const national = digits.startsWith('0') ? digits.slice(1) : digits;
+
     where.OR = [
       { referenceNumber: { contains: filters.search, mode: 'insensitive' } },
       { customer: { name: { contains: filters.search, mode: 'insensitive' } } },
-      { customer: { waNumber: { contains: filters.search, mode: 'insensitive' } } },
+      // What was ordered, not only who ordered it. An owner looking for "the
+      // baggy jeans order" searches the product, which matched nothing before.
+      { items: { some: { description: { contains: filters.search, mode: 'insensitive' } } } },
+      ...(national.length >= 3 ? [{ customer: { waNumber: { contains: national } } }] : []),
     ];
   }
 
@@ -375,6 +384,63 @@ export async function listOrders(
     orders: orders as unknown as OrderWithRelations[],
     total,
   };
+}
+
+const ORDER_STATUSES = [
+  'PENDING',
+  'CONFIRMED',
+  'PROCESSING',
+  'DISPATCHED',
+  'FULFILLED',
+  'CANCELLED',
+] as const;
+
+export type StatusCounts = Record<(typeof ORDER_STATUSES)[number] | 'ALL', number>;
+
+/**
+ * Every status with its count, zero-filled, plus the total.
+ *
+ * Zero-filled because a status nobody is in still has to appear as a tab:
+ * dropping it would shift every tab after it and make the strip jump about as
+ * orders move between states.
+ */
+export function fillStatusCounts(
+  rows: Array<{ status: string; _count: { _all: number } }>,
+): StatusCounts {
+  const counts = Object.fromEntries(
+    [...ORDER_STATUSES, 'ALL'].map((status) => [status, 0]),
+  ) as StatusCounts;
+
+  for (const row of rows) {
+    if (row.status in counts && row.status !== 'ALL') {
+      counts[row.status as keyof StatusCounts] = row._count._all;
+      counts.ALL += row._count._all;
+    }
+  }
+  return counts;
+}
+
+/**
+ * How many orders are in each state, under the same filters as the list.
+ *
+ * Built on `buildWhereClause` so a tab's number always matches what clicking
+ * it shows — including under a search or a rider's assignment scope. Status is
+ * left out of the filter on purpose: this is the count FOR each status.
+ *
+ * The board used to derive these from what it had fetched, and it fetched the
+ * API's default page of 20 per status without saying so. A shop with 180
+ * pending orders saw "20", and the rest were on screen nowhere.
+ */
+export async function countOrdersByStatus(
+  businessId: string,
+  filters: Omit<OrderFilters, 'status'>,
+): Promise<StatusCounts> {
+  const rows = await prisma.order.groupBy({
+    by: ['status'],
+    where: buildWhereClause(businessId, filters),
+    _count: { _all: true },
+  });
+  return fillStatusCounts(rows);
 }
 
 export async function assignOrderToStaff(

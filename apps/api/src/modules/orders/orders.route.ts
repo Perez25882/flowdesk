@@ -4,6 +4,7 @@ import { success, created, paginated } from '../../utils/response.js';
 import { ForbiddenError, NotFoundError } from '../../utils/errors.js';
 import type { PaginationMeta } from '../../utils/response.js';
 import {
+  countOrdersByStatus,
   listOrders,
   findOrderById,
   assignOrderToStaff,
@@ -58,6 +59,24 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
     };
 
       return paginated(reply, orders, meta);
+    },
+  );
+
+  // Registered before `/orders/:id` so "counts" is not read as an order id.
+  // Same filters and the same rider scope as the list, so a tab's number is
+  // exactly what clicking it shows.
+  app.get(
+    '/orders/counts',
+    { preHandler: requireCapability('orders.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = ListOrdersQuerySchema.parse(request.query);
+      const counts = await countOrdersByStatus(request.business!.id, {
+        dateFrom: query.dateFrom ? new Date(query.dateFrom) : undefined,
+        dateTo: query.dateTo ? new Date(query.dateTo) : undefined,
+        staffId: assignedStaffScope(request) ?? query.staffId,
+        search: query.search,
+      });
+      return success(reply, counts);
     },
   );
 

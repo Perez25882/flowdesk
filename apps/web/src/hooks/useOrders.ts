@@ -1,11 +1,62 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, apiFetchPaged, type PageMeta } from '@/lib/api';
 import type { OrderWithRelations, OrderStatus, CreateOrderInput, UpdateOrderStatusInput, AssignOrderInput, OrderStats } from '@/types/order';
 
-
-
 const STALE_TIME = 30_000;
+
+/** Rows per page in the orders list. Enough to scan, few enough to load fast on 3G. */
+export const ORDER_PAGE_SIZE = 25;
+
+export type OrderListFilter = OrderStatus | 'ALL';
+
+export type OrderCounts = Record<OrderListFilter, number>;
+
+/**
+ * One page of orders, with how many there are in total.
+ *
+ * Unlike `useOrdersByStatus`, this knows there is more than it fetched. The
+ * previous page stays on screen while the next loads, so paging does not flash
+ * an empty table between clicks.
+ */
+export function useOrderList(params: {
+  status: OrderListFilter;
+  search: string;
+  page: number;
+  staffId?: string | undefined;
+}): UseQueryResult<{ data: OrderWithRelations[]; meta: PageMeta }, Error> {
+  const query = new URLSearchParams({
+    page: String(params.page),
+    pageSize: String(ORDER_PAGE_SIZE),
+  });
+  if (params.status !== 'ALL') query.set('status', params.status);
+  if (params.search.trim()) query.set('search', params.search.trim());
+  if (params.staffId) query.set('staffId', params.staffId);
+
+  return useQuery({
+    queryKey: ['orders', 'list', params.status, params.search, params.page, params.staffId ?? null],
+    queryFn: () => apiFetchPaged<OrderWithRelations[]>(`/orders?${query.toString()}`),
+    placeholderData: keepPreviousData,
+    staleTime: STALE_TIME,
+  });
+}
+
+/** How many orders are in each status, under the same search and staff filter as the list. */
+export function useOrderCounts(params: {
+  search: string;
+  staffId?: string | undefined;
+}): UseQueryResult<OrderCounts, Error> {
+  const query = new URLSearchParams();
+  if (params.search.trim()) query.set('search', params.search.trim());
+  if (params.staffId) query.set('staffId', params.staffId);
+
+  return useQuery({
+    queryKey: ['orders', 'counts', params.search, params.staffId ?? null],
+    queryFn: () => apiFetch<OrderCounts>(`/orders/counts?${query.toString()}`),
+    placeholderData: keepPreviousData,
+    staleTime: STALE_TIME,
+  });
+}
 
 export function useOrdersByStatus(status: OrderStatus, staffId?: string): UseQueryResult<OrderWithRelations[], Error> {
   const params = new URLSearchParams({ status });
