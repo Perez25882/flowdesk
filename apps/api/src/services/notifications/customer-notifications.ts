@@ -6,6 +6,7 @@ import {
   type OutboundTemplate,
 } from '../../queues/outbound.queue.js';
 import { canSendOutbound } from '../plan/plan.service.js';
+import { accountState, assistantMaySpeak, type AccountState } from '../../modules/auth/account-state.js';
 import {
   formatAmount,
   getCustomerFirstName,
@@ -36,11 +37,19 @@ export interface NotificationContext {
   customerName: string | null;
   lastInboundAt: Date | null;
   blacklisted: boolean;
+  /**
+   * Whether the shop is open, paused by its owner, or closed.
+   *
+   * Optional so the places that build a context for a known-open shop need not
+   * each say so; absent reads as open.
+   */
+  accountState?: AccountState;
   relatedOrderId?: string;
 }
 
 /** Why a message was not delivered. Machine-readable so callers can explain it. */
 export type DeliverySuppressionReason =
+  | 'shop_paused'
   | 'blacklisted'
   | 'template_disabled'
   | 'owner_replying'
@@ -121,6 +130,17 @@ export async function evaluateDelivery(
   context: NotificationContext,
   options: EvaluateDeliveryOptions = {},
 ): Promise<DeliveryDecision> {
+  // 0. The shop is paused or closed.
+  //
+  // First, before every other gate, because this is the owner saying "not in my
+  // name". A paused shop still receives messages — customers have no way to
+  // know it is paused — but nothing answers them automatically until the owner
+  // comes back. Answering for a shop that has stepped away is the whole thing
+  // pausing exists to prevent.
+  if (!assistantMaySpeak(context.accountState ?? 'open')) {
+    return { allowed: false, reason: 'shop_paused' };
+  }
+
   // 1. Owner has muted this contact.
   if (context.blacklisted) {
     return { allowed: false, reason: 'blacklisted' };
@@ -163,6 +183,7 @@ export async function evaluateDelivery(
 
 /** Human-readable log line for a suppression, kept next to the reasons themselves. */
 const SUPPRESSION_LOG: Record<DeliverySuppressionReason, string> = {
+  shop_paused: 'Auto-reply suppressed: the owner has paused or closed this shop',
   blacklisted: 'Auto-reply suppressed: customer is blacklisted',
   template_disabled: 'Auto-reply suppressed: template disabled by owner',
   owner_replying:
@@ -622,7 +643,14 @@ export async function loadNotificationContext(
   const [business, customer] = await Promise.all([
     prisma.business.findUnique({
       where: { id: businessId },
-      select: { id: true, name: true, replyTemplates: true },
+      select: {
+        id: true,
+        name: true,
+        replyTemplates: true,
+        active: true,
+        deactivatedAt: true,
+        deletedAt: true,
+      },
     }),
     prisma.customer.findUnique({
       where: { id: customerId },
@@ -641,6 +669,7 @@ export async function loadNotificationContext(
     customerName: customer.name,
     lastInboundAt: customer.lastInboundAt,
     blacklisted: customer.blacklisted,
+    accountState: accountState(business),
   };
 }
 

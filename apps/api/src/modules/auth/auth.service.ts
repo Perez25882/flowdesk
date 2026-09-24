@@ -249,8 +249,28 @@ export async function login(input: LoginInput): Promise<AuthResult> {
     throw new UnauthorizedError('Incorrect email or password');
   }
 
+  // A paused shop is the one "inactive" state the owner may sign in to — it is
+  // the only place they can un-pause from, and a pause nobody can undo is a
+  // deletion with extra steps. Signing in IS the resume, so the pause is
+  // cleared here rather than behind a second button they would have to find.
+  //
+  // `active: false` still refuses, because that is the billing suspension,
+  // which is ours rather than theirs and must not be undone by signing in.
+  // A closed account needs no branch here: `findBusinessByEmail` filters on
+  // `deletedAt: null`, so it is never found and falls out above with the same
+  // "Incorrect email or password" as an unknown address — which is also the
+  // right answer, since confirming a closed account existed tells a stranger
+  // something about someone who has left.
   if (!business.active) {
     throw new UnauthorizedError('This account is inactive');
+  }
+
+  if (business.deactivatedAt) {
+    await prisma.business.update({
+      where: { id: business.id },
+      data: { deactivatedAt: null },
+    });
+    logger.info({ businessId: business.id }, 'Owner signed back in — account resumed');
   }
 
   if (business.suspendedAt) {
@@ -344,6 +364,111 @@ export async function changePassword(
   await revokeEveryPrincipal(businessId);
 
   logger.info({ businessId }, 'Password changed');
+}
+
+/**
+ * Confirms the caller is who they say before something irreversible.
+ *
+ * A signed-in session is not enough for pausing or closing a shop: the device
+ * may be borrowed, lent to staff, or simply left open on a counter. Asking for
+ * the password again is the difference between "someone had this laptop" and
+ * "the owner decided this".
+ */
+async function requirePassword(businessId: string, password: string): Promise<void> {
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: { passwordHash: true },
+  });
+
+  if (!business?.passwordHash) {
+    throw new ValidationError('This account has no password set');
+  }
+
+  if (!(await bcrypt.compare(password, business.passwordHash))) {
+    throw new UnauthorizedError('That password is not correct');
+  }
+}
+
+/**
+ * Pauses the shop. Reversible by signing in.
+ *
+ * Everything is kept — orders, customers, the catalogue, the conversation
+ * history. What stops is the assistant: customers can still write, and nothing
+ * answers them in the shop's name until the owner comes back. Sessions are
+ * revoked so a device left signed in somewhere cannot quietly un-pause it just
+ * by being used.
+ */
+export async function pauseAccount(businessId: string, password: string): Promise<void> {
+  await requirePassword(businessId, password);
+
+  await prisma.business.update({
+    where: { id: businessId },
+    data: { deactivatedAt: new Date() },
+  });
+
+  await deleteAllSessions(businessId);
+  await revokeEveryPrincipal(businessId);
+
+  logger.info({ businessId }, 'Owner paused the account');
+}
+
+/**
+ * Closes the shop for good.
+ *
+ * Marks the account deleted and inactive, which sign-in refuses, then revokes
+ * every session. The subscription is cancelled first: the one thing worse than
+ * losing a customer is continuing to charge them after they have left.
+ *
+ * The rows are retained rather than erased. That is deliberate for now — orders
+ * and payments are another party's financial record too — but it is NOT the
+ * whole of what "delete my account" means under Ghana's Data Protection Act. A
+ * purge of personal data after a retention window still has to be built.
+ */
+export async function closeAccount(businessId: string, password: string): Promise<void> {
+  await requirePassword(businessId, password);
+
+  await cancelSubscriptionForClosure(businessId);
+
+  await prisma.business.update({
+    where: { id: businessId },
+    data: { deletedAt: new Date(), active: false },
+  });
+
+  await deleteAllSessions(businessId);
+  await revokeEveryPrincipal(businessId);
+
+  logger.info({ businessId }, 'Owner closed the account');
+}
+
+/**
+ * Stops the billing before the account goes.
+ *
+ * Never throws: an account the owner has asked to close must close. A
+ * subscription that could not be cancelled is a support ticket, not a reason to
+ * keep someone inside a product they have left.
+ */
+async function cancelSubscriptionForClosure(businessId: string): Promise<void> {
+  try {
+    const business = await prisma.business.findUnique({
+      where: { id: businessId },
+      select: { paystackSubCode: true },
+    });
+
+    if (!business?.paystackSubCode) return;
+
+    const { fetchSubscription, disableSubscription } = await import(
+      '../../services/billing/paystack.js'
+    );
+    const subscription = await fetchSubscription(business.paystackSubCode);
+    if (!subscription) return;
+
+    await disableSubscription(subscription.subscriptionCode, subscription.emailToken);
+  } catch (error: unknown) {
+    logger.error(
+      { error, businessId },
+      'Could not cancel the subscription while closing the account — cancel it by hand',
+    );
+  }
 }
 
 /**

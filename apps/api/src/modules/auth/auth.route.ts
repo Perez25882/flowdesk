@@ -21,6 +21,8 @@ import {
   requestPasswordReset,
   resetPassword,
   changePassword,
+  pauseAccount,
+  closeAccount,
 } from './auth.service.js';
 import {
   RegisterSchema,
@@ -31,6 +33,8 @@ import {
   ResetPasswordSchema,
   ChangePasswordSchema,
   VerifyEmailSchema,
+  PauseAccountSchema,
+  CloseAccountSchema,
 } from './auth.schema.js';
 import {
   clearRefreshCookie,
@@ -227,6 +231,44 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       const body = ChangePasswordSchema.parse(request.body);
       await changePassword(request.user.businessId, body.currentPassword, body.newPassword);
       return success(reply, { message: 'Password changed. Please sign in again.' });
+    },
+  );
+
+  /**
+   * Pauses the shop. The owner un-pauses it by signing back in.
+   *
+   * Owner-only and password-confirmed: it silences the assistant for every
+   * customer, which is not something a borrowed session should be able to do.
+   */
+  app.post(
+    '/auth/account/pause',
+    { preHandler: [requireAuth, attachBusinessContext, requireOwner] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = PauseAccountSchema.parse(request.body);
+      await pauseAccount(request.user.businessId, body.password);
+      clearRefreshCookie(reply);
+      return success(reply, {
+        message: 'Your shop is paused. Sign in again whenever you want to start it back up.',
+      });
+    },
+  );
+
+  /**
+   * Closes the account for good.
+   *
+   * Owner-only, password-confirmed, and requires the word to be typed. The
+   * session ends here rather than being left to expire, because the next thing
+   * this person should see is the sign-in page, not a dashboard for a shop that
+   * no longer exists.
+   */
+  app.post(
+    '/auth/account/close',
+    { preHandler: [requireAuth, attachBusinessContext, requireOwner] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = CloseAccountSchema.parse(request.body);
+      await closeAccount(request.user.businessId, body.password);
+      clearRefreshCookie(reply);
+      return success(reply, { message: 'Your account is closed.' });
     },
   );
 

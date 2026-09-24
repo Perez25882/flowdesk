@@ -77,3 +77,30 @@ export const VerifyEmailSchema = z.object({
     .transform((value) => value.replace(/\s+/g, ''))
     .pipe(z.string().regex(/^\d{6}$/, 'Enter the six digit code from your email')),
 });
+
+/**
+ * Pausing the shop. The password is asked for again on purpose.
+ *
+ * A signed-in session is not proof the OWNER wants this: the laptop may be on a
+ * counter, or lent to staff for the afternoon.
+ */
+export const PauseAccountSchema = z.object({
+  password: z.string().min(1, 'Enter your password to confirm'),
+});
+
+/** The word a closing owner must type. Matched exactly, and never translated. */
+export const CLOSE_ACCOUNT_CONFIRMATION = 'DELETE';
+
+/**
+ * Closing the shop for good.
+ *
+ * Two independent confirmations, because this one cannot be walked back: the
+ * password proves who is asking, and typing the word proves they read what it
+ * does. A single checkbox is how people close accounts by accident.
+ */
+export const CloseAccountSchema = z.object({
+  password: z.string().min(1, 'Enter your password to confirm'),
+  confirmation: z.literal(CLOSE_ACCOUNT_CONFIRMATION, {
+    errorMap: () => ({ message: `Type ${CLOSE_ACCOUNT_CONFIRMATION} to confirm` }),
+  }),
+});

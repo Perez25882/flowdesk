@@ -22,6 +22,7 @@ import WhatsAppConnection from '@/components/settings/WhatsAppConnection';
 import PageHeader from '@/components/shared/PageHeader';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
 import { isOwner } from '@/hooks/useAuth';
+import AccountSettings from '@/components/settings/AccountSettings';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Tabs, type TabOption } from '@/components/ui/Tabs';
@@ -71,7 +72,7 @@ function assistantDraftFrom(business: Business): AssistantDraft {
 type ReplyTemplatesDraft = Record<string, string>;
 
 
-type SettingsTab = 'business' | 'assistant' | 'replies' | 'payouts' | 'plan';
+type SettingsTab = 'business' | 'assistant' | 'replies' | 'payouts' | 'plan' | 'account';
 
 const TAB_OPTIONS: readonly TabOption<SettingsTab>[] = [
   { value: 'business', label: 'Business' },
@@ -79,6 +80,9 @@ const TAB_OPTIONS: readonly TabOption<SettingsTab>[] = [
   { value: 'replies', label: 'Automatic replies' },
   { value: 'payouts', label: 'Payouts' },
   { value: 'plan', label: 'Plan and billing' },
+  // Owner-only: the password, pausing and closing all belong to the account
+  // holder. Staff see five tabs; the owner sees six.
+  ...(isOwner() ? ([{ value: 'account', label: 'Account' }] as const) : []),
 ];
 
 const SETTINGS_TAB_VALUES = TAB_OPTIONS.map((t) => t.value);
@@ -431,6 +435,8 @@ export default function SettingsPage(): React.JSX.Element {
               <BookingSettings />
             </div>
           )}
+
+          {tab === 'account' && isOwner() && <AccountSettings />}
 
           {tab === 'payouts' && (
             <div className="flex flex-col gap-5">

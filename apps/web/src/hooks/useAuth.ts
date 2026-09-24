@@ -135,6 +135,49 @@ export function useChangePassword(): UseMutationResult<
   });
 }
 
+/**
+ * Pausing and closing both end the session on the server, so the client has to
+ * let go of its tokens too — otherwise the dashboard keeps rendering for a shop
+ * that is no longer answering, and every request 401s until something reloads.
+ */
+function endSessionLocally(queryClient: ReturnType<typeof useQueryClient>): void {
+  disconnectRealtime();
+  clearTokens();
+  queryClient.clear();
+}
+
+/** Pauses the shop. Signing back in is what starts it again. */
+export function usePauseAccount(): UseMutationResult<
+  { message: string },
+  Error,
+  { password: string },
+  unknown
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: { password: string }) =>
+      apiFetch<{ message: string }>('/auth/account/pause', { method: 'POST', body: payload }),
+    onSuccess: () => endSessionLocally(queryClient),
+  });
+}
+
+/** Closes the account for good. Requires the password and the typed word. */
+export function useCloseAccount(): UseMutationResult<
+  { message: string },
+  Error,
+  { password: string; confirmation: string },
+  unknown
+> {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: { password: string; confirmation: string }) =>
+      apiFetch<{ message: string }>('/auth/account/close', { method: 'POST', body: payload }),
+    onSuccess: () => endSessionLocally(queryClient),
+  });
+}
+
 export function useLogout(): UseMutationResult<void, Error, void, unknown> {
   const queryClient = useQueryClient();
 
