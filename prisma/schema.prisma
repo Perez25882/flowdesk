@@ -201,6 +201,7 @@ model Business {
   customers          Customer[]
   intentCorrections  IntentCorrection[]
   messages           Message[]
+  whatsappTextReceipts WhatsAppTextReceipt[]
   orders             Order[]
   passwordResets     PasswordResetToken[]
   dailyInsights      DailyInsight[]
@@ -689,6 +690,43 @@ model DailyInsight {
   @@map("daily_insights")
 }
 
+/// Durable ingress for authenticated Meta WhatsApp text messages.
+model WhatsAppTextReceipt {
+  id            String                    @id @default(cuid())
+  phoneNumberId String
+  waMessageId   String
+  businessId    String?
+  sender        String?
+  profileName   String?
+  body          String?
+  sentAt        DateTime
+  replyToWaId   String?
+  status        WhatsAppTextReceiptStatus @default(PENDING)
+  reason        String?
+  attempts      Int                       @default(0)
+  nextAttemptAt DateTime?
+  messageId     String?                   @unique
+  receivedAt    DateTime                  @default(now())
+  finishedAt    DateTime?
+  business      Business?                 @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  message       Message?                  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  // This table is specific to Meta WhatsApp, so the provider is implicit.
+  @@unique([phoneNumberId, waMessageId])
+  @@index([nextAttemptAt, id])
+  @@index([finishedAt])
+  @@index([businessId, status])
+  @@map("whatsapp_text_receipts")
+}
+
+enum WhatsAppTextReceiptStatus {
+  PENDING
+  WAITING_MAPPING
+  WAITING_QUEUE
+  FAILED
+  COMPLETED
+}
+
 /// Every WhatsApp message — inbound and outbound.
 /// The primary record for everything that passes through the system.
 model Message {
@@ -775,6 +813,8 @@ model Message {
   customer         Customer?             @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
+  textReceipt      WhatsAppTextReceipt?
+
   @@index([waMessageId])
   @@index([businessId, processed])
   @@index([businessId, requiresReview])

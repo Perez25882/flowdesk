@@ -1,14 +1,16 @@
 # FlowDesk milestone register
 
-| Milestone                | Status                    | Exit gate                                                                                                                                                                          |
-| ------------------------ | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G0 Engineering kickoff   | Complete                  | Preserved source inventory, executed baseline, five operator traces, prioritized defects and founder review package.                                                               |
-| G1 Execution reliability | Awaiting founder approval | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
-| Operator delivery        | Unscheduled               | Sequence operator increments against the shared workflow contract and owner interface after the G1 reliability gate.                                                               |
+| Milestone                | Status                                               | Exit gate                                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G0 Engineering kickoff   | Complete                                             | Preserved source inventory, executed baseline, five operator traces, prioritized defects and founder review package.                                                               |
+| G1 Execution reliability | G1-01 implemented. Other assignments await approval. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
+| Operator delivery        | Unscheduled                                          | Sequence operator increments against the shared workflow contract and owner interface after the G1 reliability gate.                                                               |
 
 ## Exact first assignment for approval
 
 **G1-01 — Persist and recover signed WhatsApp text events before acknowledgement.**
+
+**Status** Complete locally and ready for founder review. Approval covers G1-01 only. See the [workflow and recovery runbook](g1/whatsapp-text-ingress.md) and [verification record](g1/verification.md).
 
 Start from the G0 baseline on a dedicated branch. Use the existing Fastify route, Prisma/Postgres, BullMQ/Redis, phone-number routing and worker. Add an additive receipt migration and a small dispatcher/recovery path for authenticated inbound WhatsApp **text**. The receipt is keyed by provider, phone-number identity and message ID. Store only the normalized inputs the worker needs and bound retention and retries. A successful response means the supported event is durable or a durable receipt for the same delivery already exists. A failed durable write produces a retryable response.
 

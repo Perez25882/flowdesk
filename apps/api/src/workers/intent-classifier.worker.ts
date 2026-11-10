@@ -20,7 +20,8 @@ import { findOrderByReference } from '../modules/orders/orders.repository.js';
 import { findActiveCatalogProducts } from '../modules/products/products.repository.js';
 import {
   INTENT_CLASSIFICATION_QUEUE_NAME,
-} from './message-processor.worker.js';
+  type IntentClassificationJobData,
+} from '../queues/intent.queue.js';
 import { moveToDeadLetter } from './dead-letter.worker.js';
 import { withTenantSlot } from './tenant-fairness.js';
 
@@ -34,12 +35,6 @@ import { withTenantSlot } from './tenant-fairness.js';
  * keeps one busy shop from taking every slot.
  */
 const WORKER_CONCURRENCY = 10;
-
-interface IntentClassificationJobData {
-  businessId: string;
-  messageId: string;
-  waMessageId: string;
-}
 
 /**
  * Intents the assistant handles instead of a template.

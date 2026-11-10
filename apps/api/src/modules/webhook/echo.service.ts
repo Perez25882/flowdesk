@@ -55,7 +55,9 @@ export async function recordAppEcho(echo: ParsedEchoMessage): Promise<boolean> {
   // queued for one, or the assistant would treat the owner's own words as a
   // customer request.
   await prisma.message.upsert({
-    where: { waMessageId: echo.waMessageId },
+    // A provider ID reused across numbers or directions must never overwrite
+    // an existing inbound receipt's message.
+    where: { waMessageId: echo.waMessageId, businessId, direction: MessageDirection.OUTBOUND },
     create: {
       businessId,
       customerId: customer.id,

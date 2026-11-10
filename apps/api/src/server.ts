@@ -11,6 +11,7 @@ import { outboundWorker } from './workers/outbound.worker.js';
 import { deadLetterWorker } from './workers/dead-letter.worker.js';
 import { insightsWorker } from './workers/insights.worker.js';
 import { scheduleDailyInsights } from './queues/insights.queue.js';
+import { startTextReceiptWorker } from './workers/text-receipt.worker.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -46,6 +47,7 @@ async function startServer(): Promise<void> {
     logger.error({ error }, 'Failed to install the daily summary schedule');
   });
 
+  const stopTextReceipts = env.WHATSAPP_TEXT_DISPATCH_ENABLED ? startTextReceiptWorker() : undefined;
   let isShuttingDown = false;
 
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -63,6 +65,7 @@ async function startServer(): Promise<void> {
 
     try {
       await app.close();
+      await stopTextReceipts?.();
       await drainQueues();
       await stopSSEFanout();
       await disconnectRedis();

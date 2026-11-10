@@ -105,6 +105,30 @@ vi.mock('../src/modules/orders/orders.service.js', () => ({
   createOrderFromMessage: mocks.createOrderFromMessage,
 }));
 
+// The durable receipt and its Postgres/BullMQ handoff have their own real
+// integration suite. Here the adapter feeds the in-memory worker pipeline so
+// these tests continue to exercise classification and outbound behavior.
+vi.mock('../src/modules/webhook/text-receipts.js', async () => {
+  const { incomingMessagesQueue } = await import('../src/queues/message.queue.js');
+  return {
+    acceptTextReceipts: async (messages: import('../src/modules/webhook/webhook.types.js').ParsedIncomingMessage[]) => {
+      for (const message of messages) {
+        await incomingMessagesQueue.add(
+          // @ts-expect-error BullMQ v5 type inference issue
+          'process-incoming-message',
+          {
+            businessPhoneNumberId: message.businessPhoneNumberId,
+            waMessageId: message.waMessageId,
+            message,
+            receivedAt: new Date().toISOString(),
+          },
+          { jobId: `msg-${message.waMessageId}` },
+        );
+      }
+    },
+  };
+});
+
 const { default: webhookRoutes } = await import('../src/modules/webhook/webhook.route.js');
 const { deliverText, loadNotificationContext } = await import(
   '../src/services/notifications/customer-notifications.js'
@@ -154,7 +178,7 @@ function withBody(payload: MetaWebhookPayload, body: string): MetaWebhookPayload
 
 async function deliverWebhook(payload: MetaWebhookPayload): Promise<{
   statusCode: number;
-  body: { data: { processed: number; enqueued: number; echoed: number } };
+  body: { data: { processed: number; acceptedText: number; enqueued: number; echoed: number } };
 }> {
   const raw = JSON.stringify(payload);
   const signature = createHmac('sha256', process.env.META_WEBHOOK_SECRET!)
@@ -254,7 +278,7 @@ describe('a text order message, webhook to WhatsApp', () => {
 
     const response = await deliverWebhook(asJustArrived(textMessagePayload));
     expect(response.statusCode).toBe(200);
-    expect(response.body.data).toEqual({ processed: 1, enqueued: 1, echoed: 0 });
+    expect(response.body.data).toEqual({ processed: 1, acceptedText: 1, enqueued: 0, echoed: 0 });
 
     await queues.drain();
 
@@ -346,8 +370,8 @@ describe('the same webhook delivered twice', () => {
 
     await queues.drain();
 
-    expect(first.body.data).toEqual({ processed: 1, enqueued: 1, echoed: 0 });
-    expect(second.body.data).toEqual({ processed: 1, enqueued: 0, echoed: 0 });
+    expect(first.body.data).toEqual({ processed: 1, acceptedText: 1, enqueued: 0, echoed: 0 });
+    expect(second.body.data).toEqual({ processed: 1, acceptedText: 1, enqueued: 0, echoed: 0 });
 
     expect(queues.added('incoming-messages')).toHaveLength(1);
     expect(db.table('message').filter((row) => row.waMessageId === WA_MESSAGE_ID)).toHaveLength(1);

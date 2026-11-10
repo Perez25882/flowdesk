@@ -6,6 +6,7 @@ import type {
   MetaEchoMessage,
   MetaMedia,
   MetaMessage,
+  MetaWebhookChange,
   MetaWebhookPayload,
   ParsedEchoMessage,
   ParsedIncomingMessage,
@@ -13,6 +14,7 @@ import type {
 } from './webhook.types.js';
 
 const SIGNATURE_PREFIX = 'sha256=';
+const MAX_TIMESTAMP_SECONDS = 253_402_300_799; // End of year 9999.
 
 function parseSignature(signature: string): Buffer | null {
   if (!signature.startsWith(SIGNATURE_PREFIX)) {
@@ -95,7 +97,7 @@ export function extractMessageType(message: MetaMessage): MessageType {
 }
 
 function findContact(contacts: MetaContact[] | undefined, waId: string): MetaContact | undefined {
-  return contacts?.find((contact) => contact.wa_id === waId);
+  return Array.isArray(contacts) ? contacts.find((contact) => contact?.wa_id === waId) : undefined;
 }
 
 function extractBody(message: MetaMessage): string | undefined {
@@ -179,41 +181,85 @@ function extractReaction(message: MetaMessage): ParsedIncomingMessage['reaction'
   };
 }
 
-export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncomingMessage[] {
+function webhookChanges(payload: MetaWebhookPayload): MetaWebhookChange[] {
+  if (!Array.isArray(payload?.entry)) return [];
   return payload.entry.flatMap((entry) =>
-    entry.changes.flatMap((change) => {
-      if (change.field !== 'messages' || !change.value.messages) {
+    Array.isArray(entry?.changes) ? entry.changes.filter((change) => change?.value) : [],
+  );
+}
+
+function isIdentifier(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    Buffer.byteLength(value) <= 512 &&
+    !value.includes('\0')
+  );
+}
+
+function parseTimestamp(value: unknown): Date | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds > 0 && seconds <= MAX_TIMESTAMP_SECONDS ? new Date(seconds * 1000) : null;
+}
+
+export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncomingMessage[] {
+  return webhookChanges(payload).flatMap((change) => {
+    const phoneNumberId = change.value.metadata?.phone_number_id;
+    if (
+      change.field !== 'messages' ||
+      !Array.isArray(change.value.messages) ||
+      !isIdentifier(phoneNumberId)
+    ) {
+      return [];
+    }
+
+    return change.value.messages.flatMap((message) => {
+      if (
+        !isIdentifier(message?.id) ||
+        typeof message.from !== 'string' ||
+        !/\d/.test(message.from)
+      ) {
         return [];
       }
+      const timestamp = parseTimestamp(message.timestamp);
+      if (!timestamp) return [];
+      if (message.type === 'text' && typeof message.text?.body !== 'string') return [];
 
-      return change.value.messages.map((message) => {
-        const contact = findContact(change.value.contacts, message.from);
+      const contact = findContact(change.value.contacts, message.from);
+      const name = contact?.profile?.name;
 
-        return {
-          businessPhoneNumberId: change.value.metadata.phone_number_id,
-          displayPhoneNumber: change.value.metadata.display_phone_number,
-          waMessageId: message.id,
-          from: message.from,
-          profileName: contact?.profile.name,
-          timestamp: new Date(Number(message.timestamp) * 1000),
-          type: extractMessageType(message),
-          body: extractBody(message),
-          media: extractMedia(message),
-          reaction: extractReaction(message),
-          // What they were replying to, when they were replying to anything.
-          //
-          // Meta sets `context.id` on a quoted reply and on a reply to a Status
-          // the owner posted from the Business app. That second case is a whole
-          // sales channel for Ghanaian shops — post the goods to Status, field
-          // the replies — and it arrives here as a bare "how much?" unless this
-          // id is carried through. It was in the payload all along and was being
-          // dropped one line before it could be used.
-          replyToWaId: message.context?.id ?? null,
-          rawPayload: message,
-        };
-      });
-    }),
-  );
+      try {
+        return [
+          {
+            businessPhoneNumberId: phoneNumberId,
+            displayPhoneNumber: change.value.metadata.display_phone_number,
+            waMessageId: message.id,
+            from: message.from,
+            profileName: typeof name === 'string' ? name : undefined,
+            timestamp,
+            type: extractMessageType(message),
+            body: extractBody(message),
+            media: extractMedia(message),
+            reaction: extractReaction(message),
+            // What they were replying to, when they were replying to anything.
+            //
+            // Meta sets `context.id` on a quoted reply and on a reply to a Status
+            // the owner posted from the Business app. That second case is a whole
+            // sales channel for Ghanaian shops — post the goods to Status, field
+            // the replies — and it arrives here as a bare "how much?" unless this
+            // id is carried through. It was in the payload all along and was being
+            // dropped one line before it could be used.
+            replyToWaId: isIdentifier(message.context?.id) ? message.context.id : null,
+            rawPayload: message,
+          },
+        ];
+      } catch {
+        // A malformed member must not erase valid messages in the same batch.
+        return [];
+      }
+    });
+  });
 }
 
 /**
@@ -224,33 +270,41 @@ export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncoming
  * assistant would reply on top of a human who had already handled it.
  */
 export function parseEchoPayload(payload: MetaWebhookPayload): ParsedEchoMessage[] {
-  return payload.entry.flatMap((entry) =>
-    entry.changes.flatMap((change) => {
-      if (change.field !== 'smb_message_echoes' || !change.value.message_echoes) {
+  return webhookChanges(payload).flatMap((change) => {
+    if (
+      change.field !== 'smb_message_echoes' ||
+      !Array.isArray(change.value.message_echoes) ||
+      !isIdentifier(change.value.metadata?.phone_number_id)
+    ) {
+      return [];
+    }
+
+    return change.value.message_echoes.flatMap((echo: MetaEchoMessage) => {
+      // An echo with no recipient cannot be attributed to a conversation.
+      if (!isIdentifier(echo?.id) || typeof echo.to !== 'string' || !/\d/.test(echo.to)) {
         return [];
       }
+      const timestamp = parseTimestamp(echo.timestamp);
+      if (!timestamp) return [];
 
-      return change.value.message_echoes.flatMap((echo: MetaEchoMessage) => {
-        // An echo with no recipient cannot be attributed to a conversation.
-        if (!echo.to) {
-          return [];
-        }
-
+      try {
         return [
           {
             businessPhoneNumberId: change.value.metadata.phone_number_id,
             displayPhoneNumber: change.value.metadata.display_phone_number,
             waMessageId: echo.id,
             to: echo.to,
-            timestamp: new Date(Number(echo.timestamp) * 1000),
+            timestamp,
             type: extractMessageType(echo),
             body: extractBody(echo),
             rawPayload: echo,
           },
         ];
-      });
-    }),
-  );
+      } catch {
+        return [];
+      }
+    });
+  });
 }
 
 /**
@@ -268,14 +322,12 @@ const HANDLED_FIELDS = new Set(['messages', 'smb_message_echoes']);
 export function describeUnhandledFields(
   payload: MetaWebhookPayload,
 ): Array<{ field: string; valueKeys: string[] }> {
-  return payload.entry.flatMap((entry) =>
-    entry.changes
-      .filter((change) => !HANDLED_FIELDS.has(change.field))
-      .map((change) => ({
-        field: change.field,
-        valueKeys: Object.keys(change.value ?? {}),
-      })),
-  );
+  return webhookChanges(payload)
+    .filter((change) => !HANDLED_FIELDS.has(change.field))
+    .map((change) => ({
+      field: change.field,
+      valueKeys: Object.keys(change.value ?? {}),
+    }));
 }
 
 export function handleVerification(params: WebhookVerificationParams): string | null {

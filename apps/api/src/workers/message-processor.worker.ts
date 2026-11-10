@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/node';
-import { Queue, Worker } from 'bullmq';
+import { Worker } from 'bullmq';
 import { MessageDirection, MessageType, OrderStatus, Prisma } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { env } from '../config/env.js';
@@ -17,32 +17,14 @@ import {
   type MessageJobData,
 } from '../queues/message.queue.js';
 import { moveToDeadLetter } from './dead-letter.worker.js';
+import { createIntentClassificationQueue } from '../queues/intent.queue.js';
 
-export const INTENT_CLASSIFICATION_QUEUE_NAME = 'intent-classification';
 const WORKER_CONCURRENCY = 2;
 
-interface IntentClassificationJobData {
-  businessId: string;
-  messageId: string;
-  waMessageId: string;
-}
-
-const intentClassificationQueue = new Queue<IntentClassificationJobData, unknown, string>(
-  INTENT_CLASSIFICATION_QUEUE_NAME,
-  {
-    // @ts-expect-error ioredis v5.11.0 vs BullMQ bundled v5.10.1 type mismatch
-    connection: redis,
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 1_000,
-      },
-      removeOnComplete: 100,
-      removeOnFail: false,
-    },
-  },
-);
+const intentClassificationQueue = createIntentClassificationQueue({
+  // @ts-expect-error ioredis v5.11.0 vs BullMQ bundled v5.10.1 type mismatch
+  connection: redis,
+});
 
 if (env.SENTRY_DSN) {
   Sentry.init({
@@ -314,6 +296,9 @@ async function processMessage(jobData: MessageJobData): Promise<void> {
   const message = await prisma.message.upsert({
     where: {
       waMessageId: jobData.waMessageId,
+      businessId,
+      direction: MessageDirection.INBOUND,
+      type: jobData.message.type,
     },
     create: messageCreate,
     update: messageUpdate,
@@ -356,7 +341,6 @@ async function processMessage(jobData: MessageJobData): Promise<void> {
   // previously those were never enqueued at all and stayed "unprocessed"
   // forever, permanently inflating the review queue.
   await intentClassificationQueue.add(
-    // @ts-expect-error BullMQ v5 type inference issue — NameType resolves incorrectly despite explicit generic
     'classify-message-intent',
     {
       businessId,
@@ -428,6 +412,9 @@ messageProcessorWorker.on('failed', async (job, error) => {
     await prisma.message.updateMany({
       where: {
         waMessageId: job.data.waMessageId,
+        direction: MessageDirection.INBOUND,
+        type: job.data.message.type,
+        business: { waPhoneNumberId: job.data.businessPhoneNumberId },
       },
       data: {
         processingError: error.message,

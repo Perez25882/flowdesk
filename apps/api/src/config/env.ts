@@ -110,6 +110,7 @@ const envSchema = z.object({
   // Meta Embedded Signup configuration id. Only needed for self-serve
   // WhatsApp onboarding; account signup itself uses email + password.
   META_CONFIG_ID: optionalString,
+  WHATSAPP_TEXT_DISPATCH_ENABLED: booleanFromString.default(true),
 
   // ── AI / Intent classification ──────────────────────────────────────────
   // Absent = rule engine only. The rule engine handles ~80% of traffic, so the

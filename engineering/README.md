@@ -2,14 +2,16 @@
 
 This directory contains the versioned engineering record. It is separate from the private, ignored `docs/` directory in existing checkouts.
 
-| Record                                                    | Purpose                                                              |
-| --------------------------------------------------------- | -------------------------------------------------------------------- |
-| [G0 source and verification baseline](g0/baseline.md)     | Source selection, preserved work, commands, results and reproduction |
-| [G0 architecture and inventory](g0/architecture.md)       | Runtime topology, integration boundaries and data ownership          |
-| [Five operators and feature disposition](g0/operators.md) | Current journeys, disposition and gaps                               |
-| [G0 defect register](g0/defects.md)                       | Reproductions, source findings, impact and priority                  |
-| [Milestone register and G1 assignments](milestones.md)    | Gates, dependencies and acceptance tests                             |
-| [Architecture decisions](adr/README.md)                   | Accepted constraints and decisions awaiting approval                 |
+| Record                                                     | Purpose                                                              |
+| ---------------------------------------------------------- | -------------------------------------------------------------------- |
+| [G0 source and verification baseline](g0/baseline.md)      | Source selection, preserved work, commands, results and reproduction |
+| [G0 architecture and inventory](g0/architecture.md)        | Runtime topology, integration boundaries and data ownership          |
+| [Five operators and feature disposition](g0/operators.md)  | Current journeys, disposition and gaps                               |
+| [G0 defect register](g0/defects.md)                        | Reproductions, source findings, impact and priority                  |
+| [Milestone register and G1 assignments](milestones.md)     | Gates, dependencies and acceptance tests                             |
+| [Architecture decisions](adr/README.md)                    | Accepted constraints and decisions awaiting approval                 |
+| [G1-01 WhatsApp text ingress](g1/whatsapp-text-ingress.md) | Workflow contract, migration and recovery                            |
+| [G1-01 verification](g1/verification.md)                   | Executed commands, results and boundaries                            |
 
 ## Engineering conventions
 
