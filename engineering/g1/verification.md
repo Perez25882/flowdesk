@@ -1,5 +1,59 @@
 # G1-01 verification record
 
+## Final sign-off verification — 2026-11-10
+
+**Recommendation — PASS.** G1-01 is **VERIFIED** for the approved local acceptance scope. Founder sign-off is pending.
+
+### Source and isolation
+
+- Branch `codex/g1-01-whatsapp-ingress`, tested HEAD `7fa54655588e9f6a2888d6521ff50cdd516320e8`. `git status --porcelain=v1 -b` showed a clean worktree. The full `eb7ebde..7fa5465` diff covered 22 files, with 1,546 insertions and 206 deletions. `git diff --check eb7ebde..7fa5465` exited 0.
+- Review covered the raw-body signature and receipt route, Prisma schema and migration, tenant binding, locked dispatch and BullMQ handoff, retention and recovery contract, worker startup and shutdown, and all receipt and legacy acceptance tests. Application code, migration, and tests stayed at the tested revision during sign-off.
+- Windows ran Node 20.19.0, pnpm 9.12.0, PostgreSQL 17.10 and the Redis-compatible Memurai 8.1.240.0. Each receipt run started a newly initialized PostgreSQL cluster and separate Redis instance. The loopback port pairs were `63290/63291`, `63569/63570`, and `63838/63839`. Smoke used its own database cloned from the pristine migrated schema and Redis database 1. Receipt tests used database 0.
+- Database URLs and provider settings came from synthetic fixtures. The runners cleared inherited service settings and restricted Node sockets and fetch to loopback. The smoke script received a temporary LF-terminated `.env` containing only its synthetic webhook secret. No real customer credentials, provider accounts, or production systems were accessed.
+
+### Exact commands and results
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `pnpm db:generate` | 0 | Generated Prisma Client 5.22.0. |
+| `pnpm db:migrate` and `pnpm exec prisma migrate status --schema prisma/schema.prisma` | 0, 0 on each of 3 fixtures | All 25 migrations applied independently to each empty database. All three reported the schema current. |
+| Receipt run 1 and legacy tests, command below | 0 | 35 passed across 4 files. Included all 15 receipt tests and 20 legacy tests. |
+| Receipt repeats 2 and 3, command below | 0, 0 | 15 passed on each fresh fixture. Zero failures and zero skips in the receipt runs. |
+| `git archive --format=zip --output=$archive 541b7b8 prisma` and `pnpm exec prisma migrate deploy --schema $schema` with the archived G0 schema | 0, 0 | Applied 24 G0 migrations to a separate upgrade database. |
+| `pnpm db:migrate` and `pnpm exec prisma migrate status --schema prisma/schema.prisma` on the seeded upgrade database | 0, 0 | Applied only `20261109090000_whatsapp_text_receipts`. Synthetic seed and post-migration Prisma assertion commands both exited 0. |
+| `pnpm build` | 0 | All 3 build tasks passed with cache bypass. Existing Browserslist data warning. |
+| `pnpm typecheck` | 0 | All 4 tasks passed with cache bypass. |
+| `pnpm lint` | 1 | API and shared passed. The only error was the inherited web `no-console` finding at [ErrorBoundary.tsx line 40](../../apps/web/src/components/shared/ErrorBoundary.tsx#L40). |
+| `pnpm test` | 0 | 987 passed in 73 API files. The 15 opt-in cases were skipped in this command and passed in the three live fixture runs. Web and shared have zero test files. |
+| `node --import tsx src/server.ts` from `apps/api`, then `curl.exe --noproxy '*' -sf --max-time 3 "$env:API_URL/health"` | HTTP 200 | Disposable API reported PostgreSQL and Redis connected. |
+| `pnpm smoke` | 1 | 43 passed and 6 failed, matching G0. Signed ingress created a GHS 966 order, and two-tenant WhatsApp routing passed. |
+
+```powershell
+# Run 1
+pnpm --filter @flowdesk/api exec vitest run tests/whatsapp-text-receipts.integration.test.ts tests/webhook-echo.test.ts tests/wk-pipeline.integration.test.ts tests/momo-message-processor.test.ts --maxWorkers=1 --minWorkers=1 --testTimeout=30000
+
+# Runs 2 and 3, each on a new PostgreSQL cluster and Redis instance
+pnpm --filter @flowdesk/api exec vitest run tests/whatsapp-text-receipts.integration.test.ts --maxWorkers=1 --minWorkers=1 --testTimeout=30000
+```
+
+Workspace commands ran with `CI=true`, `TURBO_FORCE=true`, and `NODE_ENV=test`. Smoke used `NODE_ENV=development`. For upgrade assertions, `node --input-type=module -e` seeded and then verified one synthetic business, its customer, one processed inbound text and one pending inbound text. The assertion checked IDs, content, phone mapping, ownership and processed flags, and verified the receipt table started empty. Here `$archive` is the temporary G0 ZIP and `$schema` is its extracted `prisma/schema.prisma`.
+
+### Acceptance and regression assessment
+
+| Approved criterion | Evidence on the final code |
+| --- | --- |
+| Authenticated text and durable acknowledgement | Invalid HMAC produced 401 with zero receipt or job. Valid text produced 200 with a committed receipt before dispatch. |
+| Storage failure and queue recovery | A real PostgreSQL insert failure returned 503 and rolled back the batch. A real Redis write rejection left a waiting receipt that recovered without redelivery. |
+| Crash, replay and concurrency | A child process was killed before enqueue and after enqueue before database commit. Both paths recovered. Redis job eviction was covered using a persisted processing marker. Eight concurrent HTTP requests and five competing recovery passes converged to one receipt, message and classification job. |
+| Batch and tenant isolation | Valid text, audio and echo survived malformed siblings. A foreign tenant's provider ID collision created no customer or message for that tenant and left the original job unchanged. Inactive, unbound and reassigned numbers, stale events and bounded requeue were exercised. |
+| Migration safety and unrelated events | Three empty migration chains and one seeded G0 upgrade passed. Twenty legacy webhook, echo and message-processing cases passed. |
+
+No receipt timeout, concurrency mismatch, or cleanup failure recurred in the final runs. The earlier implementation-time failures remain recorded below. `git diff --exit-code 541b7b8 7fa5465 -- apps/web/src/components/shared/ErrorBoundary.tsx apps/api/scripts/smoke-test.mjs` exited 0. The six inherited smoke failures were the invite-token assertion, the Starter product-limit assertion, and a provider health timeout with three dependent checks. The live credential-rejection response was outside the loopback-only run.
+
+**LIMITED** Live Meta behavior, hosted routing, production-scale and multi-replica behavior, and full Redis data loss after a recorded classification handoff remain unverified. This recommendation covers G1-01 local acceptance. The branch remains local pending founder approval.
+
+## Implementation-time evidence
+
 The implementation branch is `codex/g1-01-whatsapp-ingress`. Its parent is the G0 documentation commit `eb7ebde`, with audited application source `541b7b8`. The original worktree and existing refs were preserved. Verification used Windows, Node 20.19.0, pnpm 9.12.0, PostgreSQL 17.10 and Memurai 8.1.240.0 on disposable loopback ports. The runtime used synthetic credentials and an egress guard. No provider account or deployed environment was accessed.
 
 ## Executed commands and exit codes
