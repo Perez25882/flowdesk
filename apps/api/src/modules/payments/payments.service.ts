@@ -10,9 +10,6 @@ import type {
 } from './payments.schema.js';
 import * as repository from './payments.repository.js';
 import { clearScreenshotReviewFlag } from './screenshot-claims.js';
-import { findCustomerById } from '../customers/customers.repository.js';
-import { findOrderById } from '../orders/orders.repository.js';
-import { logActivity } from '../staff/staff-activity.repository.js';
 import { getArchivedMedia, type ArchivedMedia } from '../../services/s3/media.js';
 
 export async function logPayment(
@@ -20,20 +17,6 @@ export async function logPayment(
   businessId: string,
   loggedById: string | null,
 ): Promise<repository.PaymentWithCustomer> {
-  // Both lookups are tenant-scoped, so a caller cannot attach a payment to
-  // another business's customer or order by guessing an id.
-  const customer = await findCustomerById(data.customerId, businessId);
-  if (!customer) {
-    throw new NotFoundError('Customer not found');
-  }
-
-  if (data.orderId) {
-    const order = await findOrderById(data.orderId, businessId);
-    if (!order) {
-      throw new NotFoundError('Order not found');
-    }
-  }
-
   const payment = await repository.createPayment(data, businessId, loggedById);
 
   if (payment.confidence !== 'CLAIMED') {
@@ -54,14 +37,6 @@ export async function logPayment(
       await notifyPaymentReceived(payment.id);
       await notifyOwnerPaymentRecorded(payment.id);
     }
-
-    await logActivity({
-      staffId: loggedById ?? 'owner',
-      action: payment.direction === 'OUT' ? 'payment.refunded' : 'payment.logged',
-      resourceId: payment.id,
-      resourceType: 'payment',
-      note: `${payment.direction === 'OUT' ? 'Refund' : 'Payment'} of GHS ${Number(payment.amount).toFixed(2)} logged`,
-    }).catch(() => {});
   }
 
   return payment;
@@ -70,23 +45,8 @@ export async function logPayment(
 export async function attestPayment(
   paymentId: string,
   businessId: string,
-  attestedBy: string,
+  attestedBy: string | null,
 ): Promise<repository.PaymentWithCustomer> {
-  const payment = await repository.findPaymentById(paymentId, businessId);
-  if (!payment) {
-    throw new NotFoundError('Payment not found');
-  }
-
-  // A claim recorded from a screenshot has no amount yet. Attesting it as it
-  // stands would write GHS 0.00 into the customer's record and send them a
-  // receipt saying so — a false statement in the one artefact a dispute turns
-  // on. Those go through `confirmPayment`, which makes someone read the figure.
-  if (Number(payment.amount) <= 0) {
-    throw new ValidationError(
-      'This claim has no amount yet — confirm it with the amount shown on the screenshot',
-    );
-  }
-
   const attested = await repository.attestPaymentWithSideEffects(paymentId, businessId, attestedBy);
   if (!attested) {
     // The conditional claim did not land: someone else attested it, or it was
@@ -94,7 +54,7 @@ export async function attestPayment(
     throw new ValidationError('Payment has already been attested or voided');
   }
 
-  await announceAttestation(attested, businessId, attestedBy, 'attested as received');
+  await announceAttestation(attested, businessId);
 
   return attested;
 }
@@ -112,22 +72,8 @@ export async function confirmPayment(
   paymentId: string,
   businessId: string,
   data: ConfirmPaymentInput,
-  confirmedBy: string,
+  confirmedBy: string | null,
 ): Promise<repository.PaymentWithCustomer> {
-  const payment = await repository.findPaymentById(paymentId, businessId);
-  if (!payment) {
-    throw new NotFoundError('Payment not found');
-  }
-
-  // Tenant-scoped, so a caller cannot attach a claim to another business's
-  // order by guessing an id.
-  if (data.orderId) {
-    const order = await findOrderById(data.orderId, businessId);
-    if (!order) {
-      throw new NotFoundError('Order not found');
-    }
-  }
-
   const confirmed = await repository.confirmClaimWithSideEffects(
     paymentId,
     businessId,
@@ -142,7 +88,7 @@ export async function confirmPayment(
     await clearScreenshotReviewFlag(businessId, confirmed.screenshotKey);
   }
 
-  await announceAttestation(confirmed, businessId, confirmedBy, 'confirmed from a screenshot');
+  await announceAttestation(confirmed, businessId);
 
   return confirmed;
 }
@@ -157,8 +103,6 @@ export async function confirmPayment(
 async function announceAttestation(
   payment: repository.PaymentWithCustomer,
   businessId: string,
-  actor: string,
-  what: string,
 ): Promise<void> {
   // See the matching guard in logPayment: a refund (direction OUT) must never
   // trigger the customer-facing "payment received" notice or the confirmed
@@ -172,14 +116,6 @@ async function announceAttestation(
     });
   }
 
-  await logActivity({
-    staffId: actor,
-    action: 'payment.attested',
-    resourceId: payment.id,
-    resourceType: 'payment',
-    note: `Payment of GHS ${Number(payment.amount).toFixed(2)} ${what}`,
-  }).catch(() => {});
-
   if (payment.direction === 'IN') {
     await notifyPaymentReceived(payment.id);
     await notifyOwnerPaymentRecorded(payment.id);
@@ -189,16 +125,11 @@ async function announceAttestation(
 export async function voidPayment(
   paymentId: string,
   businessId: string,
-  voidedBy: string,
+  voidedBy: string | null,
   reason: string,
 ): Promise<void> {
-  const payment = await repository.findPaymentById(paymentId, businessId);
+  const payment = await repository.voidPayment(paymentId, businessId, voidedBy, reason);
   if (!payment) {
-    throw new NotFoundError('Payment not found');
-  }
-
-  const didVoid = await repository.voidPayment(paymentId, businessId, voidedBy, reason);
-  if (!didVoid) {
     throw new ValidationError('Payment is already voided');
   }
 
@@ -207,14 +138,6 @@ export async function voidPayment(
   if (payment.screenshotKey) {
     await clearScreenshotReviewFlag(businessId, payment.screenshotKey);
   }
-
-  await logActivity({
-    staffId: voidedBy,
-    action: 'payment.voided',
-    resourceId: paymentId,
-    resourceType: 'payment',
-    note: `Payment of GHS ${Number(payment.amount).toFixed(2)} voided: ${reason}`,
-  }).catch(() => {});
 }
 
 /**

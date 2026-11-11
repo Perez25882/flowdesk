@@ -34,7 +34,7 @@ export async function requestPaymentForOrder(
 ): Promise<boolean> {
   try {
     const order = await prisma.order.findFirst({
-      where: { id: orderId, businessId },
+      where: { id: orderId, businessId, customerId, deletedAt: null },
       select: { totalAmount: true, amountPaid: true, referenceNumber: true },
     });
 
@@ -80,10 +80,8 @@ export async function requestPaymentForOrder(
           .filter((part) => part.length > 0)
           .join('\n'),
       },
-      // No staff member raised this. Recorded as null rather than attributed to
-      // the owner, because the audit trail should not say a person did
-      // something a machine did.
-      null,
+      // This call represents the assistant. Null represents a human owner.
+      undefined,
     );
 
     logger.info(
@@ -128,7 +126,7 @@ export async function requestPaymentForOpenOrder(
     // The most recent order still owed on. Cancelled orders are not owed, and
     // an old settled order is not what "how do I pay" is asking about.
     const order = await prisma.order.findFirst({
-      where: { businessId, customerId, status: { not: 'CANCELLED' } },
+      where: { businessId, customerId, deletedAt: null, status: { not: 'CANCELLED' } },
       orderBy: { createdAt: 'desc' },
       select: { id: true, referenceNumber: true, totalAmount: true, amountPaid: true },
     });
@@ -138,7 +136,7 @@ export async function requestPaymentForOpenOrder(
     const outstanding = Number(order.totalAmount) - Number(order.amountPaid);
     if (outstanding <= 0) return false;
 
-    const open = await findOpenRequestForOrder(businessId, order.id, outstanding);
+    const open = await findOpenRequestForOrder(businessId, order.id, outstanding, customerId);
     if (open) {
       logger.info(
         { businessId, orderId: order.id, reference: open.reference },

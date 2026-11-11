@@ -2,8 +2,11 @@ import { prisma } from '../../config/database.js';
 import { Prisma, type PaymentMethod } from '@prisma/client';
 import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
-import { recalculateCustomerTotals } from '../customers/customers.repository.js';
+import { lockCustomerForTotals, recalculateCustomerTotals } from '../customers/customers.repository.js';
 import type { ConfirmPaymentInput } from './payments.schema.js';
+import { NotFoundError, ValidationError } from '../../utils/errors.js';
+import { logActivity } from '../staff/staff-activity.repository.js';
+import { lockPaymentRelationship, requirePaymentActor, type PaymentRelationship } from './payment-relationships.js';
 
 /**
  * What counts as money, as a Prisma filter.
@@ -41,6 +44,9 @@ export async function createPayment(
   loggedById: string | null,
 ): Promise<PaymentWithCustomer> {
   return prisma.$transaction(async (tx) => {
+    await requirePaymentActor(tx, businessId, loggedById, 'payments.create');
+    if (data.attested) await requirePaymentActor(tx, businessId, loggedById, 'payments.verify');
+    await lockPaymentRelationship(tx, { ...data, businessId });
     const payment = await tx.payment.create({
       data: {
         businessId,
@@ -53,30 +59,28 @@ export async function createPayment(
         notes: data.notes ?? null,
         loggedById,
         confidence: data.attested ? 'SELLER_ATTESTED' : 'CLAIMED',
-        // The owner has no staff row, so `loggedById` is null when the owner
-        // logs their own attested payment — the dominant write path. Falling
-        // back to 'owner' here matches the attest/void routes
-        // (`request.user?.staffId ?? 'owner'`) so tier-1 attestations always
-        // name an attester instead of silently recording NULL for the actor
-        // whose word the tier is supposed to rest on.
+        // The ledger retains the existing owner marker for an attestation.
+        // Owner activity records the business and has no staff foreign key.
         attestedBy: data.attested ? (loggedById ?? 'owner') : null,
         attestedAt: data.attested ? new Date() : null,
-      },
-      include: {
-        customer: { select: { id: true, name: true, waNumber: true } },
-        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
       },
     });
 
     // Only attested money moves totals, so they are refreshed only then.
     if (data.attested) {
       if (payment.orderId) {
-        await recalculateOrderPaid(payment.orderId, tx);
+        await recalculateOrderPaid(payment, tx);
       }
       await recalculateCustomerTotals(payment.customerId, tx);
     }
 
-    return payment as unknown as PaymentWithCustomer;
+    const action = data.attested ? (data.direction === 'OUT' ? 'payment.refunded' : 'payment.logged') : 'payment.claimed';
+    await logActivity({
+      staffId: loggedById, businessId, action, resourceId: payment.id, resourceType: 'payment',
+      note: `${data.direction === 'OUT' ? 'Refund' : 'Payment'} of GHS ${payment.amount.toFixed(2)} logged`,
+    }, tx);
+
+    return readWrittenPayment(tx, payment.id);
   });
 }
 
@@ -104,6 +108,7 @@ export async function createGatewayPayment(
   },
 ): Promise<PaymentWithCustomer> {
   return prisma.$transaction(async (tx) => {
+    await lockPaymentRelationship(tx, { ...data, businessId });
     const payment = await tx.payment.create({
       data: {
         businessId,
@@ -121,29 +126,15 @@ export async function createGatewayPayment(
         attestedBy: 'paystack',
         attestedAt: new Date(),
       },
-      include: {
-        customer: { select: { id: true, name: true, waNumber: true } },
-        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
-      },
     });
 
     if (payment.orderId) {
-      await recalculateOrderPaid(payment.orderId, tx);
+      await recalculateOrderPaid(payment, tx);
     }
     await recalculateCustomerTotals(payment.customerId, tx);
 
-    return payment as unknown as PaymentWithCustomer;
+    return readWrittenPayment(tx, payment.id);
   });
-}
-
-export async function findPaymentById(id: string, businessId: string): Promise<PaymentWithCustomer | null> {
-  const payment = await prisma.payment.findFirst({
-    where: { id, businessId },
-    include: {
-      customer: { select: { id: true, name: true, waNumber: true } },
-    },
-  });
-  return payment as PaymentWithCustomer | null;
 }
 
 export async function listPayments(
@@ -211,22 +202,53 @@ export async function listPayments(
  * transaction holds a single connection and concurrent queries on it are not safe.
  */
 async function recalculateOrderPaid(
-  orderId: string,
+  { orderId, businessId, customerId }: PaymentRelationship,
   tx: Prisma.TransactionClient,
 ): Promise<void> {
+  if (orderId === null || orderId === undefined) return;
+  const scope = { orderId, businessId, customerId, ...ATTESTED_PAYMENT };
   const received = await tx.payment.aggregate({
-    where: { orderId, direction: 'IN', ...ATTESTED_PAYMENT },
+    where: { ...scope, direction: 'IN' },
     _sum: { amount: true },
   });
   const refunded = await tx.payment.aggregate({
-    where: { orderId, direction: 'OUT', ...ATTESTED_PAYMENT },
+    where: { ...scope, direction: 'OUT' },
     _sum: { amount: true },
   });
 
   const net = (received._sum.amount ?? new Prisma.Decimal(0))
     .sub(refunded._sum.amount ?? new Prisma.Decimal(0));
 
-  await tx.order.update({ where: { id: orderId }, data: { amountPaid: net } });
+  await tx.order.update({ where: { id: orderId, businessId, customerId }, data: { amountPaid: net } });
+}
+
+async function readWrittenPayment(tx: Prisma.TransactionClient, id: string): Promise<PaymentWithCustomer> {
+  const payment = await tx.payment.findUniqueOrThrow({
+    where: { id },
+    include: {
+      customer: { select: { id: true, name: true, waNumber: true } },
+      order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
+    },
+  });
+  return payment as unknown as PaymentWithCustomer;
+}
+
+async function lockPayment(tx: Prisma.TransactionClient, id: string, businessId: string) {
+  const identity = await tx.payment.findFirst({ where: { id, businessId }, select: { customerId: true } });
+  if (!identity) throw new NotFoundError('Payment not found');
+  if (!(await lockCustomerForTotals(tx, identity.customerId, businessId))) {
+    throw new NotFoundError('Customer not found');
+  }
+  const [payment] = await tx.$queryRaw<Array<{
+    customerId: string; orderId: string | null; confidence: PaymentConfidence;
+    voidedAt: Date | null; amount: Prisma.Decimal;
+  }>>`
+    SELECT "customerId", "orderId", confidence::text AS confidence, "voidedAt", amount FROM payments
+    WHERE id = ${id} AND "businessId" = ${businessId} AND "customerId" = ${identity.customerId}
+    FOR UPDATE
+  `;
+  if (!payment) throw new NotFoundError('Payment not found');
+  return { ...payment, businessId };
 }
 
 /**
@@ -239,30 +261,24 @@ async function recalculateOrderPaid(
 export async function attestPaymentWithSideEffects(
   paymentId: string,
   businessId: string,
-  attestedBy: string,
+  staffId: string | null,
 ): Promise<PaymentWithCustomer | null> {
   return prisma.$transaction(async (tx) => {
+    await requirePaymentActor(tx, businessId, staffId, 'payments.verify');
+    const payment = await lockPayment(tx, paymentId, businessId);
+    if (payment.confidence !== 'CLAIMED' || payment.voidedAt) return null;
+    if (payment.amount.lte(0)) {
+      throw new ValidationError('This claim has no amount yet — confirm it with the amount shown on the screenshot');
+    }
+    await lockPaymentRelationship(tx, payment);
     const claimed = await tx.payment.updateMany({
       where: { id: paymentId, businessId, confidence: 'CLAIMED', voidedAt: null },
-      data: { confidence: 'SELLER_ATTESTED', attestedBy, attestedAt: new Date() },
+      data: { confidence: 'SELLER_ATTESTED', attestedBy: staffId ?? 'owner', attestedAt: new Date() },
     });
 
     if (claimed.count !== 1) return null;
 
-    const updated = await tx.payment.findUniqueOrThrow({
-      where: { id: paymentId },
-      include: {
-        customer: { select: { id: true, name: true, waNumber: true } },
-        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
-      },
-    });
-
-    if (updated.orderId) {
-      await recalculateOrderPaid(updated.orderId, tx);
-    }
-    await recalculateCustomerTotals(updated.customerId, tx);
-
-    return updated as unknown as PaymentWithCustomer;
+    return finishAttestation(tx, paymentId, payment, staffId, 'attested as received');
   });
 }
 
@@ -279,28 +295,28 @@ export async function attestPaymentWithSideEffects(
 export async function voidPayment(
   id: string,
   businessId: string,
-  voidedBy: string,
+  staffId: string | null,
   reason: string,
-): Promise<boolean> {
+): Promise<{ screenshotKey: string | null } | null> {
   return prisma.$transaction(async (tx) => {
+    await requirePaymentActor(tx, businessId, staffId, 'payments.void');
+    const payment = await lockPayment(tx, id, businessId);
+    if (payment.voidedAt) return null;
+    await lockPaymentRelationship(tx, payment, true);
     const claimed = await tx.payment.updateMany({
       where: { id, businessId, voidedAt: null },
-      data: { voidedAt: new Date(), voidedBy, voidReason: reason },
+      data: { voidedAt: new Date(), voidedBy: staffId ?? 'owner', voidReason: reason },
     });
 
-    if (claimed.count !== 1) return false;
+    if (claimed.count !== 1) return null;
 
-    const payment = await tx.payment.findUniqueOrThrow({
-      where: { id },
-      select: { customerId: true, orderId: true },
-    });
-
-    if (payment.orderId) {
-      await recalculateOrderPaid(payment.orderId, tx);
-    }
+    await recalculateOrderPaid(payment, tx);
     await recalculateCustomerTotals(payment.customerId, tx);
-
-    return true;
+    await logActivity({
+      staffId, businessId, action: 'payment.voided', resourceId: id, resourceType: 'payment',
+      note: `Payment of GHS ${payment.amount.toFixed(2)} voided: ${reason}`,
+    }, tx);
+    return tx.payment.findUniqueOrThrow({ where: { id }, select: { screenshotKey: true } });
   });
 }
 
@@ -501,13 +517,15 @@ export async function confirmClaimWithSideEffects(
   paymentId: string,
   businessId: string,
   data: ConfirmPaymentInput,
-  attestedBy: string,
+  staffId: string | null,
 ): Promise<PaymentWithCustomer | null> {
   return prisma.$transaction(async (tx) => {
-    const previous = await tx.payment.findFirst({
-      where: { id: paymentId, businessId },
-      select: { orderId: true },
-    });
+    await requirePaymentActor(tx, businessId, staffId, 'payments.verify');
+    const previous = await lockPayment(tx, paymentId, businessId);
+    if (previous.confidence !== 'CLAIMED' || previous.voidedAt) return null;
+    const orderId = data.orderId === undefined ? previous.orderId : data.orderId;
+    const relationship = { businessId, customerId: previous.customerId, orderId };
+    await lockPaymentRelationship(tx, relationship);
 
     const claimed = await tx.payment.updateMany({
       where: { id: paymentId, businessId, confidence: 'CLAIMED', voidedAt: null },
@@ -515,34 +533,33 @@ export async function confirmClaimWithSideEffects(
         amount: new Prisma.Decimal(data.amount),
         method: data.method,
         confidence: 'SELLER_ATTESTED',
-        attestedBy,
+        attestedBy: staffId ?? 'owner',
         attestedAt: new Date(),
-        ...(data.orderId !== undefined ? { orderId: data.orderId } : {}),
+        orderId,
         ...(data.reference !== undefined ? { reference: data.reference } : {}),
       },
     });
 
     if (claimed.count !== 1) return null;
 
-    const updated = await tx.payment.findUniqueOrThrow({
-      where: { id: paymentId },
-      include: {
-        customer: { select: { id: true, name: true, waNumber: true } },
-        order: { select: { id: true, referenceNumber: true, amountPaid: true, totalAmount: true } },
-      },
-    });
-
-    // A claim can be attached to an order at the moment it is confirmed, so the
-    // order it left has to be recomputed too — otherwise the old order keeps
-    // credit for money that has just been moved onto a different one.
-    if (previous?.orderId && previous.orderId !== updated.orderId) {
-      await recalculateOrderPaid(previous.orderId, tx);
-    }
-    if (updated.orderId) {
-      await recalculateOrderPaid(updated.orderId, tx);
-    }
-    await recalculateCustomerTotals(updated.customerId, tx);
-
-    return updated as unknown as PaymentWithCustomer;
+    return finishAttestation(tx, paymentId, relationship, staffId, 'confirmed from a claim');
   });
+}
+
+async function finishAttestation(
+  tx: Prisma.TransactionClient,
+  paymentId: string,
+  relationship: PaymentRelationship,
+  staffId: string | null,
+  detail: string,
+): Promise<PaymentWithCustomer> {
+  await recalculateOrderPaid(relationship, tx);
+  await recalculateCustomerTotals(relationship.customerId, tx);
+  const payment = await readWrittenPayment(tx, paymentId);
+  await logActivity({
+    staffId, businessId: relationship.businessId, action: 'payment.attested',
+    resourceId: paymentId, resourceType: 'payment',
+    note: `Payment of GHS ${payment.amount.toFixed(2)} ${detail}`,
+  }, tx);
+  return payment;
 }

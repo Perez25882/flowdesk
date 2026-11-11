@@ -64,7 +64,7 @@ export default async function paymentRoutes(app: FastifyInstance): Promise<void>
     { preHandler: requireCapability('payments.create') },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
-      await links.cancelPaymentLink(id, request.business!.id);
+      await links.cancelPaymentLink(id, request.business!.id, request.user?.staffId ?? null);
       return reply.status(204).send();
     },
   );
@@ -164,7 +164,7 @@ export default async function paymentRoutes(app: FastifyInstance): Promise<void>
         id,
         request.business!.id,
         data,
-        request.user?.staffId ?? 'owner',
+        request.user?.staffId ?? null,
       );
       return success(reply, payment);
     },
@@ -194,7 +194,7 @@ export default async function paymentRoutes(app: FastifyInstance): Promise<void>
       const payment = await service.attestPayment(
         id,
         request.business!.id,
-        request.user?.staffId ?? 'owner',
+        request.user?.staffId ?? null,
       );
       return success(reply, payment);
     },
@@ -209,7 +209,7 @@ export default async function paymentRoutes(app: FastifyInstance): Promise<void>
       await service.voidPayment(
         id,
         request.business!.id,
-        request.user?.staffId ?? 'owner',
+        request.user?.staffId ?? null,
         reason,
       );
       return reply.status(204).send();

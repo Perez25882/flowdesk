@@ -301,12 +301,12 @@ fixtureOnly('G1-02 delivery authorization with real PostgreSQL', () => {
         method: 'CASH', confidence: 'GATEWAY_CONFIRMED', amount: 24.56,
       },
     });
-    await prisma.payment.create({
+    await expect(prisma.payment.create({
       data: {
         businessId: foreignOwner.businessId, customerId: customers.get(foreignOwner.businessId)!, orderId: own.id,
         method: 'CASH', confidence: 'GATEWAY_CONFIRMED', amount: 999.99,
       },
-    });
+    })).rejects.toMatchObject({ code: 'P2003' });
 
     const scope = `?staffId=${other.staffId}`;
     const list = await request(assigned, 'GET', `/orders${scope}`);

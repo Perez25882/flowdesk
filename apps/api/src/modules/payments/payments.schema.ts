@@ -20,7 +20,7 @@ export const PaymentConfidenceSchema = z.enum([
 
 export const CreatePaymentSchema = z.object({
   customerId: z.string().min(1),
-  orderId: z.string().optional(),
+  orderId: z.string().min(1).optional(),
   // Bounded to keep a mistyped amount from corrupting a customer's balance.
   amount: z.coerce.number().positive().max(10_000_000),
   method: PaymentMethodSchema,
@@ -47,7 +47,7 @@ export const CreatePaymentSchema = z.object({
 export const ConfirmPaymentSchema = z.object({
   amount: z.coerce.number().positive().max(10_000_000),
   method: PaymentMethodSchema,
-  orderId: z.string().optional(),
+  orderId: z.string().min(1).nullable().optional(),
   reference: z.string().max(200).optional(),
 });
 
@@ -99,7 +99,7 @@ export type ListPaymentsQueryInput = z.infer<typeof ListPaymentsQuerySchema>;
 
 export const CreatePaymentLinkSchema = z.object({
   customerId: z.string().min(1),
-  orderId: z.string().optional(),
+  orderId: z.string().min(1).optional(),
   amount: z.coerce.number().positive().max(1_000_000),
   /** Send it on WhatsApp now. Default true — a link nobody sees is not a link. */
   send: z.boolean().default(true),

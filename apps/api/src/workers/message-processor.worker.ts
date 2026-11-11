@@ -195,7 +195,7 @@ async function handleInboundImage(
   });
 
   if (assessment.flagged) {
-    await attachScreenshotArchive(businessId, archiveKey, archive.url);
+    await attachScreenshotArchive(businessId, customerId, archiveKey, archive.url);
     return;
   }
 

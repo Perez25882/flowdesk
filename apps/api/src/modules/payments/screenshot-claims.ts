@@ -1,6 +1,8 @@
 import { Prisma, PaymentMethod } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
+import { ValidationError } from '../../utils/errors.js';
+import { lockPaymentRelationship } from './payment-relationships.js';
 
 /**
  * Turning a flagged MoMo screenshot into something the owner can act on.
@@ -80,24 +82,12 @@ export interface ScreenshotClaimResult {
  * from the WhatsApp message id, so it is the same string on every replay and a
  * lookup on it is what keeps one screenshot from becoming three claims.
  *
- * That check is a read followed by a write, so two workers racing the same
- * message could still both insert. The proper fix is a unique index — see the
- * note in the handover — but the failure mode without it is one extra row in the
- * review queue for the owner to dismiss, not money counted twice: a CLAIMED row
- * moves no totals, and confirming one does not confirm the other.
+ * Lock the per-tenant image identity before looking for or writing its claim.
+ * The lock works for existing keys, including historical duplicate rows.
  */
 export async function recordScreenshotClaim(
   input: ScreenshotClaimInput,
 ): Promise<ScreenshotClaimResult> {
-  const existing = await prisma.payment.findFirst({
-    where: { businessId: input.businessId, screenshotKey: input.screenshotKey },
-    select: { id: true },
-  });
-
-  if (existing) {
-    return { paymentId: existing.id, created: false };
-  }
-
   const data: Prisma.PaymentUncheckedCreateInput = {
     businessId: input.businessId,
     customerId: input.customerId,
@@ -110,11 +100,27 @@ export async function recordScreenshotClaim(
     ...(input.screenshotUrl !== undefined ? { screenshotUrl: input.screenshotUrl } : {}),
   };
 
-  const payment = await prisma.payment.create({ data, select: { id: true } });
+  const result = await prisma.$transaction(async (tx) => {
+    const identity = JSON.stringify([input.businessId, input.screenshotKey]);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`;
+    await lockPaymentRelationship(tx, input);
+    const existing = await tx.payment.findFirst({
+      where: { businessId: input.businessId, screenshotKey: input.screenshotKey },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, customerId: true },
+    });
+    if (existing) {
+      if (existing.customerId !== input.customerId) throw new ValidationError('Screenshot claim belongs to a different customer');
+      return { paymentId: existing.id, created: false };
+    }
+    const payment = await tx.payment.create({ data, select: { id: true } });
+    return { paymentId: payment.id, created: true };
+  });
+  if (!result.created) return result;
 
   logger.info(
     {
-      paymentId: payment.id,
+      paymentId: result.paymentId,
       businessId: input.businessId,
       customerId: input.customerId,
       detectionConfidence: input.detectionConfidence,
@@ -122,7 +128,7 @@ export async function recordScreenshotClaim(
     'Recorded a payment claim from a MoMo screenshot',
   );
 
-  return { paymentId: payment.id, created: true };
+  return result;
 }
 
 /**
@@ -135,11 +141,12 @@ export async function recordScreenshotClaim(
  */
 export async function attachScreenshotArchive(
   businessId: string,
+  customerId: string,
   screenshotKey: string,
   screenshotUrl: string,
 ): Promise<void> {
   await prisma.payment.updateMany({
-    where: { businessId, screenshotKey },
+    where: { businessId, customerId, customer: { businessId }, screenshotKey },
     data: { screenshotUrl },
   });
 }

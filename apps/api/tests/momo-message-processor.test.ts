@@ -174,6 +174,7 @@ describe('inbound images once archived', () => {
     expect(mocks.recordScreenshotClaim).toHaveBeenCalledTimes(1);
     expect(mocks.attachScreenshotArchive).toHaveBeenCalledWith(
       'biz_1',
+      'cust_1',
       ARCHIVE_KEY,
       'https://bucket.s3.eu-west-1.amazonaws.com/x.jpeg',
     );

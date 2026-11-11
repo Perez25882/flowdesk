@@ -17,16 +17,19 @@ const mocks = vi.hoisted(() => ({
   messageUpdate: vi.fn(),
 }));
 
-vi.mock('../src/config/database.js', () => ({
-  prisma: {
+vi.mock('../src/config/database.js', () => {
+  const db = {
     payment: {
       findFirst: mocks.paymentFindFirst,
       create: mocks.paymentCreate,
       updateMany: mocks.paymentUpdateMany,
     },
     message: { findFirst: mocks.messageFindFirst, update: mocks.messageUpdate },
-  },
-}));
+    $executeRaw: vi.fn(),
+    $queryRaw: vi.fn().mockResolvedValue([{ businessId: 'biz_1', deletedAt: null }]),
+  };
+  return { prisma: { ...db, $transaction: (work: (tx: typeof db) => unknown) => work(db) } };
+});
 
 const {
   attachScreenshotArchive,
@@ -71,7 +74,7 @@ describe('recordScreenshotClaim', () => {
   });
 
   it('does not record a second claim when the same message is processed again', async () => {
-    mocks.paymentFindFirst.mockResolvedValue({ id: 'pay_1' });
+    mocks.paymentFindFirst.mockResolvedValue({ id: 'pay_1', customerId: CLAIM.customerId });
 
     const result = await recordScreenshotClaim(CLAIM);
 
@@ -107,10 +110,10 @@ describe('guessMethodFromCaption', () => {
 
 describe('attachScreenshotArchive', () => {
   it('is scoped to the tenant as well as the key', async () => {
-    await attachScreenshotArchive('biz_1', SCREENSHOT_KEY, 'https://bucket/x.jpeg');
+    await attachScreenshotArchive('biz_1', CLAIM.customerId, SCREENSHOT_KEY, 'https://bucket/x.jpeg');
 
     expect(mocks.paymentUpdateMany).toHaveBeenCalledWith({
-      where: { businessId: 'biz_1', screenshotKey: SCREENSHOT_KEY },
+      where: { businessId: 'biz_1', customerId: CLAIM.customerId, customer: { businessId: 'biz_1' }, screenshotKey: SCREENSHOT_KEY },
       data: { screenshotUrl: 'https://bucket/x.jpeg' },
     });
   });

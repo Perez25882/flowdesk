@@ -140,9 +140,11 @@ export async function getStaffActivity(
   staffId: string,
   businessId: string,
 ): Promise<StaffActivityEntry[]> {
-  return prisma.staffActivity.findMany({
+  const rows = await prisma.staffActivity.findMany({
     where: { staffId, staff: { businessId } },
+    select: { id: true, action: true, resourceType: true, resourceId: true, note: true, createdAt: true },
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
+  return rows.map((row) => ({ ...row, staffId }));
 }

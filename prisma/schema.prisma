@@ -216,6 +216,7 @@ model Business {
   emailOtps          EmailOtp[]
   shipments          Shipment[]
   staff              Staff[]
+  staffActivities    StaffActivity[]
   stockMovements     StockMovement[]
 
   @@index([phone])
@@ -311,6 +312,7 @@ model Customer {
   appointments       Appointment[]
 
   @@unique([businessId, waNumber])
+  @@unique([id, businessId])
   @@index([businessId])
   @@index([businessId, waNumber])
   @@index([businessId, lastInteractionAt(sort: Desc)])
@@ -374,6 +376,7 @@ model Order {
   shipment        Shipment?
 
   @@unique([businessId, referenceNumber])
+  @@unique([id, businessId, customerId])
   @@index([businessId])
   @@index([businessId, status])
   @@index([businessId, createdAt(sort: Desc)])
@@ -584,6 +587,7 @@ model Payment {
   @@index([businessId, customerId])
   @@index([businessId, orderId])
   @@unique([businessId, sourceMessageId])
+  @@unique([id, businessId, customerId])
   @@index([businessId, confidence])
   @@index([businessId, voidedAt])
   @@index([businessId, screenshotKey])
@@ -884,17 +888,21 @@ model Staff {
 /// Immutable log of staff actions for owner audit trail.
 model StaffActivity {
   id           String   @id @default(cuid())
-  staffId      String
+  staffId      String?
+  /// Required by financial writes. Legacy staff-only activity remains readable.
+  businessId   String?
   action       String
   resourceId   String?
   resourceType String?
   note         String?
   createdAt    DateTime @default(now())
-  staff        Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  staff        Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  business     Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@index([staffId])
   @@index([staffId, createdAt(sort: Desc)])
   @@index([resourceType, resourceId])
+  @@index([businessId, createdAt(sort: Desc)])
   @@map("staff_activity")
 }
 

@@ -14,6 +14,19 @@ import type { UpdateCustomerInput, ListCustomersQueryInput } from './customers.s
  */
 const BILLABLE_STATUSES = ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] as const;
 
+export async function lockCustomerForTotals(
+  tx: Prisma.TransactionClient,
+  customerId: string,
+  businessId?: string,
+): Promise<{ businessId: string; deletedAt: Date | null } | undefined> {
+  const scope = businessId === undefined ? Prisma.empty : Prisma.sql`AND "businessId" = ${businessId}`;
+  const [customer] = await tx.$queryRaw<Array<{ businessId: string; deletedAt: Date | null }>>`
+    SELECT "businessId", "deletedAt" FROM customers WHERE id = ${customerId} ${scope}
+    FOR NO KEY UPDATE
+  `;
+  return customer;
+}
+
 /**
  * Recomputes a customer's denormalised totals from the underlying orders and
  * payments, and writes them back.
@@ -30,7 +43,18 @@ export async function recalculateCustomerTotals(
   customerId: string,
   tx?: Prisma.TransactionClient,
 ): Promise<void> {
-  const db = tx ?? prisma;
+  if (!tx) {
+    await prisma.$transaction((db) => recalculateCustomerTotals(customerId, db));
+    return;
+  }
+  const db = tx;
+  const customer = await lockCustomerForTotals(db, customerId);
+  if (!customer) throw new NotFoundError('Customer not found');
+  const { businessId } = customer;
+  const paymentScope = {
+    businessId, customerId, confidence: { not: 'CLAIMED' }, voidedAt: null,
+    OR: [{ orderId: null }, { order: { businessId, customerId } }],
+  } satisfies Prisma.PaymentWhereInput;
 
   // The where-clause below is written out longhand rather than importing
   // ATTESTED_PAYMENT from payments.repository.ts: that file already imports
@@ -38,20 +62,20 @@ export async function recalculateCustomerTotals(
   // circular dependency. Keep the two in step by hand.
   const [billable, received, refunded, orderCount, firstOrder] = await Promise.all([
     db.order.aggregate({
-      where: { customerId, deletedAt: null, status: { in: [...BILLABLE_STATUSES] } },
+      where: { businessId, customerId, deletedAt: null, status: { in: [...BILLABLE_STATUSES] } },
       _sum: { totalAmount: true },
     }),
     db.payment.aggregate({
-      where: { customerId, direction: 'IN', confidence: { not: 'CLAIMED' }, voidedAt: null },
+      where: { ...paymentScope, direction: 'IN' },
       _sum: { amount: true },
     }),
     db.payment.aggregate({
-      where: { customerId, direction: 'OUT', confidence: { not: 'CLAIMED' }, voidedAt: null },
+      where: { ...paymentScope, direction: 'OUT' },
       _sum: { amount: true },
     }),
-    db.order.count({ where: { customerId, deletedAt: null } }),
+    db.order.count({ where: { businessId, customerId, deletedAt: null } }),
     db.order.findFirst({
-      where: { customerId, deletedAt: null },
+      where: { businessId, customerId, deletedAt: null },
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true },
     }),

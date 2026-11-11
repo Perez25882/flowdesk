@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { PaymentMethod } from '@prisma/client';
+import type { PaymentMethod, Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { env, features } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
@@ -16,6 +16,8 @@ import {
 import { sendPaymentReceipt } from '../../services/notifications/receipts.js';
 import { createGatewayPayment } from './payments.repository.js';
 import * as repository from './payment-links.repository.js';
+import { lockPaymentRelationship, requirePaymentActor } from './payment-relationships.js';
+import { logActivity } from '../staff/staff-activity.repository.js';
 
 /**
  * Payment links: asking a customer for money, and recognising it when it lands.
@@ -115,13 +117,13 @@ interface PayoutReadyBusiness {
  * would be owed money by us, which is exactly the arrangement this design
  * exists to avoid.
  */
-async function requirePayoutReady(businessId: string): Promise<PayoutReadyBusiness> {
+async function requirePayoutReady(businessId: string, tx: Prisma.TransactionClient): Promise<PayoutReadyBusiness> {
   if (!features.billing) {
     throw new ValidationError('Card and mobile money payments are not configured on this deployment.');
   }
 
-  const business = await prisma.business.findUnique({
-    where: { id: businessId },
+  const business = await tx.business.findFirst({
+    where: { id: businessId, deletedAt: null, active: true },
     select: {
       id: true,
       name: true,
@@ -170,10 +172,8 @@ export interface CreateLinkInput {
 export async function createPaymentLink(
   businessId: string,
   input: CreateLinkInput,
-  staffId: string | null,
+  staffId: string | null | undefined,
 ): Promise<PaymentLinkView> {
-  const business = await requirePayoutReady(businessId);
-
   if (!Number.isFinite(input.amount) || input.amount < MIN_AMOUNT) {
     throw new ValidationError(`A payment link has to be for at least GHS ${MIN_AMOUNT}.`);
   }
@@ -181,31 +181,36 @@ export async function createPaymentLink(
     throw new ValidationError('That amount is too large for a single payment link.');
   }
 
-  const customer = await prisma.customer.findFirst({
-    where: { id: input.customerId, businessId },
-    select: { id: true, waNumber: true, name: true },
-  });
-  if (!customer) throw new NotFoundError('Customer not found');
-
-  if (input.orderId) {
-    const order = await prisma.order.findFirst({
-      where: { id: input.orderId, businessId },
-      select: { id: true },
-    });
-    if (!order) throw new NotFoundError('Order not found');
-
-    const existing = await repository.findOpenRequestForOrder(
-      businessId,
-      input.orderId,
-      input.amount,
-    );
-
-    if (existing) {
-      if (input.send) await sendLinkToCustomer(businessId, existing, input.message ?? null);
-      return toView(existing);
+  const row = await prisma.$transaction(async (tx) => {
+    await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
+    await lockPaymentRelationship(tx, { ...input, businessId });
+    const business = await requirePayoutReady(businessId, tx);
+    if (input.orderId) {
+      const existing = await repository.findOpenRequestForOrder(
+        businessId, input.orderId, input.amount, input.customerId, tx,
+      );
+      if (existing) return existing;
     }
-  }
+    const created = await initializePaymentRequest(tx, business, input, staffId ?? null);
+    if (staffId !== undefined) {
+      await logActivity({
+        staffId, businessId, action: 'payment.link_created', resourceId: created.id, resourceType: 'payment_request',
+      }, tx);
+    }
+    return created;
+  }, { timeout: 15_000 }); // The provider call has a 10-second timeout.
 
+  if (input.send) await sendLinkToCustomer(businessId, row, input.message ?? null);
+  return toView(row);
+}
+
+async function initializePaymentRequest(
+  tx: Prisma.TransactionClient,
+  business: PayoutReadyBusiness,
+  input: CreateLinkInput,
+  staffId: string | null,
+): Promise<repository.PaymentRequestRow> {
+  const businessId = business.id;
   const reference = newReference();
   const commission = commissionPercentFor(business.commissionPercent);
 
@@ -223,7 +228,7 @@ export async function createPaymentLink(
     ...(env.PAYSTACK_CALLBACK_URL ? { callbackUrl: env.PAYSTACK_CALLBACK_URL } : {}),
     metadata: {
       flowdeskBusinessId: businessId,
-      flowdeskCustomerId: customer.id,
+      flowdeskCustomerId: input.customerId,
       ...(input.orderId ? { flowdeskOrderId: input.orderId } : {}),
       custom_fields: [
         { display_name: 'Shop', variable_name: 'shop', value: business.name },
@@ -233,7 +238,7 @@ export async function createPaymentLink(
 
   const row = await repository.createPaymentRequest({
     businessId,
-    customerId: customer.id,
+    customerId: input.customerId,
     orderId: input.orderId ?? null,
     amount: input.amount,
     reference,
@@ -245,16 +250,14 @@ export async function createPaymentLink(
     platformFee: Math.round(input.amount * commission) / 100,
     expiresAt: new Date(Date.now() + LINK_TTL_MS),
     createdByStaffId: staffId,
-  });
+  }, tx);
 
   logger.info(
     { businessId, reference, amount: input.amount, orderId: input.orderId ?? null },
     'Payment link created',
   );
 
-  if (input.send) await sendLinkToCustomer(businessId, row, input.message ?? null);
-
-  return toView(row);
+  return row;
 }
 
 /**
@@ -265,7 +268,7 @@ export async function createPaymentLink(
  * A payment request that talks over an owner mid-negotiation is worse than one
  * that waits.
  */
-export async function sendLinkToCustomer(
+async function sendLinkToCustomer(
   businessId: string,
   row: repository.PaymentRequestRow,
   message: string | null,
@@ -306,18 +309,21 @@ export async function listPaymentLinks(
 }
 
 /** Withdraws a link the owner no longer wants honoured. */
-export async function cancelPaymentLink(id: string, businessId: string): Promise<void> {
-  const cancelled = await repository.markStatus(id, businessId, 'CANCELLED');
-
-  if (cancelled === 0) {
-    const existing = await repository.findById(id, businessId);
+export async function cancelPaymentLink(id: string, businessId: string, staffId: string | null): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await requirePaymentActor(tx, businessId, staffId, 'payments.create');
+    const existing = await repository.findById(id, businessId, tx);
     if (!existing) throw new NotFoundError('Payment link not found');
-    throw new ValidationError(
-      existing.status === 'PAID'
-        ? 'That link has already been paid, so it cannot be cancelled. Void the payment instead.'
-        : 'That link is no longer open.',
-    );
-  }
+    await lockPaymentRelationship(tx, existing, true);
+    if (!(await repository.cancelRequest(existing, tx))) {
+      throw new ValidationError(
+        existing.status === 'PAID'
+          ? 'That link has already been paid, so it cannot be cancelled. Void the payment instead.'
+          : 'That link is no longer open.',
+      );
+    }
+    await logActivity({ staffId, businessId, action: 'payment.link_cancelled', resourceId: id, resourceType: 'payment_request' }, tx);
+  });
 }
 
 /**
@@ -346,6 +352,10 @@ export async function settleFromWebhook(reference: string): Promise<void> {
     return;
   }
 
+  // Validate historical requests before contacting Paystack. The claim and
+  // ledger write each recheck the relationship inside their transactions.
+  await prisma.$transaction((tx) => lockPaymentRelationship(tx, request));
+
   const verified = await verifyCharge(reference);
 
   if (!verified) {
@@ -372,7 +382,7 @@ export async function settleFromWebhook(reference: string): Promise<void> {
     );
   }
 
-  if (!(await repository.claimForSettlement(reference))) {
+  if (!(await repository.claimForSettlement(request))) {
     logger.debug({ reference }, 'Another worker is already settling this payment');
     return;
   }
@@ -387,7 +397,7 @@ export async function settleFromWebhook(reference: string): Promise<void> {
       notes: 'Paid through a Flowdesk payment link',
     });
 
-    await repository.recordSettlement(reference, {
+    await repository.recordSettlement(request, {
       paymentId: payment.id,
       channel: verified.channel,
       gatewayFee: verified.feesMinor === null ? null : verified.feesMinor / 100,

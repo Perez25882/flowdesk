@@ -1,5 +1,7 @@
 import { Prisma, type PaymentRequestStatus } from '@prisma/client';
 import { prisma } from '../../config/database.js';
+import { ValidationError } from '../../utils/errors.js';
+import { lockPaymentRelationship } from './payment-relationships.js';
 
 export interface PaymentRequestRow {
   id: string;
@@ -51,8 +53,8 @@ export async function createPaymentRequest(data: {
   platformFee: number;
   expiresAt: Date;
   createdByStaffId: string | null;
-}): Promise<PaymentRequestRow> {
-  return prisma.paymentRequest.create({
+}, tx: Prisma.TransactionClient): Promise<PaymentRequestRow> {
+  return tx.paymentRequest.create({
     data: {
       businessId: data.businessId,
       customerId: data.customerId,
@@ -98,8 +100,9 @@ export async function findByReference(reference: string): Promise<
 export async function findById(
   id: string,
   businessId: string,
+  tx: Prisma.TransactionClient = prisma,
 ): Promise<PaymentRequestRow | null> {
-  return prisma.paymentRequest.findFirst({
+  return tx.paymentRequest.findFirst({
     where: { id, businessId },
     select: ROW_SELECT,
   });
@@ -123,7 +126,7 @@ export async function listPaymentRequests(
 }
 
 /**
- * The open request for an order, if there is one.
+ * The customer's open request for an order at the requested amount.
  *
  * Used so asking twice reuses one link rather than sending the customer two
  * different URLs for the same debt, which is how a shop gets paid twice and
@@ -133,11 +136,14 @@ export async function findOpenRequestForOrder(
   businessId: string,
   orderId: string,
   amount: number,
+  customerId: string,
+  tx: Prisma.TransactionClient = prisma,
 ): Promise<PaymentRequestRow | null> {
-  return prisma.paymentRequest.findFirst({
+  return tx.paymentRequest.findFirst({
     where: {
       businessId,
       orderId,
+      customerId,
       status: 'PENDING',
       expiresAt: { gt: new Date() },
       amount: new Prisma.Decimal(amount),
@@ -150,24 +156,29 @@ export async function findOpenRequestForOrder(
 /**
  * Claims a pending request for settlement, atomically.
  *
- * `updateMany` with `status: 'PENDING'` in the WHERE is the whole guard: the
+ * `updateMany` with `status: 'PENDING'` prevents duplicate claims: the
  * webhook and the reconciliation job can both arrive for the same reference,
  * and exactly one of them gets a count of 1. Reading the row and then writing
  * it would leave a window in which both see PENDING and both create a Payment,
  * which is a duplicate credit on a real customer's ledger.
  */
-export async function claimForSettlement(reference: string): Promise<boolean> {
-  const claimed = await prisma.paymentRequest.updateMany({
-    where: { reference, status: 'PENDING' },
-    data: { status: 'PAID' },
+export async function claimForSettlement(request: PaymentRequestRow): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    await lockPaymentRelationship(tx, request);
+    const claimed = await tx.paymentRequest.updateMany({
+      where: {
+        id: request.id, businessId: request.businessId, customerId: request.customerId,
+        orderId: request.orderId, status: 'PENDING',
+      },
+      data: { status: 'PAID' },
+    });
+    return claimed.count === 1;
   });
-
-  return claimed.count === 1;
 }
 
 /** Records the settlement detail once the Payment row exists. */
 export async function recordSettlement(
-  reference: string,
+  request: PaymentRequestRow,
   data: {
     paymentId: string;
     channel: string | null;
@@ -175,14 +186,24 @@ export async function recordSettlement(
     paidAt: Date;
   },
 ): Promise<void> {
-  await prisma.paymentRequest.updateMany({
-    where: { reference },
-    data: {
-      paymentId: data.paymentId,
-      channel: data.channel,
-      gatewayFee: data.gatewayFee === null ? null : new Prisma.Decimal(data.gatewayFee),
-      paidAt: data.paidAt,
-    },
+  await prisma.$transaction(async (tx) => {
+    const { businessId, customerId, orderId } = request;
+    await lockPaymentRelationship(tx, request, true);
+    const payment = await tx.payment.findFirst({
+      where: { id: data.paymentId, businessId, customerId, orderId, reference: request.reference },
+      select: { id: true },
+    });
+    if (!payment) throw new ValidationError('Settlement payment does not match the request');
+    const updated = await tx.paymentRequest.updateMany({
+      where: { id: request.id, businessId, customerId, orderId, status: 'PAID', paymentId: null },
+      data: {
+        paymentId: data.paymentId,
+        channel: data.channel,
+        gatewayFee: data.gatewayFee === null ? null : new Prisma.Decimal(data.gatewayFee),
+        paidAt: data.paidAt,
+      },
+    });
+    if (updated.count !== 1) throw new ValidationError('Payment request changed during settlement');
   });
 }
 
@@ -194,14 +215,14 @@ export async function releaseClaim(reference: string): Promise<void> {
   });
 }
 
-export async function markStatus(
-  id: string,
-  businessId: string,
-  status: PaymentRequestStatus,
+export async function cancelRequest(
+  request: PaymentRequestRow,
+  tx: Prisma.TransactionClient,
 ): Promise<number> {
-  const updated = await prisma.paymentRequest.updateMany({
-    where: { id, businessId, status: 'PENDING' },
-    data: { status },
+  const { id, businessId, customerId, orderId } = request;
+  const updated = await tx.paymentRequest.updateMany({
+    where: { id, businessId, customerId, orderId, status: 'PENDING' },
+    data: { status: 'CANCELLED' },
   });
 
   return updated.count;
