@@ -3,14 +3,14 @@
 | Milestone                | Status                                               | Exit gate                                                                                                                                                                          |
 | ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G0 Engineering kickoff   | Complete                                             | Preserved source inventory, executed baseline, five operator traces, prioritized defects and founder review package.                                                               |
-| G1 Execution reliability | G1-01 PASS recommendation. Founder sign-off pending. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
+| G1 Execution reliability | G1-01 approved for verified local scope. G1-02 PASS recommended. Founder sign-off pending. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
 | Operator delivery        | Unscheduled                                          | Sequence operator increments against the shared workflow contract and owner interface after the G1 reliability gate.                                                               |
 
 ## Exact first assignment for approval
 
 **G1-01 — Persist and recover signed WhatsApp text events before acknowledgement.**
 
-**Status** PASS recommended on 2026-11-10. Final code `7fa5465` passed all 15 receipt cases in each of three independent runs, plus 20 legacy tests and a seeded migration upgrade. Founder sign-off and separate approval for later assignments remain pending. See the [verification record](g1/verification.md#final-sign-off-verification--2026-11-10) and [workflow and recovery runbook](g1/whatsapp-text-ingress.md).
+**Status** Founder approved the verified local scope on 2026-11-11. Final code `7fa5465` passed all 15 receipt cases in each of three independent runs, plus 20 legacy tests and a seeded migration upgrade. See the [verification record](g1/verification.md#final-sign-off-verification--2026-11-10) and [workflow and recovery runbook](g1/whatsapp-text-ingress.md).
 
 Start from the G0 baseline on a dedicated branch. Use the existing Fastify route, Prisma/Postgres, BullMQ/Redis, phone-number routing and worker. Add an additive receipt migration and a small dispatcher/recovery path for authenticated inbound WhatsApp **text**. The receipt is keyed by provider, phone-number identity and message ID. Store only the normalized inputs the worker needs and bound retention and retries. A successful response means the supported event is durable or a durable receipt for the same delivery already exists. A failed durable write produces a retryable response.
 
@@ -27,6 +27,10 @@ Persist a waiting state for queue or mapping dependencies, a recoverable failure
 | Operational evidence         | Recovery is tenant-scoped, reason-coded, bounded and documented. Test an empty migration and representative synthetic upgrade. Execute build, typecheck, lint, Vitest and the synthetic smoke path, reporting any unchanged baseline failures separately.                                                   |
 
 Deliver a reviewable code and documentation diff with the real Postgres/BullMQ acceptance tests. Founder approval covers this assignment only.
+
+## G1-02 delivery authorization and tenant isolation
+
+**Status** PASS recommended on 2026-11-11. All 12 real-PostgreSQL authorization cases passed, including reassignment during dispatch, delivery completion, generic fulfillment and proof upload. The targeted run passed 77 tests including all 15 G1-01 receipt regressions. Build, typecheck, API lint and the full test command passed. Repository lint retains the G0 web violation. Founder sign-off is pending. See the [role contract and threat model](g1/delivery-authorization.md) and [verification record](g1/delivery-authorization-verification.md).
 
 ## Prioritized implementation queue
 

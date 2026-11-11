@@ -8,15 +8,17 @@ import {
   listOrders,
   findOrderById,
   assignOrderToStaff,
-  getOrderStats,
   type DateRange,
+  type OrderWithRelations,
 } from './orders.repository.js';
+import { orderActor, requireOrderRouteAccess } from './orders.authorization.js';
 import {
   createManualOrder,
   confirmOrder,
   markProcessing,
   fulfillOrder,
   cancelOrder,
+  getAuthorizedOrderStats,
 } from './orders.service.js';
 import {
   CreateOrderSchema,
@@ -25,6 +27,16 @@ import {
   ListOrdersQuerySchema,
   OrderStatsQuerySchema,
 } from './orders.schema.js';
+
+function orderResponse(order: OrderWithRelations, request: FastifyRequest) {
+  if (!assignedStaffScope(request)) return order;
+
+  const { totalAmount: _total, amountPaid: _paid, payments: _payments, rawMessage: _raw, items, ...delivery } = order;
+  return {
+    ...delivery,
+    items: items.map(({ unitPrice: _price, subtotal: _subtotal, ...item }) => item),
+  };
+}
 
 export default async function orderRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -58,7 +70,7 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       totalPages,
     };
 
-      return paginated(reply, orders, meta);
+      return paginated(reply, orders.map((order) => orderResponse(order, request)), meta);
     },
   );
 
@@ -85,8 +97,6 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireCapability('orders.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
     const query = OrderStatsQuerySchema.parse(request.query);
-    const businessId = request.business!.id;
-
     const now = new Date();
     let dateRange: DateRange;
 
@@ -108,33 +118,25 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       };
     }
 
-      const stats = await getOrderStats(businessId, dateRange);
+      const stats = await getAuthorizedOrderStats(orderActor(request), dateRange);
       return success(reply, stats);
     },
   );
 
   app.get(
     '/orders/:id',
-    { preHandler: requireCapability('orders.read') },
+    { preHandler: requireOrderRouteAccess('orders.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
       const businessId = request.business!.id;
 
-      const order = await findOrderById(id, businessId);
+      const order = await findOrderById(id, businessId, { assignedStaffId: assignedStaffScope(request) });
 
       if (!order) {
         throw new NotFoundError('Order not found');
       }
 
-      // Riders may only open their own deliveries. Reported as 404 rather than
-      // 403 so the endpoint does not confirm that an order id exists.
-      const scopedStaffId = assignedStaffScope(request);
-
-      if (scopedStaffId && order.assignedStaffId !== scopedStaffId) {
-        throw new NotFoundError('Order not found');
-      }
-
-      return success(reply, order);
+      return success(reply, orderResponse(order, request));
     },
   );
 
@@ -152,7 +154,7 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch(
     '/orders/:id/status',
-    { preHandler: requireCapability('orders.transition') },
+    { preHandler: requireOrderRouteAccess('orders.transition') },
     async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
     const body = UpdateOrderStatusSchema.parse(request.body);
@@ -161,21 +163,8 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
     // audit/assignment columns are real foreign keys.
     const changedBy = request.user?.staffId ?? null;
 
-    // A rider can only move an order that is actually theirs.
-    const scopedStaffId = assignedStaffScope(request);
-
-    if (scopedStaffId) {
-      const existing = await findOrderById(id, businessId);
-
-      if (!existing || existing.assignedStaffId !== scopedStaffId) {
-        throw new NotFoundError('Order not found');
-      }
-
-      // Riders complete deliveries. Confirming and cancelling are commercial
-      // decisions that stay with the shop.
-      if (body.status !== 'FULFILLED') {
-        throw new ForbiddenError('You can only mark your deliveries as fulfilled');
-      }
+    if (assignedStaffScope(request) && body.status !== 'FULFILLED') {
+      throw new ForbiddenError('You can only mark your deliveries as fulfilled');
     }
 
     let order;
@@ -194,7 +183,7 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       // status change made here would skip it and message the customer with
       // neither. Falling to the default below is the right refusal.
       case 'FULFILLED':
-        order = await fulfillOrder(id, businessId, changedBy);
+        order = await fulfillOrder(id, orderActor(request));
         break;
       case 'CANCELLED':
         // The schema guarantees a note is present for this status.
@@ -204,13 +193,13 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({ success: false, error: 'Invalid status transition', code: 'INVALID_STATUS' });
     }
 
-      return success(reply, order);
+      return success(reply, orderResponse(order, request));
     },
   );
 
   app.patch(
     '/orders/:id/assign',
-    { preHandler: requireCapability('orders.assign') },
+    { preHandler: [requireCapability('orders.assign'), requireOrderRouteAccess('orders.read')] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
       const body = AssignOrderSchema.parse(request.body);

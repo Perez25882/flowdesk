@@ -13,8 +13,8 @@ export interface OrderItem {
   productId: string | null;
   description: string;
   quantity: number;
-  unitPrice: number;
-  subtotal: number;
+  unitPrice?: number;
+  subtotal?: number;
   matched: boolean;
   matchConfidence: number | null;
 }
@@ -82,11 +82,11 @@ export interface OrderWithRelations extends OrderDelivery {
   businessId: string;
   customerId: string;
   referenceNumber: string;
-  rawMessage: string;
+  rawMessage?: string;
   isManual: boolean;
   status: OrderStatus;
-  totalAmount: number;
-  amountPaid: number;
+  totalAmount?: number;
+  amountPaid?: number;
   assignedStaffId: string | null;
   stockDeducted: boolean;
   confirmedAt: string | null;
@@ -99,16 +99,16 @@ export interface OrderWithRelations extends OrderDelivery {
   items: OrderItem[];
   customer: OrderCustomer;
   assignedTo: OrderStaff | null;
-  payments: OrderPayment[];
+  payments?: OrderPayment[];
   statusHistory: OrderStatusHistory[];
 }
 
 export interface OrderStats {
   totalOrders: number;
   byStatus: Record<string, number>;
-  totalRevenue: number;
-  totalPaid: number;
-  pendingAmount: number;
+  totalRevenue?: number;
+  totalPaid?: number;
+  pendingAmount?: number;
 }
 
 export interface CreateOrderInput {

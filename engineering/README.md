@@ -12,6 +12,8 @@ This directory contains the versioned engineering record. It is separate from th
 | [Architecture decisions](adr/README.md)                    | Accepted constraints and decisions awaiting approval                 |
 | [G1-01 WhatsApp text ingress](g1/whatsapp-text-ingress.md) | Workflow contract, migration and recovery                            |
 | [G1-01 verification](g1/verification.md)                   | Executed commands, results and boundaries                            |
+| [G1-02 delivery authorization](g1/delivery-authorization.md) | Role contract, shipment workflow and threat model                  |
+| [G1-02 verification](g1/delivery-authorization-verification.md) | Baseline, executed checks and remaining limitations              |
 
 ## Engineering conventions
 

@@ -113,7 +113,7 @@ function OrderRow({
 
       <span className="flex items-baseline justify-between md:block md:text-right">
         <span className="fd-figure text-sm font-semibold text-text-primary">
-          {formatCurrency(total)}
+          {order.totalAmount !== undefined && formatCurrency(total)}
         </span>
         {!cancelled && paid > 0 && owed > 0 && (
           <span className="fd-figure block text-2xs text-text-muted">

@@ -148,6 +148,7 @@ export interface RequestOptions {
   /** Skips the auth header and the refresh retry, used by sign-in itself. */
   anonymous?: boolean;
   signal?: AbortSignal;
+  cache?: RequestCache;
 }
 
 async function send(path: string, options: RequestOptions, token: string | null): Promise<Response> {
@@ -162,6 +163,7 @@ async function send(path: string, options: RequestOptions, token: string | null)
 
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   if (options.signal) init.signal = options.signal;
+  if (options.cache) init.cache = options.cache;
 
   return fetch(`${API_BASE}${path}`, init);
 }

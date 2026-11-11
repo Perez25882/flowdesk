@@ -151,8 +151,9 @@ export default function OrderDetailDrawer({
   const [paymentRef, setPaymentRef] = useState('');
 
   const action = order ? NEXT_ACTION[order.status] : null;
-  const remaining = order ? Math.max(0, order.totalAmount - order.amountPaid) : 0;
-  const isSettled = order ? order.amountPaid >= order.totalAmount : false;
+  const totalAmount = order?.totalAmount;
+  const amountPaid = order?.amountPaid;
+  const remaining = Math.max(0, Number(totalAmount ?? 0) - Number(amountPaid ?? 0));
   const isOpen = order ? order.status !== 'CANCELLED' && order.status !== 'FULFILLED' : false;
 
   const customerPhone = order?.customer.waNumber ?? '';
@@ -329,27 +330,27 @@ export default function OrderDetailDrawer({
                       </span>
                       <span className="flex shrink-0 items-baseline gap-3">
                         <span className="fd-figure text-xs text-text-muted">×{item.quantity}</span>
-                        <span className="fd-figure w-[76px] text-right text-sm text-text-secondary">
-                          {formatCurrency(item.unitPrice)}
-                        </span>
+                        {item.unitPrice !== undefined && (
+                          <span className="fd-figure w-[76px] text-right text-sm text-text-secondary">
+                            {formatCurrency(item.unitPrice)}
+                          </span>
+                        )}
                       </span>
                     </li>
                   ))}
                 </ul>
 
-                <div className="mt-3 border-t border-border pt-2">
-                  <Line label="Total" value={formatCurrency(order.totalAmount)} strong />
-                  <Line
-                    label="Paid"
-                    value={formatCurrency(order.amountPaid)}
-                    tone={order.amountPaid > 0 ? 'success' : 'default'}
-                  />
-                  <Line
-                    label={isSettled ? 'Settled' : 'Still owed'}
-                    value={formatCurrency(remaining)}
-                    tone={remaining > 0 ? 'danger' : 'success'}
-                  />
-                </div>
+                {totalAmount !== undefined && amountPaid !== undefined && (
+                  <div className="mt-3 border-t border-border pt-2">
+                    <Line label="Total" value={formatCurrency(totalAmount)} strong />
+                    <Line label="Paid" value={formatCurrency(amountPaid)} tone={amountPaid > 0 ? 'success' : 'default'} />
+                    <Line
+                      label={remaining === 0 ? 'Settled' : 'Still owed'}
+                      value={formatCurrency(remaining)}
+                      tone={remaining > 0 ? 'danger' : 'success'}
+                    />
+                  </div>
+                )}
               </Section>
 
               <Section title="Assigned to">

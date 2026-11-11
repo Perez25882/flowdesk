@@ -42,6 +42,7 @@ export interface OrderWithRelations {
   cancelledAt: Date | null;
   cancelReason: string | null;
   notes: string | null;
+  deliveryAddress: string | null;
   createdAt: Date;
   updatedAt: Date;
   items: Array<{
@@ -96,9 +97,9 @@ export interface PaginationParams {
 export interface OrderStats {
   totalOrders: number;
   byStatus: Record<string, number>;
-  totalRevenue: number;
-  totalPaid: number;
-  pendingAmount: number;
+  totalRevenue?: number;
+  totalPaid?: number;
+  pendingAmount?: number;
 }
 
 export interface DateRange {
@@ -205,18 +206,21 @@ export async function createOrder(
 export async function findOrderById(
   id: string,
   businessId: string,
+  options?: { tx?: PrismaTransaction; assignedStaffId?: string | undefined },
 ): Promise<OrderWithRelations | null> {
-  const order = await prisma.order.findFirst({
+  const db = options?.tx ?? prisma;
+  const order = await db.order.findFirst({
     where: {
       id,
       businessId,
       deletedAt: null,
+      ...(options?.assignedStaffId === undefined ? {} : { assignedStaffId: options.assignedStaffId }),
     },
     include: {
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+      payments: { where: { businessId }, select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: { orderBy: { createdAt: 'desc' } },
     },
   });
@@ -238,7 +242,7 @@ export async function findOrderByReference(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+      payments: { where: { businessId }, select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: { orderBy: { createdAt: 'desc' } },
     },
   });
@@ -267,6 +271,7 @@ export async function findOrderByReference(
  */
 export async function updateOrderStatus(
   id: string,
+  businessId: string,
   status: OrderStatus,
   changedBy: string | null,
   note: string | null,
@@ -293,7 +298,7 @@ export async function updateOrderStatus(
   }
 
   const claimed = await db.order.updateMany({
-    where: { id, deletedAt: null, status: expectedFrom },
+    where: { id, businessId, deletedAt: null, status: expectedFrom },
     data: updateData,
   });
 
@@ -312,12 +317,12 @@ export async function updateOrderStatus(
   });
 
   const order = await db.order.findFirst({
-    where: { id },
+    where: { id, businessId },
     include: {
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+      payments: { where: { businessId }, select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: true,
     },
   });
@@ -373,7 +378,7 @@ export async function listOrders(
         items: true,
         customer: { select: { id: true, waNumber: true, name: true } },
         assignedTo: { select: { id: true, name: true } },
-        payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+        payments: { where: { businessId }, select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
         statusHistory: { orderBy: { createdAt: 'desc' }, take: 5 },
       },
     }),
@@ -471,7 +476,7 @@ export async function assignOrderToStaff(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+      payments: { where: { businessId }, select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: true,
     },
   });
@@ -580,7 +585,7 @@ export async function findOrdersByStatus(
       items: true,
       customer: { select: { id: true, waNumber: true, name: true } },
       assignedTo: { select: { id: true, name: true } },
-      payments: { select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
+      payments: { where: { businessId }, select: { id: true, amount: true, method: true, confidence: true, voidedAt: true } },
       statusHistory: { orderBy: { createdAt: 'desc' }, take: 3 },
     },
   });
@@ -639,5 +644,21 @@ export async function getOrderStats(
     totalRevenue,
     totalPaid,
     pendingAmount: totalRevenue - totalPaid,
+  };
+}
+
+export async function getOrderCountStats(
+  businessId: string,
+  dateRange: DateRange,
+  staffId?: string,
+): Promise<OrderStats> {
+  const rows = await prisma.order.groupBy({
+    by: ['status'],
+    where: buildWhereClause(businessId, { dateFrom: dateRange.start, dateTo: dateRange.end, staffId }),
+    _count: { _all: true },
+  });
+  return {
+    totalOrders: rows.reduce((total, row) => total + row._count._all, 0),
+    byStatus: Object.fromEntries(rows.map((row) => [row.status, row._count._all])),
   };
 }

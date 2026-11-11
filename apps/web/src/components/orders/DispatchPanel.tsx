@@ -239,7 +239,8 @@ function ProofOfDispatch({
   onPick: () => void;
   readOnly: boolean;
 }): React.JSX.Element {
-  const { data: src } = useProofImage(orderId, hasProof);
+  const { data, isError } = useProofImage(orderId, hasProof);
+  const src = hasProof && !isError ? data : undefined;
 
   // The object URL is owned by this component. Without this every reopen of
   // the drawer leaks another decoded image for as long as the tab lives.

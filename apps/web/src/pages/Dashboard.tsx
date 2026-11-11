@@ -180,7 +180,7 @@ export default function DashboardPage(): React.JSX.Element {
                   <span className="flex shrink-0 items-baseline gap-4">
                     <span className="text-xs text-text-muted">{timeAgo(order.createdAt)}</span>
                     <span className="fd-figure text-sm font-semibold text-text-primary">
-                      {formatCurrency(order.totalAmount)}
+                      {order.totalAmount !== undefined && formatCurrency(order.totalAmount)}
                     </span>
                   </span>
                 </Row>

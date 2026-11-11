@@ -62,8 +62,7 @@ export function useUploadProof(orderId: string): UseMutationResult<Shipment, Err
       ).shipment,
     onSuccess: (shipment) => {
       qc.setQueryData(['shipment', orderId], shipment);
-      // The photo is fetched by its own request and cached by the browser under
-      // a URL that does not change, so the old one has to be dropped by hand.
+      // The open drawer needs to fetch the replacement proof.
       qc.invalidateQueries({ queryKey: ['shipment', orderId, 'proof'] });
     },
   });
@@ -92,12 +91,12 @@ export function useProofImage(
 ): UseQueryResult<string, Error> {
   return useQuery({
     queryKey: ['shipment', orderId, 'proof'],
-    queryFn: async () => {
-      const blob = await apiFetchBlob(`/orders/${orderId}/dispatch/proof`);
+    queryFn: async ({ signal }) => {
+      const blob = await apiFetchBlob(`/orders/${orderId}/dispatch/proof`, { cache: 'no-store', signal });
       return URL.createObjectURL(blob);
     },
     enabled: !!orderId && enabled,
-    staleTime: Infinity,
-    gcTime: 5 * 60_000,
+    staleTime: 0,
+    gcTime: 0,
   });
 }

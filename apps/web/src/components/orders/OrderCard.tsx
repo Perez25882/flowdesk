@@ -109,7 +109,7 @@ export default function OrderCard({
 
       <div className="flex items-end justify-between gap-2 border-t border-border-subtle pt-2.5">
         <span className="fd-figure text-base font-semibold leading-none text-text-primary">
-          {formatCurrency(order.totalAmount)}
+          {order.totalAmount !== undefined && formatCurrency(order.totalAmount)}
         </span>
 
         <span className="flex shrink-0 items-center gap-2">

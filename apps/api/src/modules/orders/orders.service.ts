@@ -1,6 +1,7 @@
 import { Prisma, type OrderStatus } from '@prisma/client';
 import { logger } from '../../config/logger.js';
-import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
+import { prisma } from '../../config/database.js';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { extractItemsFromText } from '../../utils/item-extractor.js';
 import { notifyOrderStatus } from '../../services/notifications/customer-notifications.js';
 import { recordOrder } from '../../services/plan/plan.service.js';
@@ -14,6 +15,10 @@ import {
   generateOrderReference,
   findOrdersByStatus,
   assignOrderToStaff,
+  getOrderCountStats,
+  getOrderStats,
+  type DateRange,
+  type OrderStats,
   type OrderWithRelations,
   type CreateOrderInput,
   type CreateOrderItemInput,
@@ -29,6 +34,13 @@ import { normalizeGhanaPhone } from '../../utils/phone.js';
 import { upsertCustomerByPhone } from '../customers/customers.service.js';
 import { findCustomerById, recalculateCustomerTotals } from '../customers/customers.repository.js';
 import { findProductById } from '../products/products.repository.js';
+import {
+  lockOrderForDelivery,
+  orderActorHasCapability,
+  orderAssignmentScope,
+  requireStaffMembership,
+  type OrderActor,
+} from './orders.authorization.js';
 
 /**
  * Legal order lifecycle transitions. Encoding them in one table means an
@@ -309,8 +321,14 @@ interface TransitionOptions {
   assignStaffId?: string;
 }
 
+function validateTransition(previousStatus: OrderStatus, next: OrderStatus): void {
+  if (!ALLOWED_TRANSITIONS[previousStatus].includes(next)) {
+    throw new ValidationError(`Cannot move an order from ${previousStatus} to ${next}`);
+  }
+}
+
 /**
- * The single path for every order status change.
+ * Applies commercial order transitions, including inventory movement.
  *
  * Consolidating the transitions guarantees that validation, stock movement,
  * customer-total recalculation, the WhatsApp notification, the SSE broadcast
@@ -330,11 +348,7 @@ async function transitionOrder(
     throw new NotFoundError('Order not found');
   }
 
-  if (!ALLOWED_TRANSITIONS[existing.status].includes(next)) {
-    throw new ValidationError(
-      `Cannot move an order from ${existing.status} to ${next}`,
-    );
-  }
+  validateTransition(existing.status, next);
 
   if (next === 'CANCELLED' && !options.reason?.trim()) {
     throw new ValidationError('A reason is required when cancelling an order');
@@ -349,6 +363,7 @@ async function transitionOrder(
   const note = options.reason ?? `Order moved to ${next}`;
   const order = await updateOrderStatus(
     orderId,
+    businessId,
     next,
     actorId,
     note,
@@ -425,6 +440,17 @@ async function transitionOrder(
     );
   }
 
+  await publishOrderTransition(order, previousStatus, actorId, options.reason);
+  return order;
+}
+
+async function publishOrderTransition(
+  order: OrderWithRelations,
+  previousStatus: OrderStatus,
+  actorId: string | null,
+  reason?: string,
+): Promise<void> {
+  const { businessId, id: orderId, status: next } = order;
   // A status change moves the order in or out of the billable set, so the
   // customer's outstanding balance has to be recomputed.
   await recalculateCustomerTotals(order.customerId);
@@ -447,11 +473,9 @@ async function transitionOrder(
       action: `order.${next.toLowerCase()}`,
       resourceId: orderId,
       resourceType: 'order',
-      note: `Order ${order.referenceNumber} → ${next}${options.reason ? `: ${options.reason}` : ''}`,
+      note: `Order ${order.referenceNumber} → ${next}${reason ? `: ${reason}` : ''}`,
     }).catch(() => {});
   }
-
-  return order;
 }
 
 /**
@@ -490,25 +514,54 @@ export async function markProcessing(
   return transitionOrder(orderId, businessId, staffId, 'PROCESSING', assignmentFor(staffId));
 }
 
-/**
- * Moves an order to DISPATCHED. Called by the shipments module once the
- * shipment row exists, never before: the customer's "on its way" message reads
- * the courier and tracking off that row.
- */
-export async function dispatchOrderStatus(
+/** Authorize and persist delivery changes under the order's reassignment lock. */
+export async function transitionDeliveryOrder<T>(
   orderId: string,
-  businessId: string,
-  staffId: string | null,
-): Promise<OrderWithRelations> {
-  return transitionOrder(orderId, businessId, staffId, 'DISPATCHED', assignmentFor(staffId));
+  actor: OrderActor,
+  next: 'DISPATCHED' | 'FULFILLED',
+  updateShipment: (tx: Prisma.TransactionClient, order: OrderWithRelations) => Promise<T>,
+  allowAlreadyFulfilled = false,
+): Promise<{ order: OrderWithRelations; shipment: T }> {
+  const result = await prisma.$transaction(async (tx) => {
+    await lockOrderForDelivery(tx, orderId, actor);
+    const existing = await findOrderById(orderId, actor.businessId, { tx });
+    if (!existing) throw new NotFoundError('Order not found');
+
+    const alreadyFulfilled = allowAlreadyFulfilled && next === 'FULFILLED' && existing.status === next;
+    if (!alreadyFulfilled) validateTransition(existing.status, next);
+
+    const shipment = await updateShipment(tx, existing);
+    const order = alreadyFulfilled ? existing : await updateOrderStatus(
+      orderId, actor.businessId, next, actor.staffId, `Order moved to ${next}`, existing.status, null, tx,
+    );
+    if (!order) throw new ConflictError('The order changed during delivery');
+
+    return { order, shipment, previousStatus: existing.status };
+  });
+
+  if (result.previousStatus !== next) {
+    await publishOrderTransition(result.order, result.previousStatus, actor.staffId);
+  }
+  return { order: result.order, shipment: result.shipment };
 }
 
 export async function fulfillOrder(
   orderId: string,
-  businessId: string,
-  staffId: string | null,
+  actor: OrderActor,
 ): Promise<OrderWithRelations> {
-  return transitionOrder(orderId, businessId, staffId, 'FULFILLED');
+  const { order } = await transitionDeliveryOrder(orderId, actor, 'FULFILLED', async () => null);
+  return order;
+}
+
+export async function getAuthorizedOrderStats(actor: OrderActor, dateRange: DateRange): Promise<OrderStats> {
+  if (!orderActorHasCapability(actor, 'orders.read')) {
+    throw new ForbiddenError('You do not have permission to perform this action');
+  }
+  await requireStaffMembership(prisma, actor);
+  if (orderActorHasCapability(actor, 'revenue.read')) {
+    return getOrderStats(actor.businessId, dateRange);
+  }
+  return getOrderCountStats(actor.businessId, dateRange, orderAssignmentScope(actor));
 }
 
 export async function cancelOrder(
