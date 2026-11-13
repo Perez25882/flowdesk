@@ -252,8 +252,8 @@ describe('routeDecision, enquiry-led', () => {
       'do you have baggy jeans?',
     );
 
-    expect(result.action).toBe('clarify');
-    expect(result.text).toContain('baggy jeans');
+    expect(result.action).toBe('draft');
+    expect(result.holdingText).toContain('shop team');
     expect(result.escalated).toBe(true);
     expect(result.validationFailures).toEqual([]);
   });
@@ -271,7 +271,7 @@ describe('routeDecision, enquiry-led', () => {
       false,
     );
 
-    expect(result.action).toBe('template_reply');
+    expect(result.action).toBe('draft');
     expect(result.escalated).toBe(true);
   });
 
@@ -315,7 +315,7 @@ describe('routeDecision, enquiry-led', () => {
       'do you have baggy jeans?',
     );
 
-    expect(result.text).not.toContain('GHS 80');
-    expect(result.text).not.toMatch(/yes!?\s*we have/i);
+    expect(result.text).toBeNull();
+    expect(result.holdingText).not.toMatch(/GHS 80|yes!?\s*we have/i);
   });
 });

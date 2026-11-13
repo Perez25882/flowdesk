@@ -222,7 +222,7 @@ export async function requestAssistantDecision(
 
   if (raw === null) {
     logger.warn(
-      { provider: provider.name, sample: result.generation.text.slice(0, 200) },
+      { provider: provider.name },
       'Assistant returned no parseable JSON object',
     );
     await recordFailure('malformed');
@@ -232,7 +232,7 @@ export async function requestAssistantDecision(
   const parsed = parseDecision(raw);
   if (!parsed) {
     logger.warn(
-      { provider: provider.name, raw },
+      { provider: provider.name },
       'Assistant returned JSON that does not match the decision contract',
     );
     await recordFailure('malformed');

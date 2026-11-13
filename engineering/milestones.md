@@ -3,7 +3,7 @@
 | Milestone                | Status                                               | Exit gate                                                                                                                                                                          |
 | ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G0 Engineering kickoff   | Complete                                             | Preserved source inventory, executed baseline, five operator traces, prioritized defects and founder review package.                                                               |
-| G1 Execution reliability | G1-01, G1-02 and G1-04 approved for verified local scope. G1-03 local PASS recommended, founder sign-off pending. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
+| G1 Execution reliability | G1-01 through G1-04 approved for verified local scope. G1-05 verification in progress. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
 | Operator delivery        | Unscheduled                                          | Sequence operator increments against the shared workflow contract and owner interface after the G1 reliability gate.                                                               |
 
 ## Exact first assignment for approval
@@ -38,7 +38,7 @@ Deliver a reviewable code and documentation diff with the real Postgres/BullMQ a
 
 ## G1-03 durable gateway receipts and atomic settlement
 
-**Status** PASS recommended for local acceptance on 2026-11-13. Founder sign-off is pending. All 35 Paystack integration tests passed in the 182-test combined run and both independent fresh runs. Empty and synthetic upgrade migrations, repository build, typecheck, default tests and API lint passed. Repository lint and smoke reproduced their G0 failures. See the [gateway workflow and recovery runbook](g1/paystack-settlement.md) and [verification record](g1/paystack-settlement-verification.md).
+**Status** Founder approved the verified local scope and authorized G1-05 from `b86b939378a151795c934aacb7bed394b5330a5d`. All 35 Paystack integration tests passed in the 182-test combined run and both independent fresh runs. Empty and synthetic upgrade migrations, repository build, typecheck, default tests and API lint passed. Repository lint and smoke reproduced their G0 failures. See the [gateway workflow and recovery runbook](g1/paystack-settlement.md) and [verification record](g1/paystack-settlement-verification.md).
 
 ## Prioritized implementation queue
 

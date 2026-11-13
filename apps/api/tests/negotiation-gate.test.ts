@@ -134,6 +134,7 @@ describe('the floor holds in every mode', () => {
         answer: {
           canAnswer: true,
           text: 'Best I can do is GHS 95 for the baggy jeans.',
+          fact: { kind: 'product_quote', target: 'p_jeans', quantity: 1 },
           groundedOn: [{ kind: 'product', id: 'p_jeans', field: 'price' }],
         },
         priceOffer: { productId: 'p_jeans', unitPrice: 95, quantity: 1 },
@@ -144,8 +145,6 @@ describe('the floor holds in every mode', () => {
   });
 
   it('refuses to send an offer below the floor even in AUTONOMOUS mode', () => {
-    // The whole point. Autonomous mode waives the evidence gate; it does not
-    // waive the shop's margin.
     const result = routeFor({
       decision: decisionFor({
         answer: {
@@ -172,7 +171,7 @@ describe('the floor holds in every mode', () => {
   });
 });
 
-describe('negotiation re-arms the money check that autonomy waives', () => {
+describe('negotiation applies the same evidence gate in autonomy', () => {
   it('holds a cedi figure nobody authorised while haggling is possible', () => {
     // GHS 103 is not the list price, not the floor, and not a rung between
     // them. In an ordinary autonomous reply this would go out with the failure
@@ -191,8 +190,7 @@ describe('negotiation re-arms the money check that autonomy waives', () => {
     expect(result.validationFailures).toContain('unverified_amount');
   });
 
-  it('still sends a non-money claim nobody could verify, because autonomy does cover that', () => {
-    // No figure at all. Autonomy's grant is untouched by the narrowing above.
+  it('holds unverified opening hours even without numeric claims', () => {
     const result = routeFor({
       decision: decisionFor({
         answer: {
@@ -203,7 +201,7 @@ describe('negotiation re-arms the money check that autonomy waives', () => {
       }),
     });
 
-    expect(result.action).toBe('auto_send');
+    expect(result.action).toBe('draft');
   });
 });
 
@@ -214,6 +212,7 @@ describe('a settled haggle no longer needs the owner', () => {
         answer: {
           canAnswer: true,
           text: 'I can do GHS 95 for the baggy jeans, that is my best.',
+          fact: { kind: 'product_quote', target: 'p_jeans', quantity: 1 },
           groundedOn: [{ kind: 'product', id: 'p_jeans', field: 'price' }],
         },
         escalate: { needed: true, reason: 'bargaining' },

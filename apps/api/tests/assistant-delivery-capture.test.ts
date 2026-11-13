@@ -116,12 +116,11 @@ describe('questions', () => {
     }
   });
 
-  it('names the delivery areas when the business has declared them', () => {
+  it('asks for the address without promising coverage', () => {
     const q = composeQuestion('deliveryAddress', {
       profile: { deliveryAreas: ['Osu', 'East Legon', 'Tema'] } as never,
     });
-    expect(q).toContain('Osu');
-    expect(q).toContain('Tema');
+    expect(q).toBe('What is the delivery address?');
   });
 
   it('phrases a re-ask differently from the first ask', () => {
@@ -139,11 +138,10 @@ describe('returning customers', () => {
     contactPhone: '233244123456',
   };
 
-  it('offers everything back in one message', () => {
+  it('offers to reuse the details without echoing personal data', () => {
     const msg = composeConfirmation(known)!;
-    expect(msg).toContain('Ama Boateng');
-    expect(msg).toContain('12 Oxford St, Osu');
-    expect(msg).toContain('024 412 3456');
+    expect(msg).toContain('details from your previous order');
+    expect(msg).not.toMatch(/Ama Boateng|Oxford|024/);
   });
 
   it('does not offer a partial record back', () => {

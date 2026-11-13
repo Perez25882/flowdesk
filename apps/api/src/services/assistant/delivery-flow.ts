@@ -161,7 +161,7 @@ async function finish(
 
   await deliverText(
     notification,
-    `Got it. ${order.referenceNumber} is going to ${captured.deliveryAddress}.`,
+    `Delivery details were saved for ${order.referenceNumber}.`,
     { templateKey: 'order_confirmed' },
   );
 
@@ -213,14 +213,14 @@ async function beginDeliveryCaptureUnsafe(params: {
   const { businessId, customerId, orderId, notification, profile } = params;
 
   const [order, customer] = await Promise.all([
-    prisma.order.findFirst({ where: { id: orderId, businessId }, select: ORDER_FIELDS }),
-    prisma.customer.findUnique({
-      where: { id: customerId },
+    prisma.order.findFirst({ where: { id: orderId, businessId, customerId, deletedAt: null }, select: ORDER_FIELDS }),
+    prisma.customer.findFirst({
+      where: { id: customerId, businessId, deletedAt: null, blacklisted: false },
       select: { lastRecipientName: true, lastDeliveryAddress: true, lastContactPhone: true },
     }),
   ]);
 
-  if (!order || order.deliveryCapturedAt) return { kind: 'idle' };
+  if (!order || !customer || order.deliveryCapturedAt) return { kind: 'idle' };
 
   const known: DeliveryDetails = {
     recipientName: customer?.lastRecipientName ?? null,

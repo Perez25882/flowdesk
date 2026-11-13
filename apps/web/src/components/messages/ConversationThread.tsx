@@ -149,7 +149,7 @@ function Composer({ thread }: { thread: Thread }): React.JSX.Element {
   function submit(): void {
     const text = body.trim();
     if (!text) return;
-    send.mutate({ id: target.id, body: text }, { onSuccess: () => setBody('') });
+    send.mutate({ id: target.id, body: text, source: 'human' }, { onSuccess: () => setBody('') });
   }
 
   return (

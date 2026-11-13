@@ -2,8 +2,8 @@ import { Prisma } from '@prisma/client';
 import type { AppointmentStatus } from '@prisma/client';
 import type { BusinessProfile, OpeningHours } from '@flowdesk/shared';
 import { prisma } from '../../config/database.js';
-import { logger } from '../../config/logger.js';
-import { ConflictError, NotFoundError } from '../../utils/errors.js';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../utils/errors.js';
+import { explicitBookingRequest, hasPolicyOverride } from '../../services/assistant/commitment.js';
 import {
   availableSlots,
   slotFor,
@@ -86,8 +86,9 @@ export async function busyPeriods(
   serviceId: string,
   from: Date,
   to: Date,
+  tx?: Prisma.TransactionClient,
 ): Promise<BusyPeriod[]> {
-  const rows = await prisma.appointment.findMany({
+  const rows = await (tx ?? prisma).appointment.findMany({
     where: {
       serviceId,
       status: { in: HOLDING_STATUSES },
@@ -175,6 +176,7 @@ export interface BookInput {
   startsAt: Date;
   notes?: string | null;
   byAssistant?: boolean;
+  assistantMessageId?: string;
 }
 
 /**
@@ -187,8 +189,27 @@ export interface BookInput {
  * wait longer to be told so.
  */
 export async function book(input: BookInput): Promise<{ id: string; reference: string } & Slot> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await prisma.$transaction((tx) => bookInTransaction(tx, input));
+    } catch (error: unknown) {
+      if (!isOverlapViolation(error)) throw error;
+      if (attempt === 2) throw new ConflictError('That time was just taken');
+    }
+  }
+  throw new ConflictError('That time was just taken');
+}
+
+async function bookInTransaction(tx: Prisma.TransactionClient, input: BookInput): Promise<{ id: string; reference: string } & Slot> {
+  const { businessId, customerId, serviceId, assistantMessageId } = input;
+  const [customer] = await tx.$queryRaw<Array<{ blacklisted: boolean }>>`
+    SELECT blacklisted FROM customers WHERE id = ${customerId} AND "businessId" = ${businessId} AND "deletedAt" IS NULL FOR SHARE
+  `;
+  if (!customer) throw new NotFoundError('Customer not found');
+  await tx.$queryRaw`SELECT id FROM businesses WHERE id = ${businessId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM services WHERE id = ${serviceId} AND "businessId" = ${businessId} FOR SHARE`;
   const [service, business] = await Promise.all([
-    prisma.service.findFirst({
+    tx.service.findFirst({
       where: { id: input.serviceId, businessId: input.businessId, deletedAt: null, active: true },
       select: {
         id: true,
@@ -199,71 +220,55 @@ export async function book(input: BookInput): Promise<{ id: string; reference: s
         price: true,
       },
     }),
-    prisma.business.findUnique({
+    tx.business.findUnique({
       where: { id: input.businessId },
-      select: { businessProfile: true },
+      select: { businessProfile: true, bookingsEnabled: true, aiAssistMode: true, autonomyAcceptedAt: true, active: true, deletedAt: true, deactivatedAt: true },
     }),
   ]);
 
   if (!service) throw new NotFoundError('Service not found');
+  if (input.byAssistant) {
+    const message = assistantMessageId ? await tx.message.findFirst({
+      where: { id: assistantMessageId, businessId, customerId, direction: 'INBOUND' }, select: { body: true },
+    }) : null;
+    if (!assistantMessageId || !business?.bookingsEnabled || !business.active || business.deletedAt || business.deactivatedAt || customer.blacklisted ||
+        (business.aiAssistMode !== 'GROUNDED_AUTO' && !(business.aiAssistMode === 'AUTONOMOUS' && business.autonomyAcceptedAt)) ||
+        !message?.body || hasPolicyOverride(message.body) || !explicitBookingRequest(message.body, service.name, input.startsAt)) {
+      throw new ForbiddenError('Assistant booking is outside the current policy');
+    }
+    const prior = await tx.appointment.findUnique({ where: { assistantMessageId } });
+    if (prior) {
+      if (prior.businessId !== businessId || prior.customerId !== customerId || prior.serviceId !== serviceId ||
+          prior.startsAt.getTime() !== input.startsAt.getTime() || !HOLDING_STATUSES.includes(prior.status)) {
+        throw new ConflictError('Earlier booking cannot be recovered');
+      }
+      return prior;
+    }
+  }
 
   const hours = openingHoursFor(business?.businessProfile);
   const now = new Date();
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const busy = await busyPeriods(
-      service.id,
-      new Date(input.startsAt.getTime() - 24 * 60 * 60 * 1000),
-      new Date(input.startsAt.getTime() + 24 * 60 * 60 * 1000),
-    );
+  const busy = await busyPeriods(
+    service.id,
+    new Date(input.startsAt.getTime() - 24 * 60 * 60 * 1000),
+    new Date(input.startsAt.getTime() + 24 * 60 * 60 * 1000),
+    tx,
+  );
+  const slot = slotFor({ service, hours, busy, startsAt: input.startsAt, now });
+  if (!slot) throw new ConflictError('That time is not available');
 
-    const slot = slotFor({
-      service: {
-        durationMinutes: service.durationMinutes,
-        bufferMinutes: service.bufferMinutes,
-        capacity: service.capacity,
-      },
-      hours,
-      busy,
-      startsAt: input.startsAt,
-      now,
-    });
-
-    if (!slot) throw new ConflictError('That time is not available');
-
-    const reference = await nextReference(input.businessId);
-
-    try {
-      const created = await prisma.appointment.create({
-        data: {
-          businessId: input.businessId,
-          serviceId: service.id,
-          customerId: input.customerId,
-          reference,
-          startsAt: slot.startsAt,
-          endsAt: slot.endsAt,
-          blockedUntil: slot.blockedUntil,
-          resourceIndex: slot.resourceIndex,
-          notes: input.notes ?? null,
-          bookedByAssistant: input.byAssistant ?? false,
-        },
-        select: { id: true, reference: true },
-      });
-
-      return { ...created, ...slot };
-    } catch (error: unknown) {
-      if (!isOverlapViolation(error)) throw error;
-
-      logger.warn(
-        { businessId: input.businessId, serviceId: service.id, attempt },
-        'Appointment slot taken between check and insert',
-      );
-
-      if (attempt === 2) throw new ConflictError('That time was just taken');
-    }
-  }
-
-  throw new ConflictError('That time was just taken');
+  const reference = await nextReference(businessId, tx);
+  const created = await tx.appointment.create({
+    data: {
+      businessId, serviceId, customerId, reference, startsAt: slot.startsAt, endsAt: slot.endsAt,
+      blockedUntil: slot.blockedUntil, resourceIndex: slot.resourceIndex, notes: input.notes ?? null,
+      bookedByAssistant: input.byAssistant ?? false,
+      ...(input.byAssistant && assistantMessageId ? { assistantMessageId } : {}),
+    },
+    select: { id: true, reference: true },
+  });
+  return { ...created, ...slot };
 }
 
 /**
@@ -292,8 +297,8 @@ export function isOverlapViolation(error: unknown): boolean {
  * actually guarantees it, and a collision surfaces as a normal error rather
  * than as two appointments sharing a number.
  */
-async function nextReference(businessId: string): Promise<string> {
-  const latest = await prisma.appointment.findFirst({
+async function nextReference(businessId: string, tx: Prisma.TransactionClient): Promise<string> {
+  const latest = await tx.appointment.findFirst({
     where: { businessId, reference: { startsWith: REFERENCE_PREFIX } },
     orderBy: { createdAt: 'desc' },
     select: { reference: true },

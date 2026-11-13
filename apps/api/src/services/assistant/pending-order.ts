@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { PendingOrder, Prisma } from '@prisma/client';
 import type { AssistantProductMention, ClarificationField } from '@flowdesk/shared';
 import { prisma } from '../../config/database.js';
@@ -59,10 +60,11 @@ export async function withConversationLock<T>(
   work: () => Promise<T>,
 ): Promise<T | null> {
   const key = mutexKey(businessId, customerId);
+  const token = randomUUID();
   let acquired = false;
 
   try {
-    acquired = (await redis.set(key, '1', 'EX', MUTEX_TTL_SECONDS, 'NX')) === 'OK';
+    acquired = (await redis.set(key, token, 'EX', MUTEX_TTL_SECONDS, 'NX')) === 'OK';
   } catch {
     // Redis down: proceed anyway. The partial unique index is the real guard,
     // and refusing to answer customers because a cache is unavailable is worse
@@ -76,7 +78,7 @@ export async function withConversationLock<T>(
   try {
     return await work();
   } finally {
-    await redis.del(key).catch(() => {
+    await redis.eval('if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) end return 0', 1, key, token).catch(() => {
       // The TTL clears it either way.
     });
   }

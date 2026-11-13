@@ -71,12 +71,12 @@ export interface SendReplyResult {
 export function useSendReply(): UseMutationResult<
   SendReplyResult,
   Error,
-  { id: string; body: string }
+  { id: string; body: string; source?: 'assistant_draft' | 'human' }
 > {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: string }) =>
-      apiFetch<SendReplyResult>(`/messages/${id}/reply`, { method: 'POST', body: { body } }),
+    mutationFn: ({ id, body, source }) =>
+      apiFetch<SendReplyResult>(`/messages/${id}/reply`, { method: 'POST', body: { body, source } }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['messages'] });
       qc.invalidateQueries({ queryKey: ['dashboard', 'badges'] });

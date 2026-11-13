@@ -31,20 +31,21 @@ export async function requestPaymentForOrder(
   businessId: string,
   customerId: string,
   orderId: string,
-): Promise<boolean> {
+  assistantMessageId?: string,
+): Promise<{ orderId: string; requestId: string } | null> {
   try {
     const order = await prisma.order.findFirst({
-      where: { id: orderId, businessId, customerId, deletedAt: null },
+      where: { id: orderId, businessId, customerId, deletedAt: null, status: { in: ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] } },
       select: { totalAmount: true, amountPaid: true, referenceNumber: true },
     });
 
-    if (!order) return false;
+    if (!order) return null;
 
     const outstanding = Number(order.totalAmount) - Number(order.amountPaid);
 
     // Nothing owed, nothing to ask for. Also covers an order the assistant
     // priced at zero, where a payment link would be a charge for nothing.
-    if (outstanding <= 0) return false;
+    if (outstanding <= 0) return null;
 
     // Reaching here means AUTONOMOUS mode: nobody read this before it went to
     // a stranger. This is the message the disclosure exists for — an AI asking
@@ -72,6 +73,7 @@ export async function requestPaymentForOrder(
         orderId,
         amount: outstanding,
         send: true,
+        assistantCheckout: { ...(assistantMessageId ? { messageId: assistantMessageId } : {}) },
         message: [
           `Here's the link to pay for ${order.referenceNumber} — GHS ${outstanding.toFixed(2)}. ` +
             'MTN MoMo, Telecel Cash, AirtelTigo Money or card.',
@@ -88,7 +90,7 @@ export async function requestPaymentForOrder(
       { businessId, orderId, reference: link.reference, amount: outstanding },
       'Assistant sent a payment link without approval (autonomous mode)',
     );
-    return true;
+    return { orderId, requestId: link.id };
   } catch (error: unknown) {
     // The commonest cause is payouts not being connected, which is a setup gap
     // rather than a fault: the order stands and the owner can collect however
@@ -97,7 +99,7 @@ export async function requestPaymentForOrder(
       { error, businessId, orderId },
       'Autonomous payment link could not be sent — the order stands unpaid',
     );
-    return false;
+    return null;
   }
 }
 
@@ -121,36 +123,37 @@ export async function requestPaymentForOrder(
 export async function requestPaymentForOpenOrder(
   businessId: string,
   customerId: string,
-): Promise<boolean> {
+  assistantMessageId?: string,
+): Promise<{ orderId: string; requestId: string } | null> {
   try {
     // The most recent order still owed on. Cancelled orders are not owed, and
     // an old settled order is not what "how do I pay" is asking about.
     const order = await prisma.order.findFirst({
-      where: { businessId, customerId, deletedAt: null, status: { not: 'CANCELLED' } },
+      where: { businessId, customerId, deletedAt: null, status: { in: ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] } },
       orderBy: { createdAt: 'desc' },
       select: { id: true, referenceNumber: true, totalAmount: true, amountPaid: true },
     });
 
-    if (!order) return false;
+    if (!order) return null;
 
     const outstanding = Number(order.totalAmount) - Number(order.amountPaid);
-    if (outstanding <= 0) return false;
+    if (outstanding <= 0) return null;
 
-    const open = await findOpenRequestForOrder(businessId, order.id, outstanding, customerId);
+    const open = !assistantMessageId && await findOpenRequestForOrder(businessId, order.id, outstanding, customerId);
     if (open) {
       logger.info(
         { businessId, orderId: order.id, reference: open.reference },
         'Customer asked to pay; a link for this order is already open',
       );
-      return true;
+      return { orderId: order.id, requestId: open.id };
     }
 
-    return await requestPaymentForOrder(businessId, customerId, order.id);
+    return await requestPaymentForOrder(businessId, customerId, order.id, assistantMessageId);
   } catch (error: unknown) {
     logger.warn(
       { error, businessId, customerId },
       'Could not raise a payment link for the customer on request',
     );
-    return false;
+    return null;
   }
 }

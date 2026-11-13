@@ -93,11 +93,11 @@ export default function ReplyEditor({ message }: Props): React.JSX.Element | nul
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <Button
           size="sm"
-          disabled={body.trim().length === 0 || send.isPending}
-          onClick={() => send.mutate({ id: message.id, body: body.trim() })}
+          disabled={body.trim().length === 0 || send.isPending || (isDraft && changed)}
+          onClick={() => send.mutate({ id: message.id, body: body.trim(), source: isDraft ? 'assistant_draft' : 'human' })}
           leadingIcon={<Send className="h-3.5 w-3.5" strokeWidth={1.75} />}
         >
-          {send.isPending ? 'Sending' : 'Send'}
+          {send.isPending ? 'Sending' : isDraft ? 'Approve and send' : 'Send'}
         </Button>
 
         {isDraft ? (

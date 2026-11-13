@@ -27,7 +27,8 @@ function decisionFor(overrides: Partial<AssistantDecision> = {}): AssistantDecis
     entities: { products: [], orderReferences: [], deliveryArea: null },
     answer: {
       canAnswer: true,
-      text: 'Rice 5kg is GHS 80 per bag.',
+      text: null,
+      fact: { kind: 'product_quote', target: 'p_rice5', quantity: null },
       groundedOn: [{ kind: 'product', id: 'p_rice5', field: 'price' }],
     },
     clarification: { needed: false, missing: [] },
@@ -48,6 +49,8 @@ function routeFor(overrides: Partial<RouteInput> = {}) {
     serverEscalation: false,
     clarificationCount: 0,
     canDeliver: true,
+    catalogueMode: 'CATALOGUE',
+    message: 'How much is Rice 5kg?',
     ...overrides,
   });
 }
@@ -56,16 +59,18 @@ describe('routeDecision — the auto-send slice', () => {
   it('sends a grounded, confident, single-product price answer', () => {
     const result = routeFor();
     expect(result.action).toBe('auto_send');
-    expect(result.text).toBe('Rice 5kg is GHS 80 per bag.');
+    expect(result.text).toContain('GHS 80.00');
     expect(result.validationFailures).toEqual([]);
   });
 
   it('sends an answer resting only on a business fact', () => {
     const result = routeFor({
+      message: 'Do you deliver to Tema and how much?',
       decision: decisionFor({
         answer: {
           canAnswer: true,
           text: 'Delivery to Tema is GHS 20.',
+          fact: { kind: 'delivery_fee', target: 'Tema', quantity: null },
           groundedOn: [{ kind: 'business_fact', id: 'deliveryFee' }],
         },
       }),
@@ -75,7 +80,7 @@ describe('routeDecision — the auto-send slice', () => {
   });
 
   it('records what the answer rested on in a form the message row can store', () => {
-    expect(routeFor().groundedOn).toEqual(['product:p_rice5:price']);
+    expect(routeFor().groundedOn).toEqual(['product:p_rice5']);
   });
 });
 
@@ -177,6 +182,7 @@ describe('routeDecision — everything that blocks auto-send', () => {
     const result = routeFor({
       decision: decisionFor({
         order: { isOrder: true, complete: true },
+        answer: { canAnswer: false, text: null, groundedOn: [] },
         entities: {
           products: [{ productId: 'p_rice5', mention: 'Rice 5kg', quantity: 2 }],
           orderReferences: [],
@@ -192,7 +198,7 @@ describe('routeDecision — everything that blocks auto-send', () => {
     // The server derives this: the model reported nothing missing, but with two
     // sizes retrieved and none chosen there is no order to create.
     expect(
-      routeFor({ decision: decisionFor({ order: { isOrder: true, complete: true } }) }).action,
+      routeFor({ message: 'I want Rice', decision: decisionFor({ order: { isOrder: true, complete: true }, answer: { canAnswer: false, text: null, groundedOn: [] } }) }).action,
     ).toBe('clarify');
   });
 
@@ -212,10 +218,9 @@ describe('routeDecision — everything that blocks auto-send', () => {
    *   - anything order-shaped goes through order creation, never a chat reply
    *   - any figure not in the catalogue fails grounding and drafts
    */
-  it('no longer drafts on intent alone when the reply claims nothing', () => {
-    for (const intent of [IntentType.PAYMENT, IntentType.COMPLAINT]) {
-      expect(routeFor({ decision: decisionFor({ intent }) }).action, intent).toBe('auto_send');
-    }
+  it('uses a bounded reply for an ordinary acknowledgment', () => {
+    const result = routeFor({ message: 'Thank you', decision: decisionFor({ answer: { canAnswer: false, text: 'Thank you', groundedOn: [] } }) });
+    expect(result).toMatchObject({ action: 'auto_send', text: 'You’re welcome!' });
   });
 
   it('still drafts a payment or complaint the model escalated', () => {
@@ -268,10 +273,11 @@ describe('routeDecision — clarification', () => {
       serverEscalation: false,
       clarificationCount: 0,
       canDeliver: true,
+      message: 'I want Rice 5kg',
     });
 
     expect(result.action).toBe('clarify');
-    expect(result.text).toBe('How many Rice 5kg would you like?');
+    expect(result.text).toBe('How many units of “Rice 5kg” would you like?');
   });
 
   it('asks even when auto-send is off — the question is ours, not the model’s', () => {
@@ -284,18 +290,20 @@ describe('routeDecision — clarification', () => {
       serverEscalation: false,
       clarificationCount: 0,
       canDeliver: true,
+      message: 'I want Rice',
     });
 
     expect(result.action).toBe('clarify');
   });
 
-  it('asks which one before how many when the message could mean either', () => {
+  it('asks for the item and quantity when the variant is unverified', () => {
     // The model reported only `quantity` missing, against a variant nobody
     // chose — live it produced "how many Rice 25kg?" for a bare "I want rice".
     const result = routeDecision({
       mode: 'DRAFT_ONLY',
       decision: decisionFor({
         intent: IntentType.ORDER,
+        answer: { canAnswer: false, text: null, groundedOn: [] },
         entities: {
           products: [{ productId: 'p_rice25', mention: 'rice', quantity: null }],
           orderReferences: [],
@@ -310,10 +318,11 @@ describe('routeDecision — clarification', () => {
       serverEscalation: false,
       clarificationCount: 0,
       canDeliver: true,
+      message: 'I want Rice',
     });
 
     expect(result.action).toBe('clarify');
-    expect(result.text).toContain('which one would you like?');
+    expect(result.text).toContain('Which item and quantity would you like?');
     expect(result.text).not.toContain('How many');
   });
 
@@ -322,6 +331,7 @@ describe('routeDecision — clarification', () => {
       mode: 'DRAFT_ONLY',
       decision: decisionFor({
         intent: IntentType.ORDER,
+        answer: { canAnswer: false, text: null, groundedOn: [] },
         entities: {
           products: [{ productId: 'p_rice5', mention: 'rice 5kg', quantity: null }],
           orderReferences: [],
@@ -336,9 +346,10 @@ describe('routeDecision — clarification', () => {
       serverEscalation: false,
       clarificationCount: 0,
       canDeliver: true,
+      message: 'I want Rice 5kg',
     });
 
-    expect(result.text).toBe('How many Rice 5kg would you like?');
+    expect(result.text).toBe('How many units of “Rice 5kg” would you like?');
   });
 
   it('stops asking after the cap and hands over', () => {
@@ -389,15 +400,13 @@ describe('routeDecision — clarification', () => {
 });
 
 describe('routeDecision — when the assistant did not run', () => {
-  it('falls back to the template so the customer is not ignored', () => {
+  it('holds for review when the model is unavailable', () => {
     const result = routeFor({ decision: null });
-    expect(result.action).toBe('template_reply');
+    expect(result).toMatchObject({ action: 'draft', effect: 'handoff' });
   });
 
-  it('does not flag every message just because the assistant is silent', () => {
-    // Regression: an unconfigured shop had every greeting escalated, which is
-    // the queue-flooding this rework exists to stop.
-    expect(routeFor({ decision: null }).escalated).toBe(false);
+  it('flags a provider failure and preserves the OFF courtesy policy', () => {
+    expect(routeFor({ decision: null }).escalated).toBe(true);
     expect(requiresReview(IntentType.GREETING, 0.8, 'template_reply', false)).toBe(false);
   });
 
@@ -463,7 +472,7 @@ describe('routeDecision — attaching a product photo', () => {
   });
 
   it('understands the Pidgin forms, not only "send a picture"', () => {
-    for (const message of ['abeg send am make i see', 'how e dey look?', 'show me the rice 5kg']) {
+    for (const message of ['rice 5kg make i see', 'how rice 5kg e dey look? show me', 'show me the rice 5kg']) {
       expect(routeFor({ products: withPhotos, message }).photoImageId).toBe('img_rice5');
     }
   });
@@ -519,10 +528,7 @@ describe('routeDecision — attaching a product photo', () => {
 /**
  * AUTONOMOUS mode.
  *
- * The shop has switched off the evidence gate on purpose. These tests pin down
- * exactly what that does and — more importantly — what it does not, because the
- * failure mode of a mode like this is that it quietly turns off more than it
- * says on the tin.
+ * Autonomous turns share the evidence and permission gate.
  */
 describe('routeDecision — autonomous mode', () => {
   const ungrounded = decisionFor({
@@ -535,10 +541,10 @@ describe('routeDecision — autonomous mode', () => {
     },
   });
 
-  it('sends a figure it could not verify, which is the whole point', () => {
+  it('holds a figure it cannot verify', () => {
     const result = routeFor({ mode: 'AUTONOMOUS', decision: ungrounded });
-    expect(result.action).toBe('auto_send');
-    expect(result.text).toContain('GHS 45');
+    expect(result.action).toBe('draft');
+    expect(result.text).toBeNull();
   });
 
   it('holds that same reply in every other mode', () => {
@@ -547,18 +553,15 @@ describe('routeDecision — autonomous mode', () => {
   });
 
   it('still records what it could not verify', () => {
-    // The gate is off; the record is not. This is what a dispute three weeks
-    // later has to read, and it is the only thing left once the checks are
-    // gone — so it must never come back empty just because the send succeeded.
     const result = routeFor({ mode: 'AUTONOMOUS', decision: ungrounded });
-    expect(result.action).toBe('auto_send');
+    expect(result.action).toBe('draft');
     expect(result.validationFailures.length).toBeGreaterThan(0);
     expect(result.validationFailures).toContain('unverified_amount');
   });
 
-  it('sends below the confidence floor', () => {
+  it('holds a material quote below the confidence floor', () => {
     const result = routeFor({ mode: 'AUTONOMOUS', decision: decisionFor({ confidence: 0.3 }) });
-    expect(result.action).toBe('auto_send');
+    expect(result.action).toBe('draft');
   });
 
   it('still refuses to settle anything the model escalated', () => {
@@ -586,7 +589,7 @@ describe('routeDecision — autonomous mode', () => {
     expect(result.action).not.toBe('auto_send');
   });
 
-  it('lets an order through, where every other mode holds it', () => {
+  it('routes an explicit order to the business service in both automatic modes', () => {
     const order = decisionFor({
       order: { isOrder: true, complete: true },
       // The server resolves the items itself, so the mention has to name a real
@@ -604,8 +607,10 @@ describe('routeDecision — autonomous mode', () => {
       },
     });
 
-    expect(routeFor({ mode: 'AUTONOMOUS', decision: order }).action).toBe('auto_send');
-    expect(routeFor({ mode: 'GROUNDED_AUTO', decision: order }).action).not.toBe('auto_send');
+    const message = 'I want 2 bags of Rice 5kg';
+    expect(routeFor({ mode: 'AUTONOMOUS', decision: order, message }).effect).toBe('order');
+    expect(routeFor({ mode: 'GROUNDED_AUTO', decision: order, message }).effect).toBe('order');
+    expect(routeFor({ mode: 'DRAFT_ONLY', decision: order, message }).action).toBe('draft');
   });
 
   it('still sends nothing at all when the assistant is off', () => {

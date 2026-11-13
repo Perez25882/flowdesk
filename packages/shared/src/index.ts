@@ -17,6 +17,8 @@ export {
   type AssistantProductMention,
   type AssistantDecision,
   type AssistantAction,
+  ASSISTANT_FACT_KINDS,
+  type AssistantFactProposal,
   type EscalationReason,
   type ClarificationField,
 } from './assistant.js';

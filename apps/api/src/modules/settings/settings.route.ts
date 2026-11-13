@@ -35,7 +35,7 @@ const AcceptAutonomySchema = z.object({ accepted: z.boolean() });
 export const AUTONOMY_ACCEPTANCE_TEXT = [
   'I am turning on autonomous replies.',
   'Flowdesk will answer my customers, take orders and send payment links from my WhatsApp number without showing me first.',
-  'It will answer questions even when it cannot check the answer against my catalogue or my saved details, which means it can state a price, a delivery charge or an opening time that I never set.',
+  'Flowdesk checks material replies and actions against current business records and sends requests it cannot verify to my team.',
   'Anything sent this way is sent in my name and is mine to honour with my customer.',
   'I can turn this off at any time in Settings.',
 ].join(' ');

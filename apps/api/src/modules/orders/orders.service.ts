@@ -25,6 +25,7 @@ import {
 } from './orders.repository.js';
 import {
   findActiveCatalogProducts,
+  findCatalogProductsWithStock,
   deductStockForOrderItems,
   restoreStockForOrderItems,
 } from '../products/products.repository.js';
@@ -34,6 +35,9 @@ import { normalizeGhanaPhone } from '../../utils/phone.js';
 import { upsertCustomerByPhone } from '../customers/customers.service.js';
 import { findCustomerById, recalculateCustomerTotals } from '../customers/customers.repository.js';
 import { findProductById } from '../products/products.repository.js';
+import { lockCustomerForTotals } from '../customers/customers.repository.js';
+import { buildLadder } from '../../services/pricing/ladder.js';
+import { approvedNegotiatedPrice, displayLabel, explicitOrderRequest, hasPolicyOverride, mentioned } from '../../services/assistant/commitment.js';
 import {
   lockOrderForDelivery,
   orderActorHasCapability,
@@ -216,23 +220,66 @@ export async function createOrderFromAssistant(
   customerId: string,
   items: AssistantOrderItem[],
   rawMessage: string,
+  source: { messageId: string; pendingOrderId?: string },
 ): Promise<OrderWithRelations> {
-  const order = await createOrderWithReference(businessId, (referenceNumber) => ({
-    businessId,
-    customerId,
-    referenceNumber,
-    rawMessage,
-    isManual: false,
-    items: items.map((item) => ({
-      productId: item.productId,
-      description: item.description,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-    })),
-  }));
+  const referenceNumber = await generateOrderReference(businessId);
+  const { order, created } = await prisma.$transaction(async (tx) => {
+    const customer = await lockCustomerForTotals(tx, customerId, businessId);
+    if (!customer || customer.deletedAt) throw new NotFoundError('Customer not found');
+    const message = await tx.message.findFirst({ where: {
+      id: source.messageId, businessId, customerId, direction: 'INBOUND', body: rawMessage,
+      customer: { blacklisted: false },
+    }, select: { relatedOrderId: true } });
+    if (!message) throw new NotFoundError('Inbound message not found');
+    if (message.relatedOrderId) {
+      const existing = await findOrderById(message.relatedOrderId, businessId, { tx });
+      if (!existing || existing.customerId !== customerId) throw new ConflictError('Inbound order cannot be recovered');
+      return { order: existing, created: false };
+    }
+    const [business] = await tx.$queryRaw<Array<{ aiAssistMode: string; bargainingEnabled: boolean }>>`
+      SELECT "aiAssistMode"::text, "bargainingEnabled" FROM businesses WHERE id = ${businessId}
+        AND active AND "deletedAt" IS NULL AND "deactivatedAt" IS NULL
+        AND ("aiAssistMode" = 'GROUNDED_AUTO' OR ("aiAssistMode" = 'AUTONOMOUS' AND "autonomyAcceptedAt" IS NOT NULL)) FOR SHARE
+    `;
+    if (!business || !explicitOrderRequest(rawMessage) || hasPolicyOverride(rawMessage)) {
+      throw new ForbiddenError('Assistant order is outside the current policy');
+    }
+    const ids = items.map(({ productId }) => productId);
+    if (!ids.length || ids.length > 10 || new Set(ids).size !== ids.length) throw new ValidationError('Order items are ambiguous');
+    await tx.$queryRaw`SELECT id FROM products WHERE "businessId" = ${businessId} AND active AND "deletedAt" IS NULL ORDER BY id FOR SHARE`;
+    const catalog = await findCatalogProductsWithStock(businessId, tx);
+    const extracted = extractItemsFromText(rawMessage, catalog);
+    if (extracted.length !== items.length) throw new ConflictError('Order catalogue evidence changed');
+    const verified = items.map((item) => {
+      const product = catalog.find((row) => row.id === item.productId);
+      const evidence = extracted.find((row) => row.productId === item.productId && row.matched && row.confidence === 1);
+      const ambiguous = product && !mentioned(rawMessage, product.name) && product.aliases.some((alias) =>
+        mentioned(rawMessage, alias) && catalog.some((other) => other.id !== product.id &&
+          [other.name, ...other.aliases].some((term) => term.toLowerCase() === alias.toLowerCase())));
+      if (!product || !evidence || evidence.quantity !== item.quantity || product.stockQuantity < item.quantity || !displayLabel(product.name) ||
+          ambiguous) {
+        throw new ConflictError('Order quantity or inventory is unverified');
+      }
+      const ladder = buildLadder({ ...product, bargainingEnabled: business.bargainingEnabled });
+      if (!approvedNegotiatedPrice({ ...product, ladder }, item.quantity, item.unitPrice)) throw new ConflictError('Order price changed');
+      return { ...item, description: product.name };
+    });
+    const order = await createOrder({ businessId, customerId, referenceNumber, rawMessage, isManual: false, items: verified }, tx);
+    await tx.message.update({ where: { id: source.messageId }, data: { relatedOrderId: order.id } });
+    if (source.pendingOrderId) await tx.pendingOrder.updateMany({
+      where: { id: source.pendingOrderId, businessId, customerId, status: 'AWAITING_REPLY', expiresAt: { gt: new Date() } },
+      data: { status: 'RESOLVED', resolvedOrderId: order.id },
+    });
+    await recalculateCustomerTotals(customerId, tx);
+    return { order, created: true };
+  });
 
-  await Promise.all([recalculateCustomerTotals(customerId), recordOrder(businessId)]);
-  await emitCreated(order);
+  if (created) {
+    const effects = await Promise.allSettled([recordOrder(businessId), emitCreated(order)]);
+    if (effects.some((effect) => effect.status === 'rejected')) {
+      logger.warn({ orderId: order.id, businessId }, 'Assistant order committed with pending secondary effects');
+    }
+  }
 
   logger.info(
     {

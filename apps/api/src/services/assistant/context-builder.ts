@@ -1,4 +1,4 @@
-import type { AiAssistMode, BusinessType, CatalogueMode, Prisma } from '@prisma/client';
+import { Prisma, type AiAssistMode, type BusinessType, type CatalogueMode } from '@prisma/client';
 import type { BusinessProfile } from '@flowdesk/shared';
 import { prisma } from '../../config/database.js';
 import { findCandidateProducts } from '../../utils/item-extractor.js';
@@ -8,6 +8,7 @@ import { buildLadder } from '../pricing/ladder.js';
 import { findSlots, listServices } from '../../modules/bookings/bookings.service.js';
 import { describeImageForReply } from './describe-image.js';
 import { resolveRepliedTo } from './status-context.js';
+import { BusinessProfileSchema } from '../../modules/settings/settings.schema.js';
 import {
   buildEvidenceSet,
   type EvidenceOrder,
@@ -231,6 +232,7 @@ function toEvidenceProduct(
     unit: product.unit,
     price: product.price,
     stockQuantity: product.stockQuantity,
+    aliases: product.aliases,
     photoId: product.photoId,
     ladder: buildLadder({
       price: product.price,
@@ -358,8 +360,8 @@ const BUSINESS_CONTEXT_SELECT = {
  * malformed profile must not become a fact the assistant states.
  */
 function readProfile(value: unknown): BusinessProfile | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  return value as BusinessProfile;
+  const parsed = BusinessProfileSchema.safeParse(value);
+  return parsed.success ? parsed.data as BusinessProfile : null;
 }
 
 export async function loadAssistantBusiness(
@@ -383,6 +385,8 @@ export async function loadAssistantBusiness(
     aiAssistMode: business.aiAssistMode,
     catalogueMode: business.catalogueMode,
     waDisplayNumber: business.waDisplayNumber,
+    bargainingEnabled: business.bargainingEnabled,
+    bookingsEnabled: business.bookingsEnabled,
   };
 }
 
@@ -470,10 +474,11 @@ export function carriesPersonalDetail(body: string): boolean {
   return false;
 }
 
-export async function loadOwnerVoice(businessId: string): Promise<string[]> {
+export async function loadOwnerVoice(businessId: string, customerId: string): Promise<string[]> {
   const rows = await prisma.message.findMany({
     where: {
       businessId,
+      customerId,
       direction: 'OUTBOUND',
       sentFromApp: true,
       body: { not: null },
@@ -520,10 +525,7 @@ export async function loadOpenOrders(
       businessId,
       customerId,
       deletedAt: null,
-      // DISPATCHED counts as open: the customer most likely to ask "where is my
-      // order" is the one whose order is already on the way, and leaving it out
-      // meant the assistant answered as though they had no order at all.
-      status: { in: ['PENDING', 'CONFIRMED', 'PROCESSING', 'DISPATCHED'] },
+      status: { in: ['PENDING', 'CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] },
     },
     orderBy: { createdAt: 'desc' },
     take: MAX_OPEN_ORDERS,
@@ -532,7 +534,10 @@ export async function loadOpenOrders(
       referenceNumber: true,
       status: true,
       totalAmount: true,
-      amountPaid: true,
+      payments: {
+        where: { businessId, customerId, voidedAt: null, confidence: { not: 'CLAIMED' } },
+        select: { amount: true, direction: true },
+      },
     },
   });
 
@@ -542,7 +547,8 @@ export async function loadOpenOrders(
     status: order.status,
     // Decimal columns: converted here so no prompt ever contains `{"s":1,...}`.
     totalAmount: Number(order.totalAmount),
-    amountPaid: Number(order.amountPaid),
+    amountPaid: Number(order.payments.reduce((total, payment) =>
+      payment.direction === 'OUT' ? total.minus(payment.amount) : total.plus(payment.amount), new Prisma.Decimal(0))),
   }));
 }
 
@@ -552,6 +558,7 @@ export interface LoadContextInput {
   messageId: string;
   message: string;
   awaitingClarification?: string | null;
+  includeUntrustedContext?: boolean;
 }
 
 export interface LoadedContext extends AssistantContext {
@@ -578,10 +585,11 @@ export interface LoadedContext extends AssistantContext {
  */
 async function loadRepliedToMessage(
   businessId: string,
+  customerId: string,
   messageId: string,
 ): Promise<RepliedToMessage | null> {
   const current = await prisma.message.findFirst({
-    where: { id: messageId, businessId },
+    where: { id: messageId, businessId, customerId },
     select: { replyToWaId: true },
   });
 
@@ -590,7 +598,7 @@ async function loadRepliedToMessage(
   // Everything about WHAT was replied to — caption, stored description, or the
   // honest admission that we hold nothing — lives in `status-context.ts`, so
   // the four cases can be argued with in a test rather than here.
-  const context = await resolveRepliedTo(businessId, current.replyToWaId, describeImageForReply);
+  const context = await resolveRepliedTo(businessId, current.replyToWaId, describeImageForReply, customerId);
   if (!context) return null;
 
   return context;
@@ -634,13 +642,14 @@ async function loadBookableServices(businessId: string): Promise<EvidenceService
 export async function loadAssistantContext(
   input: LoadContextInput,
 ): Promise<LoadedContext | null> {
+  const includeUntrusted = input.includeUntrustedContext !== false;
   const [business, catalog, history, openOrders, voiceExamples, replyingTo] = await Promise.all([
     loadAssistantBusiness(input.businessId),
     findCatalogProductsWithStock(input.businessId),
-    loadConversationHistory(input.businessId, input.customerId, input.messageId),
+    includeUntrusted ? loadConversationHistory(input.businessId, input.customerId, input.messageId) : [],
     loadOpenOrders(input.businessId, input.customerId),
-    loadOwnerVoice(input.businessId),
-    loadRepliedToMessage(input.businessId, input.messageId),
+    includeUntrusted ? loadOwnerVoice(input.businessId, input.customerId) : [],
+    includeUntrusted ? loadRepliedToMessage(input.businessId, input.customerId, input.messageId) : null,
   ]);
 
   if (!business) return null;

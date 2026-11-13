@@ -1,5 +1,6 @@
 import {
   ASSISTANT_CONTRACT_VERSION,
+  ASSISTANT_FACT_KINDS,
   ASSISTANT_LANGUAGES,
   ASSISTANT_SENTIMENTS,
   CLARIFICATION_FIELDS,
@@ -115,8 +116,19 @@ export const ASSISTANT_DECISION_JSON_SCHEMA: Record<string, unknown> = {
     answer: {
       type: 'object',
       additionalProperties: false,
-      required: ['canAnswer', 'text', 'groundedOn'],
+      required: ['canAnswer', 'text', 'groundedOn', 'fact'],
       properties: {
+        fact: {
+          anyOf: [{
+            type: 'object', additionalProperties: false,
+            required: ['kind', 'target', 'quantity'],
+            properties: {
+              kind: { type: 'string', enum: [...ASSISTANT_FACT_KINDS] },
+              target: nullableString,
+              quantity: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+            },
+          }, { type: 'null' }],
+        },
         canAnswer: {
           type: 'boolean',
           description:
@@ -258,6 +270,18 @@ const productMentionSchema = z.object({
  * array becomes empty, and empty evidence means the answer is not sendable. The
  * invariant pass, the validator and the router all still run afterwards.
  */
+export const assistantFactSchema = z.object({
+  kind: z.enum(ASSISTANT_FACT_KINDS),
+  target: z.string().min(1).max(120).nullable(),
+  quantity: z.number().int().min(1).max(MAX_QUANTITY).nullable(),
+}).strict();
+
+export const assistantPriceOfferSchema = z.object({
+  productId: z.string().min(1).max(120),
+  unitPrice: z.number().finite().positive(),
+  quantity: z.number().int().min(1).max(MAX_QUANTITY),
+}).strict();
+
 const decisionSchema = z.object({
   intent: z.enum(MODEL_INTENTS),
   // Absent confidence reads as no confidence, which fails the auto-send bar.
@@ -274,9 +298,10 @@ const decisionSchema = z.object({
   answer: z
     .object({
       canAnswer: z.boolean().default(false),
-      text: z.string().nullish(),
+      text: z.string().max(MAX_ANSWER_LENGTH).nullish(),
       groundedOn: z.array(evidenceRefSchema).default([]),
-    })
+      fact: assistantFactSchema.nullish(),
+    }).strict()
     .default({}),
   clarification: z
     .object({
@@ -296,20 +321,11 @@ const decisionSchema = z.object({
       reason: z.enum(ESCALATION_REASONS).nullish(),
     })
     .default({}),
-  priceOffer: z
-    .object({
-      productId: z.string(),
-      unitPrice: z.number(),
-      quantity: z.number(),
-    })
-    .nullish(),
+  priceOffer: assistantPriceOfferSchema.nullish(),
   booking: z
-    .object({
-      serviceId: z.string(),
-      startsAt: z.string(),
-    })
+    .object({ serviceId: z.string().min(1).max(120), startsAt: z.string().datetime({ offset: true }) }).strict()
     .nullish(),
-});
+}).strict();
 
 /** Parses the model's JSON. Returns null rather than throwing — a bad response is expected traffic. */
 export function parseDecision(raw: unknown): AssistantDecision | null {
@@ -336,6 +352,7 @@ export function parseDecision(raw: unknown): AssistantDecision | null {
     answer: {
       canAnswer: value.answer.canAnswer,
       text: value.answer.text ?? null,
+      ...(value.answer.fact ? { fact: value.answer.fact } : {}),
       groundedOn: value.answer.groundedOn.map((ref) => ({
         kind: ref.kind,
         id: ref.id,
@@ -466,6 +483,7 @@ export function applyServerInvariants(
       canAnswer,
       text: text.length > 0 ? text : null,
       groundedOn,
+      ...(decision.answer.fact ? { fact: decision.answer.fact } : {}),
     },
     clarification: {
       needed: decision.clarification.needed,

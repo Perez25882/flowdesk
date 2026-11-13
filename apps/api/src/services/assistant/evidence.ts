@@ -20,6 +20,7 @@ export interface EvidenceProduct {
   unit: string;
   price: number;
   stockQuantity: number;
+  aliases?: string[];
   /**
    * The photo to send if the customer asks to see this item, or null when the
    * shop has not uploaded one.
@@ -51,6 +52,9 @@ export interface EvidenceOrder {
 }
 
 export interface EvidenceSet {
+  orders: ReadonlyMap<string, EvidenceOrder>;
+  services: ReadonlyMap<string, EvidenceService>;
+  mentionedQuantities: ReadonlySet<number>;
   /** Every currency value the answer may state, in pesewas. */
   allowedAmounts: Set<number>;
   /** Every stock count the answer may state. */
@@ -65,22 +69,6 @@ export interface EvidenceSet {
   factKeys: Set<string>;
   /** The business's own numbers, the only ones an auto-send may contain. */
   ownPhoneDigits: Set<string>;
-  /**
-   * The lowest unit price, in pesewas, the assistant may agree to per product.
-   *
-   * A product absent from this map is not negotiable. The router consults it
-   * directly rather than trusting anything the model said about it.
-   */
-  priceFloors: Map<string, number>;
-  /**
-   * Whether ANY product in this reply can be haggled over.
-   *
-   * When true the router stops waiving money-grounding failures, even in
-   * autonomous mode. A wrong figure in an ordinary reply is a sentence a
-   * customer queries; a wrong figure in a negotiation is a price the shop has
-   * agreed to.
-   */
-  negotiable: boolean;
   /** Service ids that were actually supplied, for checking a booking. */
   serviceIds: Set<string>;
   /**
@@ -150,7 +138,6 @@ export function buildEvidenceSet(input: BuildEvidenceInput): EvidenceSet {
   const productIds = new Set<string>();
   const factKeys = new Set<string>();
   const ownPhoneDigits = new Set<string>();
-  const priceFloors = new Map<string, number>();
   const serviceIds = new Set<string>();
   const allowedSlots = new Map<string, Set<number>>();
 
@@ -190,9 +177,6 @@ export function buildEvidenceSet(input: BuildEvidenceInput): EvidenceSet {
       }
     }
 
-    if (product.ladder?.floor !== null && product.ladder?.floor !== undefined) {
-      priceFloors.set(product.id, toMinorUnits(product.ladder.floor));
-    }
   }
 
   // A basket of several products summed together.
@@ -270,6 +254,9 @@ export function buildEvidenceSet(input: BuildEvidenceInput): EvidenceSet {
   allowedAmounts.add(0);
 
   return {
+    orders: new Map(input.openOrders.map((order) => [order.id, order])),
+    services: new Map((input.services ?? []).map((service) => [service.id, service])),
+    mentionedQuantities: quantities,
     allowedAmounts,
     allowedStockCounts,
     allowedOrderRefs,
@@ -277,8 +264,6 @@ export function buildEvidenceSet(input: BuildEvidenceInput): EvidenceSet {
     productIds,
     factKeys,
     ownPhoneDigits,
-    priceFloors,
-    negotiable: priceFloors.size > 0,
     serviceIds,
     allowedSlots,
   };

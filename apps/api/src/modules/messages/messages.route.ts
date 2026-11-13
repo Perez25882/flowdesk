@@ -88,7 +88,7 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
     { preHandler: requireCapability('messages.send') },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
-      await service.dismissDraft(id, request.business!.id);
+      await service.dismissDraft(id, request.business!.id, request.user?.staffId ?? null);
       return success(reply, { dismissed: true });
     },
   );

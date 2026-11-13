@@ -108,7 +108,7 @@ export class AnthropicAssistantProvider implements AssistantProvider {
       if (reason === 'timeout') {
         logger.warn({ timeoutMs: env.ASSISTANT_TIMEOUT_MS }, 'Assistant request timed out');
       } else {
-        logger.error({ error, reason }, 'Assistant request failed');
+        logger.error({ reason }, 'Assistant request failed');
       }
 
       return { ok: false, reason };

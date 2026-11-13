@@ -192,13 +192,10 @@ export function composeQuestion(
         : 'Almost done. Who should we put on the delivery?';
 
     case 'deliveryAddress': {
-      const areas = input.profile?.deliveryAreas ?? [];
       if (reasked) {
         return 'I need a bit more than that. What is the full delivery address, including a landmark if you have one?';
       }
-      if (areas.length === 0) return 'What is the delivery address?';
-      const shown = areas.slice(0, 6).join(', ');
-      return `What is the delivery address? We cover ${shown}.`;
+        return 'What is the delivery address?';
     }
 
     case 'contactPhone':
@@ -216,15 +213,13 @@ export function composeQuestion(
 /**
  * The one-message version, for a customer who has ordered before.
  *
- * Shows everything we already hold and asks for a yes. Three round trips become
- * one for anyone who is not moving house between orders.
+ * Offers reuse of the previous details without repeating personal information.
  */
 export function composeConfirmation(known: DeliveryDetails): string | null {
   if (!isComplete(known)) return null;
   return (
-    `Delivering to ${known.recipientName}, ${known.deliveryAddress}, ` +
-    `${displayPhone(known.contactPhone!)}. Is that still right? ` +
-    'Reply YES to confirm, or send the new address.'
+      'Would you like to use the delivery details from your previous order? ' +
+      'Reply YES to use them, or send your new delivery details.'
   );
 }
 

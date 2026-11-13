@@ -7,10 +7,8 @@ import { Button } from '@/components/ui/Button';
  * The gate in front of autonomous mode.
  *
  * Deliberately not a checkbox in a settings row. The owner is about to let
- * software state prices it cannot check and charge their customers for them,
- * and the honest way to present that is to describe it and make them type
- * something, not to let it happen as a side effect of picking an option from a
- * dropdown they were scrolling through.
+ * software handle eligible replies and payment requests. The confirmation
+ * makes that permission explicit.
  *
  * The wording here is a summary shown on screen; the exact text recorded
  * against the account is the server's, so an edit to this component cannot
@@ -63,11 +61,9 @@ export default function AutonomyConsent({
           Replies go to your customers from your number with nobody reading them first.
         </li>
         <li>
-          It will answer even when it <strong className="text-text-primary">cannot check</strong>{' '}
-          the answer, so it can state a price, a delivery charge or an opening time you never
-          set.
+          Prices, availability and other material commitments are checked against your business records. Requests that need a person go to your team.
         </li>
-        <li>It will take orders and send payment links on its own.</li>
+        <li>It can take eligible orders and send payment links for verified balances.</li>
         <li>
           Anything it sends is yours to honour with your customer. They have no agreement
           with Flowdesk.
@@ -75,8 +71,7 @@ export default function AutonomyConsent({
       </ul>
 
       <p className="text-xs text-text-muted">
-        Every reply is recorded, including which claims could not be verified against your
-        records, so if a customer disputes what they were told, there is something to read.
+        The inbox records replies and requests that need review.
       </p>
 
       <label className="flex flex-col gap-1.5">

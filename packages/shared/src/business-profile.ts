@@ -326,7 +326,7 @@ export const AI_ASSIST_MODE_LABELS: Record<AiAssistMode, string> = {
  *
  * Separate from the label because the label is a menu item and this is the
  * consequence. AUTONOMOUS in particular is not a confidence dial and reads like
- * one, so its description says plainly what it stops checking.
+ * one, so its description identifies the extra checkout permission.
  */
 export const AI_ASSIST_MODE_DESCRIPTIONS: Record<AiAssistMode, string> = {
   OFF: 'Customers get your fixed replies only. Nothing is written for you.',
@@ -334,7 +334,7 @@ export const AI_ASSIST_MODE_DESCRIPTIONS: Record<AiAssistMode, string> = {
   GROUNDED_AUTO:
     'Answers questions it can check against your catalogue and your saved details. Anything it cannot check comes to you first.',
   AUTONOMOUS:
-    'Answers everything, takes orders and sends payment links without showing you first — including answers it could not check against anything you have recorded.',
+    'Answers from verified records, takes eligible orders and sends payment links for eligible balances. Anything it cannot verify goes to your team.',
 };
 
 /** Modes that send messages to customers without the owner reading them. */

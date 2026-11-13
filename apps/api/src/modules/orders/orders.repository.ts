@@ -231,11 +231,13 @@ export async function findOrderById(
 export async function findOrderByReference(
   ref: string,
   businessId: string,
+  customerId?: string,
 ): Promise<OrderWithRelations | null> {
   const order = await prisma.order.findFirst({
     where: {
       referenceNumber: ref,
       businessId,
+      ...(customerId ? { customerId } : {}),
       deletedAt: null,
     },
     include: {

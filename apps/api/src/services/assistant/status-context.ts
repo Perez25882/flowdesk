@@ -62,9 +62,13 @@ export async function resolveRepliedTo(
   businessId: string,
   replyToWaId: string,
   describeImage?: ImageDescriber,
+  customerId?: string,
 ): Promise<RepliedToContext | null> {
   const target = await prisma.message.findFirst({
-    where: { businessId, waMessageId: replyToWaId },
+    where: {
+      businessId, waMessageId: replyToWaId,
+      ...(customerId ? { OR: [{ customerId }, { customerId: null, direction: 'OUTBOUND' }] } : {}),
+    },
     select: {
       id: true,
       body: true,

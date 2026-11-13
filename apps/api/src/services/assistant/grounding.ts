@@ -30,6 +30,12 @@ export type GroundingFailure =
   | 'contains_url'
   | 'contains_email'
   | 'ungrounded_claim'
+  | 'unsupported_commitment'
+  | 'conflicting_proposal'
+  | 'unverified_customer_request'
+  | 'stale_evidence'
+  | 'handoff_failed'
+  | 'effect_unavailable'
   | 'empty';
 
 export interface GroundingResult {

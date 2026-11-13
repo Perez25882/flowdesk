@@ -16,6 +16,7 @@ import {
 import * as repository from './payment-links.repository.js';
 import { lockPaymentRelationship, requirePaymentActor } from './payment-relationships.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
+import { explicitPaymentRequest } from '../../services/assistant/commitment.js';
 
 /**
  * Payment links: asking a customer for money, and recognising it when it lands.
@@ -157,6 +158,29 @@ export interface CreateLinkInput {
   send?: boolean | undefined;
   /** Overrides the default sentence that carries the link. */
   message?: string | null | undefined;
+  assistantCheckout?: { messageId?: string };
+}
+
+async function verifyAssistantCheckout(tx: Prisma.TransactionClient, businessId: string, input: CreateLinkInput): Promise<void> {
+  if (!input.assistantCheckout) return;
+  const { customerId, orderId, assistantCheckout } = input;
+  await tx.$queryRaw`SELECT id FROM businesses WHERE id = ${businessId} FOR SHARE`;
+  const [order, business, message, ledger] = await Promise.all([
+    tx.order.findFirst({ where: { id: orderId ?? '', businessId, customerId, deletedAt: null,
+      customer: { blacklisted: false }, status: { in: ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] } },
+      select: { totalAmount: true, deliveryCapturedAt: true } }),
+    tx.business.findFirst({ where: { id: businessId, active: true, deletedAt: null, deactivatedAt: null,
+      aiAssistMode: 'AUTONOMOUS', autonomyAcceptedAt: { not: null } }, select: { id: true } }),
+    assistantCheckout.messageId ? tx.message.findFirst({ where: { id: assistantCheckout.messageId, businessId, customerId,
+      direction: 'INBOUND' }, select: { body: true } }) : null,
+    tx.payment.findMany({ where: { orderId: orderId ?? '', businessId, customerId, voidedAt: null,
+      confidence: { not: 'CLAIMED' } }, select: { amount: true, direction: true } }),
+  ]);
+  const requested = assistantCheckout.messageId ? Boolean(message?.body && explicitPaymentRequest(message.body)) : Boolean(order?.deliveryCapturedAt);
+  const due = order && ledger.reduce((balance, payment) => payment.direction === 'IN' ? balance.minus(payment.amount) : balance.plus(payment.amount), order.totalAmount);
+  if (!business || !due || !requested || !due.eq(input.amount)) {
+    throw new ConflictError('Assistant checkout no longer matches the outstanding order');
+  }
 }
 
 /**
@@ -184,6 +208,7 @@ export async function createPaymentLink(
   const prepared = await prisma.$transaction(async (tx) => {
     await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
     await lockPaymentRelationship(tx, { ...input, businessId });
+    await verifyAssistantCheckout(tx, businessId, normalized);
     const business = await requirePayoutReady(businessId, tx);
     if (input.orderId) {
       const existing = await repository.findOpenRequestForOrder(
@@ -216,6 +241,7 @@ export async function createPaymentLink(
       row = await prisma.$transaction(async (tx) => {
         await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
         await lockPaymentRelationship(tx, { ...normalized, businessId });
+        await verifyAssistantCheckout(tx, businessId, normalized);
         await tx.$queryRaw`SELECT id FROM businesses WHERE id = ${businessId} FOR SHARE`;
         const business = await requirePayoutReady(businessId, tx);
         if (business.paystackSubaccountCode !== intent.subaccountCode) {
@@ -247,7 +273,7 @@ export async function createPaymentLink(
     }
   }
 
-  if (input.send) await sendLinkToCustomer(businessId, row, input.message ?? null);
+  if (input.send) await sendLinkToCustomer(businessId, row, input.message ?? null, input.assistantCheckout);
   return toView(row);
 }
 
@@ -336,21 +362,30 @@ async function sendLinkToCustomer(
   businessId: string,
   row: repository.PaymentRequestRow,
   message: string | null,
+  assistantCheckout?: CreateLinkInput['assistantCheckout'],
 ): Promise<void> {
   const context = await loadNotificationContext(businessId, row.customerId);
-  if (!context) return;
+  if (!context) {
+    if (assistantCheckout) throw new ConflictError('Assistant checkout awaits notification');
+    return;
+  }
 
   const amount = Number(row.amount).toFixed(2);
   const text =
     message?.trim() ||
     `Here's your payment link for GHS ${amount}. You can pay with MTN MoMo, Telecel Cash, AirtelTigo Money or a card:\n${row.authorizationUrl}`;
 
-  await deliverText(context, text, {
+  const sent = await deliverText(context, text, {
     humanInitiated: true,
+    ...(assistantCheckout ? {
+      idempotencyKey: `assistant-checkout-${assistantCheckout.messageId ?? row.id}`,
+      requireQueueHandoff: true,
+    } : {}),
     // One send per request per call. Repeating a reminder is a legitimate thing
     // for an owner to do, so the key is not the request id alone — see the note
     // on `EnqueueOptions.idempotencyKey`.
   });
+  if (assistantCheckout && !sent.allowed) throw new ConflictError('Assistant checkout awaits notification');
 }
 
 export async function listPaymentLinks(

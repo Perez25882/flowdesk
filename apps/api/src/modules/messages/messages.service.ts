@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
+import { hasCapability } from '@flowdesk/shared';
+import type { Prisma, StaffRole } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
 import { redis } from '../../config/redis.js';
-import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { enqueueOutboundMessage } from '../../queues/outbound.queue.js';
 import { loadTenantCredentials } from '../../services/whatsapp/client.js';
 import { shouldSendAutoReply } from '../../services/templates/template-engine.js';
@@ -14,6 +16,15 @@ import type {
   UpdateMessageIntentInput,
 } from './messages.schema.js';
 import * as repository from './messages.repository.js';
+import { draftAudit, verifyAssistantDraft } from '../../services/assistant/draft-policy.js';
+
+async function requireMessageActor(businessId: string, staffId: string | null, tx?: Prisma.TransactionClient): Promise<void> {
+  if (staffId === null) return;
+  const staff = tx ? (await tx.$queryRaw<Array<{ role: StaffRole }>>`
+    SELECT role::text FROM staff WHERE id = ${staffId} AND "businessId" = ${businessId} AND active FOR SHARE
+  `)[0] : await prisma.staff.findFirst({ where: { id: staffId, businessId, active: true }, select: { role: true } });
+  if (!staff || !hasCapability(staff.role, 'messages.send')) throw new ForbiddenError('You do not have permission to send messages');
+}
 
 export async function listMessages(
   businessId: string,
@@ -112,6 +123,7 @@ export async function sendReply(
   data: SendReplyInput,
   staffId: string | null,
 ): Promise<SendReplyResult> {
+  await requireMessageActor(businessId, staffId);
   const message = await prisma.message.findFirst({
     where: { id: messageId, businessId },
     select: {
@@ -119,8 +131,10 @@ export async function sendReply(
       customerId: true,
       aiReplyText: true,
       aiReplyStatus: true,
+      aiPolicy: true,
+      body: true,
       customer: {
-        select: { id: true, waNumber: true, blacklisted: true, lastInboundAt: true },
+        select: { id: true, businessId: true, deletedAt: true, waNumber: true, blacklisted: true, lastInboundAt: true },
       },
     },
   });
@@ -129,12 +143,21 @@ export async function sendReply(
     throw new NotFoundError('Message not found');
   }
 
-  if (!message.customer || !message.customerId) {
+  if (!message.customer || !message.customerId || message.customer.businessId !== businessId || message.customer.deletedAt) {
     throw new ValidationError('This message has no customer to reply to');
   }
 
   if (message.customer.blacklisted) {
     throw new ValidationError('This customer is blocked. Unblock them to reply.');
+  }
+
+  const approving = data.source === 'assistant_draft' ||
+    (message.aiReplyText !== null && data.body === message.aiReplyText) ||
+    (message.aiReplyStatus === 'DRAFT' && data.source !== 'human');
+  if (approving) {
+    if (message.aiReplyStatus !== 'DRAFT' || message.aiReplyText !== data.body || !message.body) {
+      throw new ConflictError('This draft changed or was already resolved.');
+    }
   }
 
   // Meta's rule, checked before we accept rather than after we fail.
@@ -163,10 +186,18 @@ export async function sendReply(
   // Claim the draft. `updateMany` with the expected status is atomic, so only
   // one of two concurrent clicks can transition it — the same idiom used for
   // WhatsApp connection state. A message with no draft is still replyable.
-  if (message.aiReplyStatus === 'DRAFT') {
-    const claim = await prisma.message.updateMany({
-      where: { id: messageId, businessId, aiReplyStatus: 'DRAFT' },
-      data: { aiReplyStatus: 'SENT' },
+  if (approving) {
+    await verifyAssistantDraft({ businessId, customerId: message.customerId, messageId,
+      message: message.body!, policy: message.aiPolicy, text: data.body });
+    const claim = await prisma.$transaction(async (tx) => {
+      await requireMessageActor(businessId, staffId, tx);
+      return tx.message.updateMany({
+        where: { id: messageId, businessId, customerId: message.customerId, aiReplyStatus: 'DRAFT', aiReplyText: data.body,
+          customer: { businessId, deletedAt: null, blacklisted: false }, business: { active: true, deletedAt: null, deactivatedAt: null } },
+        data: { aiReplyStatus: 'SENT', requiresReview: true, aiPolicy: {
+          ...draftAudit(message.aiPolicy), state: 'WAITING_HANDOFF', approvedBy: staffId ?? 'owner',
+        } },
+      });
     });
 
     if (claim.count === 0) {
@@ -177,7 +208,7 @@ export async function sendReply(
   const edited = message.aiReplyText !== null && message.aiReplyText !== data.body;
   const claimKey = replyClaimKey(messageId, data.body);
 
-  if (!(await claimReply(claimKey))) {
+  if (!approving && !(await claimReply(claimKey))) {
     // Not an error and not a drop: this exact text is already on its way to
     // this customer. Reported rather than swallowed so the caller can tell one
     // delivery from two, which is the whole complaint against the jobId this
@@ -191,9 +222,8 @@ export async function sendReply(
   }
 
   try {
-    // No idempotency key on the job. A second reply to the same message is an
-    // ordinary thing for an owner to send, and BullMQ has no way to report that
-    // it refused one.
+    // Only draft approval uses a fixed job identity. The human composer can
+    // send an independent follow-up for the same inbound message.
     await enqueueOutboundMessage({
       businessId,
       customerId: message.customerId,
@@ -201,22 +231,26 @@ export async function sendReply(
       body: data.body,
       inReplyToMessageId: message.id,
       ...(staffId ? { sentByStaffId: staffId } : {}),
-    });
+    }, approving ? { idempotencyKey: `assistant-approved-${messageId}` } : {});
   } catch (error: unknown) {
     // Release both claims so the owner can try again rather than being told for
     // the next minute that their own reply is a duplicate.
-    await releaseReplyClaim(claimKey);
+    if (!approving) await releaseReplyClaim(claimKey);
 
-    if (message.aiReplyStatus === 'DRAFT') {
+    if (approving) {
       await prisma.message
         .updateMany({
           where: { id: messageId, businessId, aiReplyStatus: 'SENT' },
-          data: { aiReplyStatus: 'DRAFT' },
+          data: { aiReplyStatus: 'DRAFT', aiPolicy: draftAudit(message.aiPolicy) },
         })
         .catch(() => undefined);
     }
     throw error;
   }
+
+  if (approving) await prisma.message.update({ where: { id: messageId, businessId }, data: {
+    aiPolicy: { ...draftAudit(message.aiPolicy), state: 'APPROVED', approvedBy: staffId ?? 'owner' }, requiresReview: false,
+  } });
 
   if (staffId) {
     await logActivity({
@@ -237,10 +271,14 @@ export async function sendReply(
 }
 
 /** Discards a draft the owner does not want to send. */
-export async function dismissDraft(messageId: string, businessId: string): Promise<void> {
-  const dismissed = await prisma.message.updateMany({
-    where: { id: messageId, businessId, aiReplyStatus: 'DRAFT' },
-    data: { aiReplyStatus: 'DISMISSED' },
+export async function dismissDraft(messageId: string, businessId: string, staffId: string | null = null): Promise<void> {
+  const dismissed = await prisma.$transaction(async (tx) => {
+    await requireMessageActor(businessId, staffId, tx);
+    const where = { id: messageId, businessId, aiReplyStatus: 'DRAFT' as const };
+    const draft = await tx.message.findFirst({ where, select: { aiPolicy: true } });
+    return tx.message.updateMany({ where, data: { aiReplyStatus: 'DISMISSED', requiresReview: false, aiPolicy: {
+      ...draftAudit(draft?.aiPolicy ?? null), version: 1, state: 'REJECTED', rejectedBy: staffId ?? 'owner',
+    } } });
   });
 
   if (dismissed.count === 0) {

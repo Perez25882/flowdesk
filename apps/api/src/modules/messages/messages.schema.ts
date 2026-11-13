@@ -33,6 +33,7 @@ export const ListMessagesQuerySchema = z.object({
  */
 export const SendReplySchema = z.object({
   body: z.string().trim().min(1, 'Write something to send').max(4096),
+  source: z.enum(['assistant_draft', 'human']).optional(),
 });
 
 /**

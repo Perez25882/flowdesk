@@ -185,7 +185,7 @@ export class GroqAssistantProvider implements AssistantProvider {
         }
 
         logger.error(
-          { status: response.status, body: errorBody.slice(0, 500), model: this.model },
+          { status: response.status, model: this.model },
           'Groq returned non-OK status for the assistant',
         );
         return {

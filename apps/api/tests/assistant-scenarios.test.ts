@@ -41,8 +41,8 @@ function occurrences(haystack: string, needle: string): number {
  */
 
 const catalog: CatalogProductWithStock[] = [
-  { id: 'p_rice5', name: 'Rice 5kg', aliases: [], unit: 'bag', price: 80, stockQuantity: 12 },
-  { id: 'p_rice25', name: 'Rice 25kg', aliases: [], unit: 'bag', price: 350, stockQuantity: 4 },
+  { id: 'p_rice5', name: 'Rice 5kg', aliases: ['rice'], unit: 'bag', price: 80, stockQuantity: 12 },
+  { id: 'p_rice25', name: 'Rice 25kg', aliases: ['rice'], unit: 'bag', price: 350, stockQuantity: 4 },
   {
     id: 'p_malta',
     name: 'Malta Guinness 33cl',
@@ -67,6 +67,7 @@ const business: AssistantBusiness = {
   },
   businessPolicyNotes: null,
   aiAssistMode: 'GROUNDED_AUTO',
+  catalogueMode: 'CATALOGUE',
   waDisplayNumber: '+233244000111',
 };
 
@@ -101,6 +102,8 @@ function run(message: string, raw: AssistantDecision | null, clarificationCount 
       serverEscalation: false,
       clarificationCount,
       canDeliver: true,
+      catalogueMode: business.catalogueMode,
+      message,
     }),
   };
 }
@@ -129,6 +132,7 @@ describe('scenario: "how much is coke?"', () => {
         answer: {
           canAnswer: true,
           text: 'Coca-Cola 50cl is GHS 8 per bottle.',
+          fact: { kind: 'product_quote', target: 'p_coke', quantity: null },
           groundedOn: [{ kind: 'product', id: 'p_coke', field: 'price' }],
         },
       }),
@@ -179,6 +183,7 @@ describe('scenario: "do you have malta?" with none in stock', () => {
         answer: {
           canAnswer: true,
           text: 'Sorry, Malta Guinness 33cl is finished right now.',
+          fact: { kind: 'product_stock', target: 'p_malta', quantity: null },
           groundedOn: [{ kind: 'product', id: 'p_malta', field: 'stockQuantity' }],
         },
       }),
@@ -194,7 +199,7 @@ describe('scenario: "do you have malta?" with none in stock', () => {
 });
 
 describe('scenario: "I want rice" — two sizes exist', () => {
-  it('asks which one, naming both with their real prices', () => {
+  it('asks which one, naming both without quoting a price', () => {
     const { route } = run(
       'I want rice',
       decision({
@@ -210,8 +215,8 @@ describe('scenario: "I want rice" — two sizes exist', () => {
     );
 
     expect(route.action).toBe('clarify');
-    expect(route.text).toContain('Rice 5kg (GHS 80.00)');
-    expect(route.text).toContain('Rice 25kg (GHS 350.00)');
+    expect(route.text).toContain('Rice 5kg');
+    expect(route.text).toContain('Rice 25kg');
   });
 
   it('retrieved both variants so the question could name them', () => {
@@ -244,6 +249,7 @@ describe('scenario: "how much for 2 bags of rice 5kg?"', () => {
         answer: {
           canAnswer: true,
           text: '2 bags of Rice 5kg is GHS 160.',
+          fact: { kind: 'product_quote', target: 'p_rice5', quantity: 2 },
           groundedOn: [{ kind: 'product', id: 'p_rice5', field: 'price' }],
         },
       }),
@@ -276,6 +282,7 @@ describe('scenario: a business-fact question', () => {
         answer: {
           canAnswer: true,
           text: 'Yes, we deliver to Tema. Delivery is GHS 20.',
+          fact: { kind: 'delivery_fee', target: 'Tema', quantity: null },
           groundedOn: [
             { kind: 'business_fact', id: 'deliveryAreas' },
             { kind: 'business_fact', id: 'deliveryFee' },
@@ -337,13 +344,12 @@ describe('scenario: a prompt-injection attempt', () => {
 });
 
 describe('scenario: the assistant is unavailable', () => {
-  it('falls back to the template rather than going silent', () => {
+  it('provides a safe handoff rather than using a configurable template', () => {
     const { route } = run('how much is coke?', null);
-    expect(route.action).toBe('template_reply');
+    expect(route).toMatchObject({ action: 'draft', effect: 'handoff' });
   });
 
-  it('leaves the flagging to the intent rule rather than escalating everything', () => {
-    // An unconfigured shop must not have every greeting land in the review queue.
-    expect(run('how much is coke?', null).route.escalated).toBe(false);
+  it('flags a material question when the model is unavailable', () => {
+    expect(run('how much is coke?', null).route.escalated).toBe(true);
   });
 });

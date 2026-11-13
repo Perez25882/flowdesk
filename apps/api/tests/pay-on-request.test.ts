@@ -60,7 +60,7 @@ const UNPAID_ORDER = {
 
 beforeEach(() => {
   mocks.orderFindFirst.mockReset().mockResolvedValue(UNPAID_ORDER);
-  mocks.createPaymentLink.mockReset().mockResolvedValue({ reference: 'fdpay-abc' });
+  mocks.createPaymentLink.mockReset().mockResolvedValue({ id: 'link_1', reference: 'fdpay-abc' });
   mocks.findOpenRequestForOrder.mockReset().mockResolvedValue(null);
   mocks.autonomyDisclosureFor.mockReset().mockResolvedValue(null);
 });
@@ -69,7 +69,7 @@ describe('requestPaymentForOpenOrder', () => {
   it('raises a link for the order the customer already has', async () => {
     const sent = await requestPaymentForOpenOrder(BUSINESS_ID, CUSTOMER_ID);
 
-    expect(sent).toBe(true);
+    expect(sent).toEqual({ orderId: 'ord_1', requestId: 'link_1' });
     expect(mocks.createPaymentLink).toHaveBeenCalledTimes(1);
     const [, input] = mocks.createPaymentLink.mock.calls[0]!;
     expect(input).toMatchObject({ customerId: CUSTOMER_ID, orderId: 'ord_1', amount: 120 });
@@ -87,11 +87,11 @@ describe('requestPaymentForOpenOrder', () => {
   it('does not raise a second link when one is already open', async () => {
     // A customer asking twice must not produce two links for one order — they
     // would pay one and the shop would chase the other.
-    mocks.findOpenRequestForOrder.mockResolvedValue({ reference: 'fdpay-existing' });
+    mocks.findOpenRequestForOrder.mockResolvedValue({ id: 'link_existing', reference: 'fdpay-existing' });
 
     const sent = await requestPaymentForOpenOrder(BUSINESS_ID, CUSTOMER_ID);
 
-    expect(sent).toBe(true);
+    expect(sent).toEqual({ orderId: 'ord_1', requestId: 'link_existing' });
     expect(mocks.createPaymentLink).not.toHaveBeenCalled();
   });
 
@@ -101,7 +101,7 @@ describe('requestPaymentForOpenOrder', () => {
 
     const sent = await requestPaymentForOpenOrder(BUSINESS_ID, CUSTOMER_ID);
 
-    expect(sent).toBe(false);
+    expect(sent).toBeNull();
     expect(mocks.createPaymentLink).not.toHaveBeenCalled();
   });
 
@@ -110,7 +110,7 @@ describe('requestPaymentForOpenOrder', () => {
 
     const sent = await requestPaymentForOpenOrder(BUSINESS_ID, CUSTOMER_ID);
 
-    expect(sent).toBe(false);
+    expect(sent).toBeNull();
     expect(mocks.createPaymentLink).not.toHaveBeenCalled();
   });
 
@@ -121,6 +121,6 @@ describe('requestPaymentForOpenOrder', () => {
 
     const sent = await requestPaymentForOpenOrder(BUSINESS_ID, CUSTOMER_ID);
 
-    expect(sent).toBe(false);
+    expect(sent).toBeNull();
   });
 });

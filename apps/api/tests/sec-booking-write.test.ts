@@ -31,6 +31,7 @@ const { settleBooking } = await import('../src/services/assistant/index.js');
 const BUSINESS_ID = 'biz_1';
 const CUSTOMER_ID = 'cus_1';
 const SERVICE_ID = 'svc_1';
+const MESSAGE_ID = 'msg_1';
 const STARTS_AT = '2026-09-22T14:30:00.000Z';
 
 const AUTHORISED = { serviceId: SERVICE_ID, startsAt: STARTS_AT };
@@ -41,9 +42,9 @@ beforeEach(() => {
 
 describe('settleBooking', () => {
   it('takes the slot the assistant confirmed', async () => {
-    const taken = await settleBooking(AUTHORISED, BUSINESS_ID, CUSTOMER_ID);
+    const taken = await settleBooking(AUTHORISED, BUSINESS_ID, CUSTOMER_ID, MESSAGE_ID);
 
-    expect(taken).toBe(true);
+    expect(taken).toMatchObject({ id: 'apt_1', reference: 'APT-1' });
     expect(mocks.book).toHaveBeenCalledTimes(1);
 
     const [input] = mocks.book.mock.calls[0]!;
@@ -52,6 +53,7 @@ describe('settleBooking', () => {
       customerId: CUSTOMER_ID,
       serviceId: SERVICE_ID,
       byAssistant: true,
+      assistantMessageId: MESSAGE_ID,
     });
     // Passed as an instant, not a string, so the exclusion constraint compares
     // the same moment the slot gate checked.
@@ -62,15 +64,9 @@ describe('settleBooking', () => {
     // The caller must not send "you're booked" on the back of this.
     mocks.book.mockRejectedValue(new Error('appointments_no_overlap'));
 
-    const taken = await settleBooking(AUTHORISED, BUSINESS_ID, CUSTOMER_ID);
+    const taken = await settleBooking(AUTHORISED, BUSINESS_ID, CUSTOMER_ID, MESSAGE_ID);
 
-    expect(taken).toBe(false);
+    expect(taken).toBeNull();
   });
 
-  it('does nothing when no booking was authorised', async () => {
-    const taken = await settleBooking(null, BUSINESS_ID, CUSTOMER_ID);
-
-    expect(taken).toBe(true);
-    expect(mocks.book).not.toHaveBeenCalled();
-  });
 });

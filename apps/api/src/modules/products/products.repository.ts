@@ -281,8 +281,9 @@ export interface CatalogProductWithStock {
  */
 export async function findCatalogProductsWithStock(
   businessId: string,
+  tx?: Prisma.TransactionClient,
 ): Promise<CatalogProductWithStock[]> {
-  const products = await prisma.product.findMany({
+  const products = await (tx ?? prisma).product.findMany({
     where: {
       businessId,
       active: true,

@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { IntentType, type AssistantAction, type ClassificationSource } from '@flowdesk/shared';
+import { IntentType, ClassificationSource, type AssistantAction } from '@flowdesk/shared';
 import { prisma } from '../config/database.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
@@ -7,6 +7,7 @@ import { emitMessageFlagged } from '../services/sse/sse.events.js';
 import { classifyMessage } from '../services/intent/index.js';
 import { runAssistant } from '../services/assistant/index.js';
 import { requiresReview } from '../services/assistant/router.js';
+import { explicitOrderRequest, hasPolicyOverride } from '../services/assistant/commitment.js';
 import {
   notifyAssistantHold,
   notifyIntentReply,
@@ -60,6 +61,7 @@ const ASSISTANT_INTENTS: ReadonlySet<IntentType> = new Set([
 
 interface ClassifiedMessage {
   id: string;
+  waMessageId: string;
   body: string | null;
   businessId: string;
   customerId: string | null;
@@ -67,7 +69,8 @@ interface ClassifiedMessage {
   processed: boolean;
   /** Prisma types this as a string union, and the SSE payload takes a string. */
   intent: string;
-  customer: { id: string; waNumber: string; name: string | null; blacklisted: boolean } | null;
+  direction: string;
+  customer: { id: string; businessId: string; waNumber: string; name: string | null; blacklisted: boolean } | null;
 }
 
 async function fetchMessageWithCustomer(messageId: string): Promise<ClassifiedMessage> {
@@ -75,13 +78,15 @@ async function fetchMessageWithCustomer(messageId: string): Promise<ClassifiedMe
     where: { id: messageId },
     select: {
       id: true,
+      waMessageId: true,
       body: true,
       businessId: true,
       customerId: true,
       processed: true,
       intent: true,
+      direction: true,
       customer: {
-        select: { id: true, waNumber: true, name: true, blacklisted: true },
+        select: { id: true, businessId: true, waNumber: true, name: true, blacklisted: true },
       },
     },
   });
@@ -137,7 +142,7 @@ async function handleStatusCheckIntent(message: ClassifiedMessage): Promise<void
   }
 
   const reference = refMatch[0].toUpperCase();
-  const order = await findOrderByReference(reference, message.businessId);
+  const order = await findOrderByReference(reference, message.businessId, message.customer.id);
 
   if (!order) {
     await notifyUnknownOrderReference(message.businessId, message.customer.id, reference);
@@ -213,8 +218,10 @@ async function abandonRetryOfHandledMessage(message: ClassifiedMessage): Promise
   });
 }
 
-async function processIntentClassification(jobData: IntentClassificationJobData): Promise<void> {
+export async function processIntentClassification(jobData: IntentClassificationJobData): Promise<void> {
   const message = await fetchMessageWithCustomer(jobData.messageId);
+  if (message.businessId !== jobData.businessId || message.waMessageId !== jobData.waMessageId || message.direction !== 'INBOUND' ||
+      (message.customer && message.customer.businessId !== message.businessId)) return;
 
   if (message.processed) {
     await abandonRetryOfHandledMessage(message);
@@ -252,8 +259,8 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
   // the assistant has had its say.
   const provisionalReview = requiresReview(result.intent, result.confidence, 'none', false);
 
-  await prisma.message.update({
-    where: { id: jobData.messageId },
+  const claimed = await prisma.message.updateMany({
+    where: { id: jobData.messageId, businessId: message.businessId, processed: false },
     data: {
       intent: result.intent,
       intentConfidence: result.confidence,
@@ -263,6 +270,7 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
       requiresReview: provisionalReview,
     },
   });
+  if (!claimed.count) return;
 
   if (provisionalReview) {
     emitMessageFlagged(jobData.businessId, {
@@ -283,7 +291,7 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
     return;
   }
 
-  if (result.intent === IntentType.STATUS_CHECK) {
+  if (result.intent === IntentType.STATUS_CHECK && result.source === ClassificationSource.RULE_ENGINE && !hasPolicyOverride(message.body)) {
     await handleStatusCheckIntent(message);
     return;
   }
@@ -292,7 +300,7 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
   // either answers it, asks about it, or writes the owner a draft. It falls back
   // to the template when it is switched off, unconfigured, or unavailable.
   const assisted =
-    ASSISTANT_INTENTS.has(result.intent) && message.customerId
+    (ASSISTANT_INTENTS.has(result.intent) || result.intent === IntentType.STATUS_CHECK) && message.customerId
       ? await runAssistant({
           businessId: message.businessId,
           customerId: message.customerId,
@@ -337,7 +345,8 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
   // The assistant did not run, and this is an order. Fall back to the old
   // record-driven path so an order is still created — degrading to "no order
   // was taken" would cost the owner a sale.
-  if (assisted.action === 'template_reply' && result.intent === IntentType.ORDER) {
+  if (assisted.action === 'template_reply' && result.intent === IntentType.ORDER &&
+      result.source === ClassificationSource.RULE_ENGINE && explicitOrderRequest(message.body) && !hasPolicyOverride(message.body)) {
     await handleOrderIntent(message);
     return;
   }
@@ -370,6 +379,8 @@ async function processIntentClassification(jobData: IntentClassificationJobData)
       );
       return;
     }
+
+    if (('policyHandled' in assisted && assisted.policyHandled) || result.source !== ClassificationSource.RULE_ENGINE) return;
 
     await handleAutoReplyIntent(message, templateKey);
   }

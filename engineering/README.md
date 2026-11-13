@@ -18,6 +18,8 @@ This directory contains the versioned engineering record. It is separate from th
 | [G1-03 verification](g1/paystack-settlement-verification.md) | Migration, recovery, regression and smoke evidence |
 | [G1-04 payment relationships](g1/payment-relationships.md) | Financial contract, transactions and reconciliation                  |
 | [G1-04 verification](g1/payment-relationships-verification.md) | Migration, integration and repository results                       |
+| [G1-05 AI decision contract](g1/ai-decision-contract.md) | Evidence, autonomy, action boundaries and inbox recovery |
+| [G1-05 source inventory](g1/ai-trust-boundaries.md) | Model input, output, service and approval boundaries |
 
 ## Engineering conventions
 

@@ -65,6 +65,18 @@ export interface AssistantProductMention {
   quantity: number | null;
 }
 
+export const ASSISTANT_FACT_KINDS = [
+  'product_quote', 'product_stock', 'order_status', 'payment_balance',
+  'delivery_fee', 'business_location', 'booking_slots',
+] as const;
+
+export interface AssistantFactProposal {
+  kind: (typeof ASSISTANT_FACT_KINDS)[number];
+  /** Identifier for a product, order or service, or a configured delivery area. */
+  target: string | null;
+  quantity: number | null;
+}
+
 export interface AssistantDecision {
   version: typeof ASSISTANT_CONTRACT_VERSION;
   intent: IntentType;
@@ -80,6 +92,7 @@ export interface AssistantDecision {
     canAnswer: boolean;
     text: string | null;
     groundedOn: AssistantEvidenceRef[];
+    fact?: AssistantFactProposal | null;
   };
   clarification: {
     needed: boolean;

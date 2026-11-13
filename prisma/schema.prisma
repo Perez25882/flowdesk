@@ -897,6 +897,8 @@ model Message {
   /// The full decision envelope, for auditing and offline evaluation. Never
   /// read at runtime — routing decisions are made from the typed columns.
   aiDecision         Json?
+  /// Versioned policy outcome and scoped evidence references for this inbound turn.
+  aiPolicy           Json?
   aiReplyModel       String?
   aiDetectedLanguage String?
 
@@ -1173,6 +1175,7 @@ model Appointment {
   notes       String?
   /// True when the assistant booked it rather than a person.
   bookedByAssistant Boolean     @default(false)
+  assistantMessageId String?    @unique
   remindedAt  DateTime?
   cancelledAt DateTime?
   cancelReason String?
