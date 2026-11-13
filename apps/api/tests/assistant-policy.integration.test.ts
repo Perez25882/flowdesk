@@ -339,6 +339,13 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
       expect((await outbound.getJob(`assistant-checkout-${input.messageId}`))?.data.body).toContain('60.00');
       expect((await read(input.messageId)).aiPolicy).toMatchObject({ state: 'HANDED_OFF', evidence: [`order:${order.id}`, `payment_request:${links[0]?.id}`] });
       expect(fetch).toHaveBeenCalledTimes(1);
+      await prisma.order.create({ data: { businessId: fixture.business.id, customerId: fixture.customer.id,
+        status: 'CONFIRMED', referenceNumber: 'FD-OTHER123', rawMessage: 'Synthetic', totalAmount: 90 } });
+      const ambiguous = await inbound(fixture, 'Please send me a payment link');
+      await assistant.runAssistant(ambiguous);
+      expect((await read(ambiguous.messageId)).aiPolicy).toMatchObject({ state: 'REVIEW' });
+      expect(await outbound.getJob(`assistant-checkout-${ambiguous.messageId}`)).toBeUndefined();
+      expect(fetch).toHaveBeenCalledTimes(1);
     } finally {
       fetch.mockRestore();
     }

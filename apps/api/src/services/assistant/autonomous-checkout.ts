@@ -126,15 +126,15 @@ export async function requestPaymentForOpenOrder(
   assistantMessageId?: string,
 ): Promise<{ orderId: string; requestId: string } | null> {
   try {
-    // The most recent order still owed on. Cancelled orders are not owed, and
-    // an old settled order is not what "how do I pay" is asking about.
-    const order = await prisma.order.findFirst({
+    // A generic request to pay must identify one eligible order. The payment
+    // service rechecks the relationship and its outstanding ledger balance.
+    const recentOrders = await prisma.order.findMany({
       where: { businessId, customerId, deletedAt: null, status: { in: ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] } },
-      orderBy: { createdAt: 'desc' },
+      take: 2, orderBy: { createdAt: 'desc' },
       select: { id: true, referenceNumber: true, totalAmount: true, amountPaid: true },
     });
-
-    if (!order) return null;
+    const [order] = recentOrders;
+    if (!order || recentOrders.length !== 1) return null;
 
     const outstanding = Number(order.totalAmount) - Number(order.amountPaid);
     if (outstanding <= 0) return null;

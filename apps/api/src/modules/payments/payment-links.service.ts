@@ -177,6 +177,11 @@ async function verifyAssistantCheckout(tx: Prisma.TransactionClient, businessId:
       confidence: { not: 'CLAIMED' } }, select: { amount: true, direction: true } }),
   ]);
   const requested = assistantCheckout.messageId ? Boolean(message?.body && explicitPaymentRequest(message.body)) : Boolean(order?.deliveryCapturedAt);
+  if (assistantCheckout.messageId && requested) {
+    const other = await tx.order.findFirst({ where: { id: { not: orderId ?? '' }, businessId, customerId, deletedAt: null,
+      status: { in: ['CONFIRMED', 'PROCESSING', 'DISPATCHED', 'FULFILLED'] } }, select: { id: true } });
+    if (other) throw new ConflictError('Assistant checkout requires a specific order');
+  }
   const due = order && ledger.reduce((balance, payment) => payment.direction === 'IN' ? balance.minus(payment.amount) : balance.plus(payment.amount), order.totalAmount);
   if (!business || !due || !requested || !due.eq(input.amount)) {
     throw new ConflictError('Assistant checkout no longer matches the outstanding order');

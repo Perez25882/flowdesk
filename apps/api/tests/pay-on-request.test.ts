@@ -26,13 +26,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   orderFindFirst: vi.fn(),
+  orderFindMany: vi.fn(),
   createPaymentLink: vi.fn(),
   findOpenRequestForOrder: vi.fn(),
   autonomyDisclosureFor: vi.fn(),
 }));
 
 vi.mock('../src/config/database.js', () => ({
-  prisma: { order: { findFirst: mocks.orderFindFirst } },
+  prisma: { order: { findFirst: mocks.orderFindFirst, findMany: mocks.orderFindMany } },
 }));
 vi.mock('../src/modules/payments/payment-links.service.js', () => ({
   createPaymentLink: mocks.createPaymentLink,
@@ -60,6 +61,10 @@ const UNPAID_ORDER = {
 
 beforeEach(() => {
   mocks.orderFindFirst.mockReset().mockResolvedValue(UNPAID_ORDER);
+  mocks.orderFindMany.mockReset().mockImplementation(async () => {
+    const order = await mocks.orderFindFirst();
+    return order ? [order] : [];
+  });
   mocks.createPaymentLink.mockReset().mockResolvedValue({ id: 'link_1', reference: 'fdpay-abc' });
   mocks.findOpenRequestForOrder.mockReset().mockResolvedValue(null);
   mocks.autonomyDisclosureFor.mockReset().mockResolvedValue(null);
