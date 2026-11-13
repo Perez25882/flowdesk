@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   messageFindFirst: vi.fn(),
   messageUpdate: vi.fn(),
   messageUpdateMany: vi.fn(),
+  staffFindFirst: vi.fn(),
   intentCorrectionCreate: vi.fn(),
   enqueueOutboundMessage: vi.fn(),
   loadTenantCredentials: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('../src/config/database.js', () => ({
       updateMany: mocks.messageUpdateMany,
     },
     intentCorrection: { create: mocks.intentCorrectionCreate },
+    staff: { findFirst: mocks.staffFindFirst },
   },
 }));
 
@@ -70,6 +72,8 @@ const REPLYABLE = {
   aiReplyStatus: null,
   customer: {
     id: 'cust_1',
+    businessId: 'biz_1',
+    deletedAt: null,
     waNumber: '233244123456',
     blacklisted: false,
     lastInboundAt: new Date(),
@@ -79,6 +83,7 @@ const REPLYABLE = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.messageFindFirst.mockResolvedValue(REPLYABLE);
+  mocks.staffFindFirst.mockResolvedValue({ role: 'MANAGER' });
   mocks.loadTenantCredentials.mockResolvedValue({
     businessId: 'biz_1',
     phoneNumberId: 'phone_1',

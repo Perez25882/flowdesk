@@ -231,7 +231,7 @@ export async function sendReply(
       body: data.body,
       inReplyToMessageId: message.id,
       ...(staffId ? { sentByStaffId: staffId } : {}),
-    }, approving ? { idempotencyKey: `assistant-approved-${messageId}` } : {});
+    }, approving ? { idempotencyKey: `assistant-approved-${messageId}` } : undefined);
   } catch (error: unknown) {
     // Release both claims so the owner can try again rather than being told for
     // the next minute that their own reply is a duplicate.
