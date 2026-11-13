@@ -20,6 +20,7 @@ This directory contains the versioned engineering record. It is separate from th
 | [G1-04 verification](g1/payment-relationships-verification.md) | Migration, integration and repository results                       |
 | [G1-05 AI decision contract](g1/ai-decision-contract.md) | Evidence, autonomy, action boundaries and inbox recovery |
 | [G1-05 source inventory](g1/ai-trust-boundaries.md) | Model input, output, service and approval boundaries |
+| [G1-05 verification](g1/ai-decision-verification.md) | Final fixture runs, regression checks and limitations |
 
 ## Engineering conventions
 
