@@ -1,7 +1,5 @@
 import { Prisma, type PaymentRequestStatus } from '@prisma/client';
 import { prisma } from '../../config/database.js';
-import { ValidationError } from '../../utils/errors.js';
-import { lockPaymentRelationship } from './payment-relationships.js';
 
 export interface PaymentRequestRow {
   id: string;
@@ -72,31 +70,6 @@ export async function createPaymentRequest(data: {
   });
 }
 
-/**
- * The request a webhook is about.
- *
- * Looked up by reference alone, with no tenant filter, because the webhook has
- * no tenant to filter by — the reference IS the correlation, and the row it
- * finds is what tells us which business the money belongs to. That is the whole
- * reason the reference is generated here rather than accepted from the payload.
- */
-export async function findByReference(reference: string): Promise<
-  | (PaymentRequestRow & {
-      subaccountCode: string | null;
-      customer: { id: string; waNumber: string; name: string | null };
-    })
-  | null
-> {
-  return prisma.paymentRequest.findUnique({
-    where: { reference },
-    select: {
-      ...ROW_SELECT,
-      subaccountCode: true,
-      customer: { select: { id: true, waNumber: true, name: true } },
-    },
-  });
-}
-
 export async function findById(
   id: string,
   businessId: string,
@@ -150,68 +123,6 @@ export async function findOpenRequestForOrder(
     },
     orderBy: { createdAt: 'desc' },
     select: ROW_SELECT,
-  });
-}
-
-/**
- * Claims a pending request for settlement, atomically.
- *
- * `updateMany` with `status: 'PENDING'` prevents duplicate claims: the
- * webhook and the reconciliation job can both arrive for the same reference,
- * and exactly one of them gets a count of 1. Reading the row and then writing
- * it would leave a window in which both see PENDING and both create a Payment,
- * which is a duplicate credit on a real customer's ledger.
- */
-export async function claimForSettlement(request: PaymentRequestRow): Promise<boolean> {
-  return prisma.$transaction(async (tx) => {
-    await lockPaymentRelationship(tx, request);
-    const claimed = await tx.paymentRequest.updateMany({
-      where: {
-        id: request.id, businessId: request.businessId, customerId: request.customerId,
-        orderId: request.orderId, status: 'PENDING',
-      },
-      data: { status: 'PAID' },
-    });
-    return claimed.count === 1;
-  });
-}
-
-/** Records the settlement detail once the Payment row exists. */
-export async function recordSettlement(
-  request: PaymentRequestRow,
-  data: {
-    paymentId: string;
-    channel: string | null;
-    gatewayFee: number | null;
-    paidAt: Date;
-  },
-): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const { businessId, customerId, orderId } = request;
-    await lockPaymentRelationship(tx, request, true);
-    const payment = await tx.payment.findFirst({
-      where: { id: data.paymentId, businessId, customerId, orderId, reference: request.reference },
-      select: { id: true },
-    });
-    if (!payment) throw new ValidationError('Settlement payment does not match the request');
-    const updated = await tx.paymentRequest.updateMany({
-      where: { id: request.id, businessId, customerId, orderId, status: 'PAID', paymentId: null },
-      data: {
-        paymentId: data.paymentId,
-        channel: data.channel,
-        gatewayFee: data.gatewayFee === null ? null : new Prisma.Decimal(data.gatewayFee),
-        paidAt: data.paidAt,
-      },
-    });
-    if (updated.count !== 1) throw new ValidationError('Payment request changed during settlement');
-  });
-}
-
-/** Releases a claim that could not be completed, so it can be settled later. */
-export async function releaseClaim(reference: string): Promise<void> {
-  await prisma.paymentRequest.updateMany({
-    where: { reference, status: 'PAID', paymentId: null },
-    data: { status: 'PENDING' },
   });
 }
 

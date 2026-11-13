@@ -202,6 +202,8 @@ model Business {
   intentCorrections  IntentCorrection[]
   messages           Message[]
   whatsappTextReceipts WhatsAppTextReceipt[]
+  paystackReceipts PaystackReceipt[]
+  paystackInitializations PaystackInitialization[]
   orders             Order[]
   passwordResets     PasswordResetToken[]
   dailyInsights      DailyInsight[]
@@ -582,6 +584,7 @@ model Payment {
   business      Business      @relation(fields: [businessId], references: [id])
   customer      Customer      @relation(fields: [customerId], references: [id])
   order         Order?        @relation(fields: [orderId], references: [id])
+  paystackSettlement PaystackSettlement?
 
   @@index([businessId])
   @@index([businessId, customerId])
@@ -591,6 +594,7 @@ model Payment {
   @@index([businessId, confidence])
   @@index([businessId, voidedAt])
   @@index([businessId, screenshotKey])
+  @@index([reference])
   @@index([businessId, createdAt(sort: Desc)])
   @@map("payments")
 }
@@ -646,6 +650,7 @@ model PaymentRequest {
   business      Business             @relation(fields: [businessId], references: [id])
   customer      Customer             @relation(fields: [customerId], references: [id])
   order         Order?               @relation(fields: [orderId], references: [id])
+  paystackSettlement PaystackSettlement?
 
   @@index([businessId, status])
   @@index([businessId, customerId])
@@ -653,6 +658,97 @@ model PaymentRequest {
   @@index([businessId, createdAt(sort: Desc)])
   @@index([status, expiresAt])
   @@map("payment_requests")
+}
+
+enum PaystackReceiptState {
+  PENDING
+  PROCESSING
+  WAITING
+  SETTLED
+  REVIEW
+}
+
+enum PaystackInitializationState {
+  INITIALIZING
+  CREATED
+  REVIEW
+  ABANDONED
+}
+
+enum PaystackNotificationState {
+  PENDING
+  SENDING
+  HANDED_OFF
+  SUPPRESSED
+  REVIEW
+}
+
+model PaystackReceipt {
+  id                    String @id @default(cuid())
+  eventKey              String @unique
+  reference             String
+  callbackTransactionId String?
+  businessId            String?
+  requestId             String?
+  state                 PaystackReceiptState @default(PENDING)
+  reason                String?
+  evidence              Json?
+  attempts              Int @default(0)
+  nextAttemptAt         DateTime?
+  leaseToken            String?
+  leaseUntil            DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  completedAt           DateTime?
+  business              Business? @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  settlement            PaystackSettlement?
+
+  @@index([state, nextAttemptAt])
+  @@index([state, leaseUntil])
+  @@index([businessId, createdAt])
+  @@index([reference])
+  @@map("paystack_receipts")
+}
+
+model PaystackSettlement {
+  id                     String @id @default(cuid())
+  transactionId          String @unique
+  requestId              String @unique
+  paymentId              String @unique
+  receiptId              String @unique
+  notificationState      PaystackNotificationState @default(PENDING)
+  notificationAttempts   Int @default(0)
+  notificationNextAt     DateTime?
+  notificationLeaseToken String?
+  notificationLeaseUntil DateTime?
+  createdAt              DateTime @default(now())
+  request                PaymentRequest @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  payment                Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  receipt                PaystackReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+
+  @@index([notificationState, notificationNextAt])
+  @@index([notificationState, notificationLeaseUntil])
+  @@map("paystack_settlements")
+}
+
+model PaystackInitialization {
+  reference      String @id
+  businessId     String
+  customerId     String
+  orderId        String?
+  amountMinor    Int
+  subaccountCode String
+  state          PaystackInitializationState @default(INITIALIZING)
+  reason         String?
+  requestId      String?
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  business       Business @relation(fields: [businessId], references: [id], onDelete: Restrict)
+
+  @@index([businessId, customerId, orderId, amountMinor, state], map: "paystack_init_relationship_state_idx")
+  @@index([state, createdAt])
+  @@map("paystack_initializations")
 }
 
 /// One morning's read of how the shop did yesterday.

@@ -5,10 +5,9 @@ import { logger } from '../../config/logger.js';
 import { redis } from '../../config/redis.js';
 import { success } from '../../utils/response.js';
 import { disableSubscription, fetchSubscription, verifyWebhookSignature } from '../../services/billing/paystack.js';
-import {
-  isPaymentLinkReference,
-  settleFromWebhook,
-} from '../payments/payment-links.service.js';
+import { isPaymentLinkReference } from '../payments/payment-links.service.js';
+import { objectOf, parsePaystackJson } from '../../services/billing/paystack-evidence.js';
+import { acceptPaystackReceipt, merchantReferenceOf } from '../payments/paystack-receipts.js';
 import {
   applyDueScheduledChange,
   clearSchedule,
@@ -104,12 +103,25 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
       let payload: PaystackWebhookBody;
 
       try {
-        payload = JSON.parse(rawBuffer.toString('utf8')) as PaystackWebhookBody;
+        payload = objectOf(JSON.parse(rawBuffer.toString('utf8'))) as unknown as PaystackWebhookBody;
       } catch {
         return reply.status(400).send({ success: false, error: 'Invalid JSON payload' });
       }
 
       const { event, data } = payload;
+
+      if (event === 'charge.success' && isPaymentLinkReference(data?.reference)) {
+        const reference = merchantReferenceOf(data.reference);
+        if (!reference) return reply.status(400).send({ success: false, error: 'Invalid merchant reference' });
+        const normalized = objectOf(objectOf(parsePaystackJson(rawBuffer.toString('utf8'))).data);
+        try {
+          await acceptPaystackReceipt(rawBuffer, reference, normalized);
+        } catch (error: unknown) {
+          logger.error({ reference, errorType: error instanceof Error ? error.name : 'Unknown' }, 'Paystack receipt not durably accepted');
+          return reply.status(503).send({ success: false, code: 'PAYSTACK_RECEIPT_UNAVAILABLE' });
+        }
+        return success(reply, { received: true });
+      }
 
       logger.info({ event, reference: data?.reference }, 'Paystack webhook received');
 
@@ -133,11 +145,7 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         // by the reference, which is generated on our side precisely so this
         // branch can exist. Without it a customer's GHS 40 for a pair of shoes
         // would be read as a subscription renewal.
-        if (isPaymentLinkReference(data.reference)) {
-          await settleFromWebhook(String(data.reference));
-        } else {
-          await applyChargeSuccess(data);
-        }
+        await applyChargeSuccess(data);
       }
 
       // Paystack does not retry a failed subscription charge, so this is the

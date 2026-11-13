@@ -47,6 +47,7 @@ interface PaystackResponse<T> {
 export async function paystackRequest<T>(
   endpoint: string,
   options: RequestInit = {},
+  decode?: (body: string) => PaystackResponse<T>,
 ): Promise<PaystackResponse<T>> {
   const url = `${PAYSTACK_API_BASE}${endpoint}`;
   const controller = new AbortController();
@@ -64,12 +65,13 @@ export async function paystackRequest<T>(
     });
 
     if (!response.ok) {
+      if (decode) throw new Error(`Paystack verification HTTP ${response.status}`);
       const errorBody = await response.text().catch(() => 'unknown');
       logger.error({ status: response.status, body: errorBody, endpoint }, 'Paystack API error');
       throw new Error(`Paystack API error: ${response.status} - ${errorBody}`);
     }
 
-    return (await response.json()) as PaystackResponse<T>;
+    return decode ? decode(await response.text()) : (await response.json()) as PaystackResponse<T>;
   } finally {
     clearTimeout(timeout);
   }

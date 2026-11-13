@@ -412,7 +412,7 @@ async function deliver(
 export async function deliverText(
   context: NotificationContext,
   text: string,
-  options: EvaluateDeliveryOptions = {},
+  options: EvaluateDeliveryOptions & { requireQueueHandoff?: boolean } = {},
 ): Promise<DeliveryDecision> {
   const decision = await evaluateDelivery(context, options);
 
@@ -475,6 +475,7 @@ export async function deliverText(
       );
     }
   } catch (error: unknown) {
+    if (options.requireQueueHandoff) throw error;
     // Failing to enqueue must not roll back the order that triggered it.
     logger.error(
       { error, businessId: context.businessId, template: options.templateKey },

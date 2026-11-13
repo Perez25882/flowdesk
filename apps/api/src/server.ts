@@ -12,6 +12,7 @@ import { deadLetterWorker } from './workers/dead-letter.worker.js';
 import { insightsWorker } from './workers/insights.worker.js';
 import { scheduleDailyInsights } from './queues/insights.queue.js';
 import { startTextReceiptWorker } from './workers/text-receipt.worker.js';
+import { startPaystackSettlementWorker } from './workers/paystack-settlement.worker.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -48,6 +49,7 @@ async function startServer(): Promise<void> {
   });
 
   const stopTextReceipts = env.WHATSAPP_TEXT_DISPATCH_ENABLED ? startTextReceiptWorker() : undefined;
+  const stopPaystack = startPaystackSettlementWorker();
   let isShuttingDown = false;
 
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -66,6 +68,7 @@ async function startServer(): Promise<void> {
     try {
       await app.close();
       await stopTextReceipts?.();
+      await stopPaystack();
       await drainQueues();
       await stopSSEFanout();
       await disconnectRedis();

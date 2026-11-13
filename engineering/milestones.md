@@ -3,7 +3,7 @@
 | Milestone                | Status                                               | Exit gate                                                                                                                                                                          |
 | ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G0 Engineering kickoff   | Complete                                             | Preserved source inventory, executed baseline, five operator traces, prioritized defects and founder review package.                                                               |
-| G1 Execution reliability | G1-01 and G1-02 approved for verified local scope. G1-04 PASS recommended. Founder sign-off pending. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
+| G1 Execution reliability | G1-01, G1-02 and G1-04 approved for verified local scope. G1-03 verification in progress. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
 | Operator delivery        | Unscheduled                                          | Sequence operator increments against the shared workflow contract and owner interface after the G1 reliability gate.                                                               |
 
 ## Exact first assignment for approval
@@ -34,7 +34,7 @@ Deliver a reviewable code and documentation diff with the real Postgres/BullMQ a
 
 ## G1-04 payment, order and customer consistency
 
-**Status** PASS recommended on 2026-11-11. The fresh and synthetic upgrade migrations passed. The final targeted run passed 119 tests including all 16 payment acceptance cases and the G1-01 and G1-02 integrations. Build, typecheck, API lint and the default test suite passed. Repository lint retains the inherited web violation. Founder sign-off is pending. See the [financial integrity contract](g1/payment-relationships.md) and [verification record](g1/payment-relationships-verification.md).
+**Status** Founder approved the verified local scope and authorized G1-03 from commit `8648d31a494af3ae5e23c55679147d64db11c9b8`. The fresh and synthetic upgrade migrations passed. The final targeted run passed 119 tests including all 16 payment acceptance cases and the G1-01 and G1-02 integrations. Build, typecheck, API lint and the default test suite passed. Repository lint retains the inherited web violation. See the [financial integrity contract](g1/payment-relationships.md) and [verification record](g1/payment-relationships-verification.md).
 
 ## Prioritized implementation queue
 

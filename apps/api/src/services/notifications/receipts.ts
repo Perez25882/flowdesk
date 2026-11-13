@@ -127,73 +127,70 @@ function formatReceiptDate(date: Date): string {
 /**
  * Sends the receipt for a payment.
  *
- * Never throws at the caller. A receipt failing must not roll back or retry the
- * settlement that produced it — the money is real whether or not the message
- * went out, and a retry loop here would re-credit nothing but would re-send.
+ * Called by the post-commit handoff worker, which records suppression or
+ * retries queue failures independently of the financial transaction.
  */
-export async function sendPaymentReceipt(paymentId: string): Promise<void> {
-  try {
-    const payment = await prisma.payment.findUnique({
-      where: { id: paymentId },
-      select: {
-        id: true,
-        amount: true,
-        method: true,
-        reference: true,
-        createdAt: true,
-        attestedAt: true,
-        businessId: true,
-        customerId: true,
-        business: { select: { name: true, receiptsEnabled: true } },
-        order: {
-          select: {
-            referenceNumber: true,
-            totalAmount: true,
-            amountPaid: true,
-            items: { select: { description: true, quantity: true, subtotal: true } },
-          },
+export async function sendPaymentReceipt(paymentId: string): Promise<'HANDED_OFF' | 'SUPPRESSED'> {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: {
+      id: true,
+      amount: true,
+      method: true,
+      reference: true,
+      createdAt: true,
+      attestedAt: true,
+      voidedAt: true,
+      businessId: true,
+      customerId: true,
+      business: { select: { name: true, receiptsEnabled: true } },
+      order: {
+        select: {
+          referenceNumber: true,
+          totalAmount: true,
+          amountPaid: true,
+          items: { select: { description: true, quantity: true, subtotal: true } },
         },
       },
-    });
+    },
+  });
 
-    if (!payment) return;
-    if (!payment.business.receiptsEnabled) return;
+  if (!payment || payment.voidedAt || !payment.business.receiptsEnabled) return 'SUPPRESSED';
 
-    const context = await loadNotificationContext(payment.businessId, payment.customerId);
-    if (!context) return;
+  const context = await loadNotificationContext(payment.businessId, payment.customerId);
+  if (!context) return 'SUPPRESSED';
 
-    const text = composeReceipt({
-      businessName: payment.business.name,
-      amount: Number(payment.amount),
-      reference: payment.reference,
-      orderReference: payment.order?.referenceNumber ?? null,
-      method: payment.method,
-      paidAt: payment.attestedAt ?? payment.createdAt,
-      balance: payment.order
-        ? Math.max(Number(payment.order.totalAmount) - Number(payment.order.amountPaid), 0)
-        : null,
-      items:
-        payment.order?.items.map((item) => ({
-          name: item.description,
-          quantity: Number(item.quantity),
-          total: Number(item.subtotal),
-        })) ?? [],
-    });
+  const text = composeReceipt({
+    businessName: payment.business.name,
+    amount: Number(payment.amount),
+    reference: payment.reference,
+    orderReference: payment.order?.referenceNumber ?? null,
+    method: payment.method,
+    paidAt: payment.attestedAt ?? payment.createdAt,
+    balance: payment.order
+      ? Math.max(Number(payment.order.totalAmount) - Number(payment.order.amountPaid), 0)
+      : null,
+    items:
+      payment.order?.items.map((item) => ({
+        name: item.description,
+        quantity: Number(item.quantity),
+        total: Number(item.subtotal),
+      })) ?? [],
+  });
 
-    const logoImage = await resolveLogoAttachment(payment.businessId);
+  const logoImage = await resolveLogoAttachment(payment.businessId);
 
-    await deliverText(context, text, {
-      // A receipt answers a payment the customer just made, so it is theirs to
-      // receive whether or not the owner happens to be typing — the takeover
-      // gate exists to stop the assistant talking over a conversation, and this
-      // is a record, not a conversation.
-      humanInitiated: true,
-      idempotencyKey: `receipt-${paymentId}`,
-      ...(logoImage ? { logoMediaId: logoImage } : {}),
-    });
-  } catch (error: unknown) {
-    logger.error({ error, paymentId }, 'Failed to send a payment receipt');
-  }
+  const decision = await deliverText(context, text, {
+    // A receipt answers a payment the customer just made, so it is theirs to
+    // receive whether or not the owner happens to be typing — the takeover
+    // gate exists to stop the assistant talking over a conversation, and this
+    // is a record, not a conversation.
+    humanInitiated: true,
+    idempotencyKey: `receipt-${paymentId}`,
+    requireQueueHandoff: true,
+    ...(logoImage ? { logoMediaId: logoImage } : {}),
+  });
+  return decision.allowed ? 'HANDED_OFF' : 'SUPPRESSED';
 }
 
 /**

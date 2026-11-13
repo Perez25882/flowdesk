@@ -1,20 +1,18 @@
 import { randomBytes } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { PaymentMethod, Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { env, features } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
-import { NotFoundError, ValidationError } from '../../utils/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import {
   commissionPercentFor,
   initializeHostedCharge,
-  verifyCharge,
 } from '../../services/billing/paystack-connect.js';
 import {
   deliverText,
   loadNotificationContext,
 } from '../../services/notifications/customer-notifications.js';
-import { sendPaymentReceipt } from '../../services/notifications/receipts.js';
-import { createGatewayPayment } from './payments.repository.js';
 import * as repository from './payment-links.repository.js';
 import { lockPaymentRelationship, requirePaymentActor } from './payment-relationships.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
@@ -181,27 +179,92 @@ export async function createPaymentLink(
     throw new ValidationError('That amount is too large for a single payment link.');
   }
 
-  const row = await prisma.$transaction(async (tx) => {
+  const amountMinor = Math.round(input.amount * 100);
+  const normalized = { ...input, amount: amountMinor / 100 };
+  const prepared = await prisma.$transaction(async (tx) => {
     await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
     await lockPaymentRelationship(tx, { ...input, businessId });
     const business = await requirePayoutReady(businessId, tx);
     if (input.orderId) {
       const existing = await repository.findOpenRequestForOrder(
-        businessId, input.orderId, input.amount, input.customerId, tx,
+        businessId, input.orderId, normalized.amount, input.customerId, tx,
       );
-      if (existing) return existing;
+      if (existing) return { kind: 'existing' as const, row: existing };
     }
-    const created = await initializePaymentRequest(tx, business, input, staffId ?? null);
-    if (staffId !== undefined) {
-      await logActivity({
-        staffId, businessId, action: 'payment.link_created', resourceId: created.id, resourceType: 'payment_request',
-      }, tx);
+    const scope = { businessId, customerId: input.customerId, orderId: input.orderId ?? null, amountMinor };
+    const unresolved = await tx.paystackInitialization.findFirst({
+      where: { ...scope, state: { in: ['INITIALIZING', 'REVIEW'] } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (unresolved) return { kind: 'waiting' as const, reference: unresolved.reference };
+
+    const intent = await tx.paystackInitialization.create({
+      data: {
+        ...scope, reference: newReference(), subaccountCode: business.paystackSubaccountCode,
+        expiresAt: new Date(Date.now() + LINK_TTL_MS),
+      },
+    });
+    return { kind: 'new' as const, intent };
+  });
+
+  let row: repository.PaymentRequestRow;
+  if (prepared.kind === 'existing') row = prepared.row;
+  else if (prepared.kind === 'waiting') row = await waitForInitialization(businessId, prepared.reference);
+  else {
+    const { intent } = prepared;
+    try {
+      row = await prisma.$transaction(async (tx) => {
+        await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
+        await lockPaymentRelationship(tx, { ...normalized, businessId });
+        await tx.$queryRaw`SELECT id FROM businesses WHERE id = ${businessId} FOR SHARE`;
+        const business = await requirePayoutReady(businessId, tx);
+        if (business.paystackSubaccountCode !== intent.subaccountCode) {
+          throw new ConflictError('Payout destination changed during checkout initialization');
+        }
+        const [owned] = await tx.$queryRaw<Array<{ reference: string }>>`
+          SELECT reference FROM paystack_initializations WHERE reference = ${intent.reference}
+            AND "businessId" = ${businessId} AND state = 'INITIALIZING' FOR UPDATE
+        `;
+        if (!owned) throw new ConflictError('Checkout initialization is no longer eligible');
+        const created = await initializePaymentRequest(tx, business, normalized, staffId ?? null, intent.reference, intent.expiresAt);
+        await tx.paystackInitialization.update({
+          where: { reference: intent.reference, businessId, state: 'INITIALIZING' },
+          data: { state: 'CREATED', requestId: created.id },
+        });
+        if (staffId !== undefined) {
+          await logActivity({
+            staffId, businessId, action: 'payment.link_created', resourceId: created.id, resourceType: 'payment_request',
+          }, tx);
+        }
+        return created;
+      }, { timeout: 15_000 });
+    } catch (error: unknown) {
+      await prisma.paystackInitialization.updateMany({
+        where: { reference: intent.reference, businessId, state: 'INITIALIZING' },
+        data: { state: 'REVIEW', reason: 'INITIALIZATION_UNCONFIRMED' },
+      }).catch(() => logger.warn({ reference: intent.reference }, 'Paystack initialization remains unresolved'));
+      throw error;
     }
-    return created;
-  }, { timeout: 15_000 }); // The provider call has a 10-second timeout.
+  }
 
   if (input.send) await sendLinkToCustomer(businessId, row, input.message ?? null);
   return toView(row);
+}
+
+async function waitForInitialization(businessId: string, reference: string): Promise<repository.PaymentRequestRow> {
+  const deadline = Date.now() + 12_000;
+  do {
+    const intent = await prisma.paystackInitialization.findUnique({ where: { reference, businessId } });
+    if (intent?.state === 'CREATED' && intent.requestId) {
+      const row = await repository.findById(intent.requestId, businessId);
+      if (row?.status === 'PENDING' && row.expiresAt > new Date()) return row;
+    }
+    if (intent?.state !== 'INITIALIZING' || Date.now() - intent.createdAt.getTime() > 60_000) {
+      throw new ConflictError('An earlier checkout requires reconciliation');
+    }
+    await delay(150);
+  } while (Date.now() < deadline);
+  throw new ConflictError('An earlier checkout is still being initialized');
 }
 
 async function initializePaymentRequest(
@@ -209,9 +272,10 @@ async function initializePaymentRequest(
   business: PayoutReadyBusiness,
   input: CreateLinkInput,
   staffId: string | null,
+  reference: string,
+  expiresAt: Date,
 ): Promise<repository.PaymentRequestRow> {
   const businessId = business.id;
-  const reference = newReference();
   const commission = commissionPercentFor(business.commissionPercent);
 
   const charge = await initializeHostedCharge({
@@ -248,7 +312,7 @@ async function initializePaymentRequest(
     // Recorded as cedis at today's rate, not recomputed later from whatever the
     // commission happens to be when someone opens a report.
     platformFee: Math.round(input.amount * commission) / 100,
-    expiresAt: new Date(Date.now() + LINK_TTL_MS),
+    expiresAt,
     createdByStaffId: staffId,
   }, tx);
 
@@ -324,109 +388,6 @@ export async function cancelPaymentLink(id: string, businessId: string, staffId:
     }
     await logActivity({ staffId, businessId, action: 'payment.link_cancelled', resourceId: id, resourceType: 'payment_request' }, tx);
   });
-}
-
-/**
- * Turns a settled charge into money in the shop's books.
- *
- * Called from the Paystack webhook, and safe to call again with the same
- * reference: `claimForSettlement` is a conditional update, so a redelivery, a
- * retry and a manual reconciliation racing each other produce exactly one
- * Payment between them.
- *
- * The webhook payload is not trusted for anything that matters. It identifies
- * the reference; everything else — that it settled, for how much, on what
- * channel — is read back from Paystack. A signature proves who sent a message,
- * not that the message is true.
- */
-export async function settleFromWebhook(reference: string): Promise<void> {
-  const request = await repository.findByReference(reference);
-
-  if (!request) {
-    logger.warn({ reference }, 'Paystack charge for an unknown payment reference — ignored');
-    return;
-  }
-
-  if (request.status === 'PAID' && request.paymentId) {
-    logger.debug({ reference }, 'Payment already settled — duplicate delivery');
-    return;
-  }
-
-  // Validate historical requests before contacting Paystack. The claim and
-  // ledger write each recheck the relationship inside their transactions.
-  await prisma.$transaction((tx) => lockPaymentRelationship(tx, request));
-
-  const verified = await verifyCharge(reference);
-
-  if (!verified) {
-    logger.error({ reference }, 'Could not verify a charge with Paystack — not recording money');
-    return;
-  }
-
-  if (verified.status !== 'success') {
-    logger.info({ reference, status: verified.status }, 'Charge did not settle');
-    return;
-  }
-
-  const paidMinor = verified.amountMinor;
-  const expectedMinor = Math.round(Number(request.amount) * 100);
-
-  // A part payment is money, and refusing to record it would leave the customer
-  // out of pocket with nothing on the shop's books. An overpayment is recorded
-  // at what actually arrived. Either way it is the verified figure that is
-  // written, never the one we asked for.
-  if (paidMinor !== expectedMinor) {
-    logger.warn(
-      { reference, expectedMinor, paidMinor },
-      'Settled amount differs from the amount requested — recording what was paid',
-    );
-  }
-
-  if (!(await repository.claimForSettlement(request))) {
-    logger.debug({ reference }, 'Another worker is already settling this payment');
-    return;
-  }
-
-  try {
-    const payment = await createGatewayPayment(request.businessId, {
-      customerId: request.customerId,
-      orderId: request.orderId,
-      amount: paidMinor / 100,
-      method: methodFromCharge(verified.channel, verified.bank),
-      reference,
-      notes: 'Paid through a Flowdesk payment link',
-    });
-
-    await repository.recordSettlement(request, {
-      paymentId: payment.id,
-      channel: verified.channel,
-      gatewayFee: verified.feesMinor === null ? null : verified.feesMinor / 100,
-      paidAt: verified.paidAt ? new Date(verified.paidAt) : new Date(),
-    });
-
-    logger.info(
-      {
-        businessId: request.businessId,
-        reference,
-        amount: paidMinor / 100,
-        channel: verified.channel,
-      },
-      'Payment link settled',
-    );
-
-    // Deliberately after the money is recorded and deliberately not awaited for
-    // its success: the receipt is a courtesy on top of a settled payment, and a
-    // messaging failure must never make the webhook look like it failed, which
-    // would have Paystack redeliver a charge we have already banked.
-    await sendPaymentReceipt(payment.id);
-  } catch (error: unknown) {
-    // The claim is released so the next delivery, or the reconciliation job,
-    // can try again. A request stuck at PAID with no Payment is money the
-    // customer sent and the shop cannot see.
-    await repository.releaseClaim(reference);
-    logger.error({ error, reference }, 'Failed to record a settled payment — claim released');
-    throw error;
-  }
 }
 
 /**

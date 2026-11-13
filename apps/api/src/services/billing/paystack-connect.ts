@@ -1,6 +1,7 @@
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { paystackRequest } from './paystack.js';
+import { evidenceText, objectOf, parsePaystackJson, transactionIdOf } from './paystack-evidence.js';
 
 /**
  * Taking money on a shop's behalf, without ever holding it.
@@ -237,7 +238,7 @@ export async function initializeHostedCharge(params: {
   });
 
   const data = response.data;
-  if (!data?.authorization_url || !data.access_code) {
+  if (!data?.authorization_url || !data.access_code || data.reference !== params.reference) {
     throw new Error(`Paystack returned no checkout URL: ${response.message}`);
   }
 
@@ -249,9 +250,12 @@ export async function initializeHostedCharge(params: {
 }
 
 export interface VerifiedCharge {
-  status: string;
-  amountMinor: number;
-  currency: string;
+  transactionId: string | null;
+  reference: string | null;
+  domain: string | null;
+  status: string | null;
+  amountMinor: number | null;
+  currency: string | null;
   channel: string | null;
   paidAt: string | null;
   /** Paystack's fee, in the minor unit. */
@@ -259,6 +263,13 @@ export interface VerifiedCharge {
   subaccountCode: string | null;
   /** The momo network or card brand, when Paystack reported one. */
   bank: string | null;
+  businessId: string | null;
+  customerId: string | null;
+  orderId: string | null;
+}
+
+function nonnegativeMinor(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 /**
@@ -271,32 +282,39 @@ export interface VerifiedCharge {
  */
 export async function verifyCharge(reference: string): Promise<VerifiedCharge | null> {
   try {
-    const response = await paystackRequest<{
-      status: string;
-      amount: number;
-      currency: string;
-      channel?: string;
-      paid_at?: string;
-      fees?: number;
-      subaccount?: { subaccount_code?: string };
-      authorization?: { bank?: string; brand?: string };
-    }>(`/transaction/verify/${encodeURIComponent(reference)}`, { method: 'GET' });
-
-    const data = response.data;
-    if (!data) return null;
+    const response = await paystackRequest<unknown>(
+      `/transaction/verify/${encodeURIComponent(reference)}`, { method: 'GET' },
+      (raw) => {
+        const parsed = objectOf(parsePaystackJson(raw));
+        return { status: parsed.status === true, message: '', data: parsed.data };
+      },
+    );
+    if (!response.status) return null;
+    const data = objectOf(response.data);
+    let metadata = objectOf(data.metadata);
+    if (typeof data.metadata === 'string') {
+      try { metadata = objectOf(JSON.parse(data.metadata)); } catch { /* Metadata is optional. */ }
+    }
+    const authorization = objectOf(data.authorization);
 
     return {
-      status: data.status,
-      amountMinor: data.amount,
-      currency: data.currency,
-      channel: data.channel ?? null,
-      paidAt: data.paid_at ?? null,
-      feesMinor: data.fees ?? null,
-      subaccountCode: data.subaccount?.subaccount_code ?? null,
-      bank: data.authorization?.bank ?? data.authorization?.brand ?? null,
+      transactionId: transactionIdOf(data.id),
+      reference: evidenceText(data.reference),
+      domain: evidenceText(data.domain),
+      status: evidenceText(data.status),
+      amountMinor: nonnegativeMinor(data.amount),
+      currency: evidenceText(data.currency),
+      channel: evidenceText(data.channel),
+      paidAt: evidenceText(data.paid_at),
+      feesMinor: nonnegativeMinor(data.fees),
+      subaccountCode: evidenceText(objectOf(data.subaccount).subaccount_code),
+      bank: evidenceText(authorization.bank) ?? evidenceText(authorization.brand),
+      businessId: evidenceText(metadata.flowdeskBusinessId),
+      customerId: evidenceText(metadata.flowdeskCustomerId),
+      orderId: evidenceText(metadata.flowdeskOrderId),
     };
   } catch (error: unknown) {
-    logger.error({ error, reference }, 'Could not verify a Paystack charge');
+    logger.warn({ errorType: error instanceof Error ? error.name : 'Unknown', reference }, 'Could not verify a Paystack charge');
     return null;
   }
 }

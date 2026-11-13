@@ -1,0 +1,13 @@
+# ADR 0004 Durable Paystack merchant settlement
+
+**Baseline** Founder-approved G1-04 commit `8648d31a494af3ae5e23c55679147d64db11c9b8`. Dedicated branch `codex/g1-03-gateway-settlement`.
+
+**Decision** Use PostgreSQL as the merchant callback inbox and settlement authority. The signed raw bytes authenticate a supported `charge.success` callback with a FlowDesk merchant reference. Their SHA-256 digest identifies that delivery. Paystack's `data.id` is the transaction ID, an unsigned 64-bit value. The application preserves its exact decimal text and verifies it independently. The subscription path keeps its existing handling. [Paystack webhooks](https://paystack.com/docs/payments/webhooks/) · [Paystack verification API](https://paystack.com/docs/api/transaction/#verify-transaction)
+
+A PostgreSQL lease bounds processing and supports restart without Redis. Verification runs outside the financial transaction. The transaction fences the lease, locks the G1-04 relationship and request, and commits the unique transaction and request identity, ledger credit, balances, payment linkage, verified evidence, and receipt completion together. It records receipt delivery as a separate post-commit effect. There is no interval after the financial commit when a crash can leave a valid credit without its completion evidence.
+
+Auto-allocation requires a verified success, exact reference and transaction ID, exact GHS amount, the subaccount pinned at initialization, a valid local relationship and a verified payment timestamp before expiry. A timely payment may settle an expired request when delivery arrived late. Cancelled, late, partial, excess, reversed, unbound, conflicting, or unprovable payments go to review. Historical incomplete settlements are reviewed without a second credit or a rewrite of the original ledger. FlowDesk performs no automatic refund or transfer.
+
+Persist the initialization identity and routing terms before hosted checkout contact. A callback without a committed payment request is evidence for reconciliation, including when local initialization was interrupted. A timeout may conceal external success. Record that ambiguity and require review before creating another equivalent link. An unknown callback is retained without trusting callback-supplied tenant metadata.
+
+The worker retries transient verification and database failures within a bounded budget. Review outcomes remain visible to tenant-scoped reconciliation. SQL-managed G1-04 constraints remain in place. Provider behavior is verified locally with synthetic transport, and the hosted merchant evidence shape remains a live integration verification item.

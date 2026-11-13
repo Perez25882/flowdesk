@@ -97,6 +97,7 @@ export async function createPayment(
  * verify, so an order that is now paid should say so before the owner opens it.
  */
 export async function createGatewayPayment(
+  tx: Prisma.TransactionClient,
   businessId: string,
   data: {
     customerId: string;
@@ -105,36 +106,30 @@ export async function createGatewayPayment(
     method: PaymentMethod;
     reference: string;
     notes?: string | null;
+    paidAt?: Date;
   },
 ): Promise<PaymentWithCustomer> {
-  return prisma.$transaction(async (tx) => {
-    await lockPaymentRelationship(tx, { ...data, businessId });
-    const payment = await tx.payment.create({
-      data: {
-        businessId,
-        customerId: data.customerId,
-        orderId: data.orderId,
-        amount: new Prisma.Decimal(data.amount),
-        method: data.method,
-        direction: 'IN',
-        reference: data.reference,
-        notes: data.notes ?? null,
-        confidence: 'GATEWAY_CONFIRMED',
-        // Recorded as attested by the gateway rather than by a person, so the
-        // audit trail never implies someone signed off on something no human
-        // ever looked at.
-        attestedBy: 'paystack',
-        attestedAt: new Date(),
-      },
-    });
-
-    if (payment.orderId) {
-      await recalculateOrderPaid(payment, tx);
-    }
-    await recalculateCustomerTotals(payment.customerId, tx);
-
-    return readWrittenPayment(tx, payment.id);
+  await lockPaymentRelationship(tx, { ...data, businessId });
+  const payment = await tx.payment.create({
+    data: {
+      businessId,
+      customerId: data.customerId,
+      orderId: data.orderId,
+      amount: new Prisma.Decimal(data.amount),
+      method: data.method,
+      direction: 'IN',
+      reference: data.reference,
+      notes: data.notes ?? null,
+      confidence: 'GATEWAY_CONFIRMED',
+      attestedBy: 'paystack',
+      attestedAt: data.paidAt ?? new Date(),
+    },
   });
+
+  await recalculateOrderPaid(payment, tx);
+  await recalculateCustomerTotals(payment.customerId, tx);
+
+  return readWrittenPayment(tx, payment.id);
 }
 
 export async function listPayments(

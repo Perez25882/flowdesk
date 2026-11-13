@@ -14,6 +14,7 @@ This directory contains the versioned engineering record. It is separate from th
 | [G1-01 verification](g1/verification.md)                   | Executed commands, results and boundaries                            |
 | [G1-02 delivery authorization](g1/delivery-authorization.md) | Role contract, shipment workflow and threat model                  |
 | [G1-02 verification](g1/delivery-authorization-verification.md) | Baseline, executed checks and remaining limitations              |
+| [G1-03 Paystack settlement](g1/paystack-settlement.md) | Gateway contract, transaction boundaries and recovery runbook |
 | [G1-04 payment relationships](g1/payment-relationships.md) | Financial contract, transactions and reconciliation                  |
 | [G1-04 verification](g1/payment-relationships-verification.md) | Migration, integration and repository results                       |
 

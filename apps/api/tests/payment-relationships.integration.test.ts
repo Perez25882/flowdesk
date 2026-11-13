@@ -50,6 +50,8 @@ runWithFixtures('G1-04 payment relationships with real PostgreSQL', () => {
   let links: typeof import('../src/modules/payments/payment-links.service.js');
   let requests: typeof import('../src/modules/payments/payment-links.repository.js');
   let screenshot: typeof import('../src/modules/payments/screenshot-claims.js');
+  let acceptPaystackReceipt: typeof import('../src/modules/payments/paystack-receipts.js').acceptPaystackReceipt;
+  let drainPaystackReceipts: typeof import('../src/modules/payments/paystack-settlement.js').drainPaystackReceipts;
   let sign: typeof import('../src/services/auth/tokens.js').signAccessToken;
   let closeConnections: (() => Promise<void>) | undefined;
 
@@ -71,6 +73,8 @@ runWithFixtures('G1-04 payment relationships with real PostgreSQL', () => {
     payments = await import('../src/modules/payments/payments.service.js');
     ledger = await import('../src/modules/payments/payments.repository.js');
     links = await import('../src/modules/payments/payment-links.service.js');
+    ({ acceptPaystackReceipt } = await import('../src/modules/payments/paystack-receipts.js'));
+    ({ drainPaystackReceipts } = await import('../src/modules/payments/paystack-settlement.js'));
     requests = await import('../src/modules/payments/payment-links.repository.js');
     screenshot = await import('../src/modules/payments/screenshot-claims.js');
     trace('loading authenticated routes');
@@ -215,9 +219,9 @@ runWithFixtures('G1-04 payment relationships with real PostgreSQL', () => {
       expect(response.statusCode, response.body).toBe(code);
       await expect(payments.logPayment(input(customerId, orderId), tenant.id, null)).rejects.toMatchObject({ statusCode: code });
     }
-    await expect(ledger.createGatewayPayment(tenant.id, {
+    await expect(prisma.$transaction((tx) => ledger.createGatewayPayment(tx, tenant.id, {
       customerId: tenant.second, orderId: target.id, amount: 10, method: 'CASH', reference: 'fixture',
-    })).rejects.toMatchObject({ statusCode: 400 });
+    }))).rejects.toMatchObject({ statusCode: 400 });
     const outsider = await staff(other.id, 'MANAGER');
     await expect(payments.logPayment(input(tenant.first, target.id), tenant.id, outsider.id)).rejects.toMatchObject({ statusCode: 403 });
     expect(await snapshot(tenant.id, other.id)).toEqual(before);
@@ -425,11 +429,15 @@ runWithFixtures('G1-04 payment relationships with real PostgreSQL', () => {
     const target = await order(tenant.id, tenant.first);
     const link = await links.createPaymentLink(tenant.id, { customerId: tenant.first, orderId: target.id, amount: 25, send: false }, null);
     provider.verify.mockResolvedValue({
-      status: 'success', amount: 2500, currency: 'GHS', channel: 'card',
+      id: '61503', reference: link.reference, domain: 'test', status: 'success', amount: 2500,
+      currency: 'GHS', channel: 'card', paid_at: new Date().toISOString(),
       subaccount: { subaccount_code: tenant.subaccount },
     });
-    await links.settleFromWebhook(link.reference);
-    await links.settleFromWebhook(link.reference);
+    const callback = Buffer.from(JSON.stringify({ event: 'charge.success', data: { reference: link.reference, id: 61503 } }));
+    await acceptPaystackReceipt(callback, link.reference, { id: 61503 });
+    await drainPaystackReceipts(tenant.id);
+    await acceptPaystackReceipt(callback, link.reference, { id: 61503 });
+    await drainPaystackReceipts(tenant.id);
     const settled = await prisma.paymentRequest.findUniqueOrThrow({ where: { id: link.id } });
     const payment = await prisma.payment.findUniqueOrThrow({ where: { id: settled.paymentId! } });
     expect(settled.status).toBe('PAID');
@@ -440,9 +448,9 @@ runWithFixtures('G1-04 payment relationships with real PostgreSQL', () => {
 
     const unrelated = await links.createPaymentLink(tenant.id, { customerId: tenant.first, amount: 5, send: false }, null);
     await expect(prisma.paymentRequest.update({ where: { id: unrelated.id }, data: { paymentId: payment.id } })).rejects.toThrow();
-    const unlinked = await ledger.createGatewayPayment(tenant.id, {
+    const unlinked = await prisma.$transaction((tx) => ledger.createGatewayPayment(tx, tenant.id, {
       customerId: tenant.first, orderId: target.id, amount: 5, method: 'CARD', reference: unrelated.reference,
-    });
+    }));
     await expect(prisma.paymentRequest.update({ where: { id: unrelated.id }, data: { paymentId: unlinked.id } })).rejects.toThrow();
     expect((await requests.findById(unrelated.id, tenant.id))?.paymentId).toBeNull();
   });
@@ -453,7 +461,11 @@ runWithFixtures('G1-04 payment relationships with real PostgreSQL', () => {
     const link = await links.createPaymentLink(tenant.id, { customerId: tenant.first, orderId: target.id, amount: 25, send: false }, null);
     await prisma.order.update({ where: { id: target.id }, data: { deletedAt: new Date() } });
     const before = await snapshot(tenant.id);
-    await expect(links.settleFromWebhook(link.reference)).rejects.toMatchObject({ statusCode: 404 });
+    await acceptPaystackReceipt(Buffer.from(link.reference), link.reference, {});
+    await drainPaystackReceipts(tenant.id);
+    expect(await prisma.paystackReceipt.findFirst({ where: { reference: link.reference } })).toMatchObject({
+      state: 'REVIEW', reason: 'LOCAL_RELATIONSHIP_INVALID',
+    });
     expect(provider.verify).not.toHaveBeenCalled();
     expect(await snapshot(tenant.id)).toEqual(before);
   });
