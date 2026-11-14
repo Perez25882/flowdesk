@@ -79,8 +79,10 @@ async function getHealth(): Promise<HealthResponse> {
   const uptime = process.uptime();
 
   const dbProbe = prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT 1`; }, { maxWait: 1_500, timeout: 1_500 });
-  const [db, redisStatus] = await Promise.all([dbProbe, rateLimitRedis.ping()].map((probe) =>
-    probe.then(() => 'connected' as const, () => 'disconnected' as const)));
+  const [db, redisStatus] = await Promise.all([
+    dbProbe.then(() => 'connected' as const, () => 'disconnected' as const),
+    rateLimitRedis.ping().then(() => 'connected' as const, () => 'disconnected' as const),
+  ]);
 
   const status = db === 'connected' && redisStatus === 'connected' ? 'ok' : 'down';
 

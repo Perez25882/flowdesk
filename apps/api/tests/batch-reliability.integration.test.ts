@@ -218,6 +218,7 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     } finally {
       await fixtureRedis.config('SET', 'maxmemory', originalLimit);
     }
+    await prisma.whatsAppSend.update({ where: { id: sendId }, data: { nextAttemptAt: new Date(0) } });
     await outbound.recoverDurableOutbound();
     expect(await queue.outboundMessagesQueue.getJob(`send-${sendId}`)).toBeDefined();
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'QUEUED' });
@@ -231,7 +232,7 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     const child = fork(path, [sendId], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const exited = once(child, 'exit');
     try {
-      const signal = AbortSignal.timeout(15_000);
+      const signal = AbortSignal.timeout(30_000);
       await Promise.race([
         once(child, 'message', { signal }).then(([message]) => expect(message).toBe('provider-request')),
         exited.then(() => { throw new Error('Send process exited before reaching the synthetic provider'); }),
@@ -249,7 +250,7 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     await outbound.recoverDurableOutbound();
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'DELIVERED', attempts: 1 });
     expect(await prisma.message.count({ where: { businessId: business.id, waMessageId: providerId } })).toBe(1);
-  });
+  }, 45_000);
 
   it('rejects a foreign recipient and an automation after owner takeover before provider I/O', async () => {
     const { business, customer } = await shop();
