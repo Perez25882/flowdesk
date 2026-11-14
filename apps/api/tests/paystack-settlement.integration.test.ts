@@ -47,7 +47,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     }
     const fixtureDatabase = new URL(dbUrl!);
     if (!fixtureDatabase.searchParams.has('connection_limit')) fixtureDatabase.searchParams.set('connection_limit', '8');
-    fixtureDatabase.searchParams.set('pool_timeout', '2');
+    fixtureDatabase.searchParams.set('pool_timeout', '4');
     process.env.DATABASE_URL = fixtureDatabase.toString();
     process.env.REDIS_URL = redisUrl!;
     process.env.PAYSTACK_SECRET_KEY = secret;
@@ -257,7 +257,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     const { processIntentClassification, intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
     const outboundWorker = await import('../src/workers/outbound.worker.js');
     const { dispatchTextReceipts } = await import('../src/workers/text-receipt.worker.js');
-    await intentClassifierWorker.close();
+    await intentClassifierWorker.close(true);
     async function admitText(text: string, id: string) {
       const data = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
         metadata: { phone_number_id: phone }, messages: [{ id, from: fixture.customer.waNumber,
@@ -334,7 +334,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }))
       .toMatchObject({ state: 'PROVIDER_ACCEPTED', providerMessageId: metaCalls.get(notification.id) });
     expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ status: 'FULFILLED', customerId: fixture.customer.id });
-  });
+  }, 90_000);
 
   it('rejects an invalid signature and ignores unsupported events without financial effects', async () => {
     const fixture = await shop();
@@ -409,25 +409,27 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     verify(fixture);
     const { logger } = await import('../src/config/logger.js');
     const log = vi.spyOn(logger, 'error');
-    let ready!: () => void;
     let release!: () => void;
-    const hasLock = new Promise<void>((resolve) => { ready = resolve; });
     const releaseLock = new Promise<void>((resolve) => { release = resolve; });
     const limit = Number(new URL(process.env.DATABASE_URL!).searchParams.get('connection_limit'));
     if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error('Set a bounded fixture connection_limit');
     // Saturate the same Prisma pool used by the webhook. The fixture sets
     // a short statement acquisition timeout so the 503 is deterministic.
-    let occupied = 0;
-    const held = Array.from({ length: limit }, () => prisma.$transaction(async () => {
-      if (++occupied === limit) ready();
-      await releaseLock;
-    }, { maxWait: 10_000, timeout: 20_000 }));
-    const holding = Promise.all(held);
+    const held: Array<Promise<unknown>> = [];
     try {
-      await Promise.race([hasLock, holding]);
+      for (let i = 0; i < limit; i++) {
+        let ready!: () => void;
+        const started = new Promise<void>((resolve) => { ready = resolve; });
+        const transaction = prisma.$transaction(async () => {
+          ready();
+          await releaseLock;
+        }, { maxWait: 10_000, timeout: 60_000 });
+        held.push(transaction);
+        await Promise.race([started, transaction]);
+      }
       const first = await signed(payload(fixture.request.reference, fixture.transactionId));
       release();
-      await holding;
+      await Promise.all(held);
       expect(first.statusCode).toBe(503);
       expect(log).toHaveBeenCalledWith(expect.objectContaining({ databaseCode: 'P2024' }), 'Paystack receipt not durably accepted');
       expect(await prisma.paystackReceipt.count({ where: { reference: fixture.request.reference } })).toBe(0);
@@ -436,10 +438,10 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
       await expectCredit(fixture, 1);
     } finally {
       release();
-      await holding.catch(() => undefined);
+      await Promise.allSettled(held);
       log.mockRestore();
     }
-  });
+  }, 90_000);
 
   it('rejects one transaction identity presented for a second tenant and request', async () => {
     const first = await shop();

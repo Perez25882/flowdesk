@@ -9,10 +9,12 @@ globalThis.fetch = async (input, init) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.hostname !== 'graph.facebook.com' || !url.pathname.endsWith('/messages') ||
       JSON.parse(String(init?.body)).biz_opaque_callback_data !== id) throw new Error('Unexpected fixture provider request');
-  process.send?.('provider-request');
-  return new Promise<Response>(() => {});
+  process.send('provider-request');
+  return new Promise(() => {});
 };
 
-const { processDurableOutbound } = await import('../../src/workers/outbound.worker.js');
+process.send('child-entry');
+const { processDurableOutbound } = await import('../../dist/workers/outbound.worker.js');
+process.send('worker-imported');
 await processDurableOutbound(id);
 throw new Error('Worker returned before the expected interruption');

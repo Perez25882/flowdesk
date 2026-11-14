@@ -228,13 +228,21 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     const { business, customer, phone } = await shop();
     const sendId = (await queue.persistOutboundSend(prisma, { businessId: business.id, customerId: customer.id,
       to: customer.waNumber, body: 'Crash recovery fixture' }, randomUUID()))!;
-    const path = fileURLToPath(new URL('./fixtures/batch-outbound-crash.ts', import.meta.url));
-    const child = fork(path, [sendId], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    const path = fileURLToPath(new URL('./fixtures/batch-outbound-crash.mjs', import.meta.url));
+    const child = fork(path, [sendId], { execArgv: [], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     const exited = once(child, 'exit');
+    let stage = 'before child entry';
     try {
       const signal = AbortSignal.timeout(30_000);
+      const enteredProvider = new Promise<void>((resolve, reject) => {
+        child.on('message', (message) => {
+          stage = String(message);
+          if (message === 'provider-request') resolve();
+        });
+        signal.addEventListener('abort', () => reject(new Error(`Send process stopped advancing at ${stage}`)), { once: true });
+      });
       await Promise.race([
-        once(child, 'message', { signal }).then(([message]) => expect(message).toBe('provider-request')),
+        enteredProvider,
         exited.then(() => { throw new Error('Send process exited before reaching the synthetic provider'); }),
       ]);
       expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'SENDING', attempts: 1 });
