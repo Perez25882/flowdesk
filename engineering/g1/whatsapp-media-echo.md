@@ -49,7 +49,7 @@ The shared worker drains up to 20 non-media receipts per pass. A separate pollin
 
 ## Recovery and retention
 
-The existing worker startup starts both receipt polling lanes. After dependency recovery it resumes due receipts. Operators can inspect counts by state and reason without reading customer payloads.
+The existing worker startup starts both receipt polling lanes when `WHATSAPP_TEXT_DISPATCH_ENABLED` is true, its default. After dependency recovery it resumes due receipts. Operators can inspect counts by state and reason without reading customer payloads.
 
 ```sql
 SELECT kind, status, reason, count(*)
