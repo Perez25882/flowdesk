@@ -2,6 +2,8 @@
 
 Audited source `541b7b85da7755d84374bb9d483a69b3f49fdf77`. Deployment entries describe checked-in configuration. Hosted routing and live integrations are unverified.
 
+The [Batch 1 topology and contracts](../g1/batch-1-contract.md) cover the later durable ingress, commercial effects, outbound lifecycle, fulfillment recovery and local release gateway.
+
 ```mermaid
 flowchart LR
   Owner["Owner and staff"] --> Web["React + Vite dashboard"]

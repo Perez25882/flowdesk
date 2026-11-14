@@ -2,6 +2,8 @@
 
 The [G1-06 workflow](whatsapp-media-echo.md) extends this recorded baseline. Use its current acknowledgment fields, retention and recovery instructions when running the G1-06 revision.
 
+Batch 1 extends classifier handoff recovery. A completed ingress receipt retains a bounded follow-up schedule until PostgreSQL records classification or recovery reaches an explicit exception. See the [current contract](batch-1-contract.md#inbound-commercial-effects).
+
 ## Workflow contract
 
 - The API verifies Meta's HMAC over the original HTTP bytes before interpreting the payload. The text parser validates the phone-number ID, provider message ID, sender, timestamp and body per member. Valid text siblings survive invalid inbound members.

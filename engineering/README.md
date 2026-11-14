@@ -26,6 +26,7 @@ This directory contains the versioned engineering record. It is separate from th
 | [G1-06 verification](g1/whatsapp-media-echo-verification.md) | Migration, integration and regression evidence |
 | [Batch 1 progress](g1/batch-1-progress.md) | Commit baseline, workstream checkpoints and verification status |
 | [Batch 1 execution contracts](g1/batch-1-contract.md) | Commercial identities, outbound lifecycle, fulfillment and release |
+| [Batch 1 engineering report](g1/batch-1-report.md) | Acceptance evidence, reproduction and release blockers |
 
 ## Engineering conventions
 
