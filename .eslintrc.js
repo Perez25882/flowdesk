@@ -29,6 +29,11 @@ module.exports = {
   },
   overrides: [
     {
+      // Preserve the browser render-error and React component stack for support.
+      files: ['apps/web/src/components/shared/ErrorBoundary.tsx'],
+      rules: { 'no-console': ['error', { allow: ['error'] }] },
+    },
+    {
       // Operator scripts run from a terminal and are read by a person standing
       // in front of it. `no-console` is there to stop server code logging
       // outside the structured logger; printing is what these are for.

@@ -24,6 +24,7 @@ This directory contains the versioned engineering record. It is separate from th
 | [G1-06 WhatsApp source inventory](g1/whatsapp-event-inventory.md) | Baseline event types, routing and acknowledgment |
 | [G1-06 WhatsApp media and echo workflow](g1/whatsapp-media-echo.md) | Receipt, storage, ownership and recovery contract |
 | [G1-06 verification](g1/whatsapp-media-echo-verification.md) | Migration, integration and regression evidence |
+| [Batch 1 progress](g1/batch-1-progress.md) | Commit baseline, workstream checkpoints and verification status |
 
 ## Engineering conventions
 

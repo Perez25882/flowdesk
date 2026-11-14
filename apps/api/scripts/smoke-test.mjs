@@ -13,26 +13,16 @@
  */
 
 import { createHmac, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { smokeConfig } from './smoke-config.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-
-/** Minimal .env reader — the script must not depend on the API's own config. */
-function loadEnv() {
-  const out = {};
-  for (const line of readFileSync(join(ROOT, '.env'), 'utf8').split('\n')) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
-    if (!match) continue;
-    out[match[1]] = match[2].trim().replace(/^["']|["']$/g, '');
-  }
-  return out;
+let config;
+try {
+  config = smokeConfig();
+} catch (error) {
+  console.error(`Smoke configuration error: ${error.message}`);
+  process.exit(1);
 }
-
-const env = loadEnv();
-const BASE = process.env.API_URL ?? 'http://localhost:3000';
-const API = `${BASE}/api/v1`;
+const API = `${config.apiOrigin}/api/v1`;
 const PHONE_NUMBER_ID = `smoke-${randomUUID().slice(0, 8)}`;
 const CUSTOMER_WA = '233201112233';
 
@@ -101,7 +91,7 @@ async function sendWebhookTo(phoneNumberId, customerWa, profileName, messageText
   };
 
   const raw = JSON.stringify(payload);
-  const signature = createHmac('sha256', env.META_WEBHOOK_SECRET).update(raw).digest('hex');
+  const signature = createHmac('sha256', config.webhookSecret).update(raw).digest('hex');
 
   const response = await fetch(`${API}/webhook`, {
     method: 'POST',
@@ -162,6 +152,9 @@ async function main() {
     body: { email, password: 'definitely-wrong' },
   });
   check('rejects a wrong password', wrongPassword.status === 401);
+
+  const ruleMode = await call('/businesses/me', { method: 'PATCH', token, body: { aiAssistMode: 'OFF' } });
+  check('owner enables the rule-based smoke journey', ruleMode.status === 200);
 
   // ── WhatsApp ─────────────────────────────────────────────────────────────
   console.log('\n2. WhatsApp connection');
@@ -379,13 +372,16 @@ async function main() {
   });
   check('owner can invite staff', invite.status === 201, JSON.stringify(invite.body));
 
-  const inviteToken = invite.body?.data?.inviteToken;
+  const inviteUrl = invite.body?.data?.inviteUrl;
+  const link = typeof inviteUrl === 'string' ? new URL(inviteUrl) : null;
+  const inviteToken = link?.pathname === '/staff/accept' ? link.searchParams.get('token') : null;
+  check('invite returns an acceptance link', Boolean(inviteToken));
   if (inviteToken) {
     const accept = await call('/staff/accept', {
       method: 'POST',
       body: { token: inviteToken, password: 'StaffPassw0rd!' },
     });
-    check('staff can accept the invite without a token', accept.status === 200,
+    check('staff can accept the invite without an account session', accept.status === 200,
       JSON.stringify(accept.body));
 
     const staffLogin = await call('/staff/login', {
@@ -395,6 +391,7 @@ async function main() {
     check('staff can sign in', staffLogin.status === 200, JSON.stringify(staffLogin.body));
 
     const staffToken = staffLogin.body?.data?.accessToken;
+    check('staff sign-in yields an access token', typeof staffToken === 'string');
     if (staffToken) {
       const staffInvites = await call('/staff/invite', {
         method: 'POST',
@@ -407,8 +404,6 @@ async function main() {
         `status ${staffInvites.status}`,
       );
     }
-  } else {
-    check('invite returned a token', false, 'no inviteToken in response');
   }
 
   // ── Plan usage ───────────────────────────────────────────────────────────
@@ -425,7 +420,9 @@ async function main() {
     );
     check('order usage was counted', Number(snapshot.orders?.used) >= 1);
     check('product usage was counted', Number(snapshot.products?.used) === 2);
-    check('starter plan caps products at 50', Number(snapshot.products?.limit) === 50);
+    check('new account receives Business trial entitlements',
+      snapshot.plan === 'STARTER' && snapshot.effectivePlan === 'BUSINESS' &&
+      snapshot.products?.limit === null && snapshot.staff?.limit === 5);
   }
 
   // ── Multi-tenant WhatsApp routing ────────────────────────────────────────
