@@ -79,6 +79,7 @@ const envSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes)'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().max(65535).default(3000),
+  HOST: z.string().min(1).default('0.0.0.0'),
 
   // How much to trust `X-Forwarded-For` when deriving the client IP.
   //

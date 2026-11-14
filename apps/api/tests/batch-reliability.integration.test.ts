@@ -119,14 +119,18 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     startsAt.setUTCHours(10, 0, 0, 0);
     const bookingSource = await prisma.message.create({ data: { businessId: business.id, customerId: customer.id,
       direction: 'INBOUND', waMessageId: randomUUID(), body: `I want to book Consultation at ${startsAt.toISOString()}` } });
-    const { book, cancelAppointment } = await import('../src/modules/bookings/bookings.service.js');
+    const { book, cancelAppointment, findSlots } = await import('../src/modules/bookings/bookings.service.js');
+    const slotQuery = { serviceId: service.id, from: new Date(startsAt.getTime() - 3_600_000), days: 1, limit: 20 };
+    expect((await findSlots(business.id, slotQuery)).slots.some((slot) => slot.startsAt.getTime() === startsAt.getTime())).toBe(true);
     const booking = { businessId: business.id, serviceId: service.id, customerId: customer.id, startsAt,
       byAssistant: true, assistantMessageId: bookingSource.id };
     const outcomes = await Promise.all([book(booking), book(booking)]);
     expect(outcomes[0]!.id).toBe(outcomes[1]!.id);
+    expect((await findSlots(business.id, slotQuery)).slots.some((slot) => slot.startsAt.getTime() === startsAt.getTime())).toBe(false);
     await expect(book({ ...booking, customerId: other.id })).rejects.toThrow('current policy');
     await expect(book({ businessId: business.id, serviceId: service.id, customerId: other.id, startsAt })).rejects.toThrow('not available');
     await cancelAppointment(outcomes[0]!.id, business.id, 'Synthetic cancellation');
+    expect((await findSlots(business.id, slotQuery)).slots.some((slot) => slot.startsAt.getTime() === startsAt.getTime())).toBe(true);
     const second = await book({ businessId: business.id, serviceId: service.id, customerId: other.id, startsAt });
     expect(second.id).not.toBe(outcomes[0]!.id);
   });
@@ -195,6 +199,28 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({
       state: 'REVIEW_REQUIRED', reason: 'SEND_WORKER_INTERRUPTED',
     });
+  });
+
+  it('keeps an authorized intent when Redis refuses queue writes and recovers the handoff', async () => {
+    const { business, customer } = await shop();
+    const { redis: fixtureRedis } = await import('../src/config/redis.js');
+    const key = randomUUID();
+    const [, originalLimit] = await fixtureRedis.config('GET', 'maxmemory') as [string, string];
+    await fixtureRedis.config('SET', 'maxmemory', '1');
+    let sendId: string;
+    try {
+      const result = await queue.enqueueOutboundMessage({ businessId: business.id, customerId: customer.id,
+        to: customer.waNumber, body: 'Recover after queue refused a write' }, { idempotencyKey: key });
+      expect(result).toMatchObject({ accepted: true, queued: false });
+      sendId = result.sendId!;
+      expect(sendId).toBeDefined();
+      expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'AUTHORIZED' });
+    } finally {
+      await fixtureRedis.config('SET', 'maxmemory', originalLimit);
+    }
+    await outbound.recoverDurableOutbound();
+    expect(await queue.outboundMessagesQueue.getJob(`send-${sendId}`)).toBeDefined();
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'QUEUED' });
   });
 
   it('reconciles signed delivery after a real send process dies in the provider call', async () => {

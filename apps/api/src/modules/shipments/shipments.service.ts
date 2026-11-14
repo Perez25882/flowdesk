@@ -124,9 +124,11 @@ export async function attachProofOfDispatch(
 
   // Stage a private object without holding a database lock during storage I/O.
   // Recheck authorization before publishing its key and remove it on failure.
+  let uploaded = false;
   let result;
   try {
     await uploadBufferToS3(buffer, key, mimeType, AbortSignal.timeout(10_000));
+    uploaded = true;
     result = await prisma.$transaction(async (tx) => {
       await lockOrderForDelivery(tx, orderId, actor);
       const previous = await tx.shipment.findUnique({ where, select: { proofKey: true } });
@@ -154,7 +156,7 @@ export async function attachProofOfDispatch(
     });
   } catch (error: unknown) {
     await prisma.fulfillmentTask.updateMany({ where: { id: staged.id, state: 'PENDING' },
-      data: { reason: 'PROOF_LINK_INTERRUPTED' } }).catch(() => undefined);
+      data: { reason: uploaded ? 'PROOF_LINK_INTERRUPTED' : 'PROOF_UPLOAD_UNCERTAIN' } }).catch(() => undefined);
     throw error;
   }
 

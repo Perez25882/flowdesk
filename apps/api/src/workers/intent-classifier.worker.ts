@@ -282,7 +282,7 @@ export async function processIntentClassification(jobData: IntentClassificationJ
   // the assistant has had its say.
   const provisionalReview = requiresReview(result.intent, result.confidence, 'none', false);
   const ruleOrder = result.intent === IntentType.ORDER && result.source === ClassificationSource.RULE_ENGINE &&
-    explicitOrderRequest(message.body) && !hasPolicyOverride(message.body) && message.customerId &&
+    explicitOrderRequest(message.body) && !hasPolicyOverride(message.body) && message.customerId && !message.customer?.blacklisted &&
     Boolean(await prisma.business.findFirst({
       where: { id: message.businessId, active: true, deletedAt: null, deactivatedAt: null, aiAssistMode: 'OFF' }, select: { id: true },
     }));

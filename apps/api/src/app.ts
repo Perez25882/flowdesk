@@ -12,7 +12,7 @@ import { ZodError } from 'zod';
 import { allowedOrigins, env, trustProxyValue } from './config/env.js';
 import { logger } from './config/logger.js';
 import { prisma } from './config/database.js';
-import { redis, rateLimitRedis } from './config/redis.js';
+import { rateLimitRedis } from './config/redis.js';
 import { isAppError } from './utils/errors.js';
 import type { ApiError } from './utils/response.js';
 import { requireAuth } from './middleware/auth.middleware.js';
@@ -78,15 +78,9 @@ async function getHealth(): Promise<HealthResponse> {
   const timestamp = new Date().toISOString();
   const uptime = process.uptime();
 
-  const db = await prisma
-    .$queryRaw`SELECT 1`
-    .then(() => 'connected' as const)
-    .catch(() => 'disconnected' as const);
-
-  const redisStatus = await redis
-    .ping()
-    .then(() => 'connected' as const)
-    .catch(() => 'disconnected' as const);
+  const dbProbe = prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT 1`; }, { maxWait: 1_500, timeout: 1_500 });
+  const [db, redisStatus] = await Promise.all([dbProbe, rateLimitRedis.ping()].map((probe) =>
+    probe.then(() => 'connected' as const, () => 'disconnected' as const)));
 
   const status = db === 'connected' && redisStatus === 'connected' ? 'ok' : 'down';
 

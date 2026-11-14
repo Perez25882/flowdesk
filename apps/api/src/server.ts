@@ -103,7 +103,7 @@ async function startServer(): Promise<void> {
     void shutdown(signal);
   });
 
-  await app.listen({ port: env.PORT, host: '0.0.0.0' });
+  await app.listen({ port: env.PORT, host: env.HOST });
   logger.info({ port: env.PORT }, 'Flowdesk API server started');
 }
 

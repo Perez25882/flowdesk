@@ -21,7 +21,7 @@ try {
     throw new Error('Use a disposable flowdesk_g1_* PostgreSQL database and a dedicated Redis port');
   }
   const childEnv = {
-    NODE_ENV: 'development', LOG_LEVEL: 'warn', HAIKU_FALLBACK_ENABLED: 'false',
+    NODE_ENV: 'development', HOST: '127.0.0.1', LOG_LEVEL: 'warn', HAIKU_FALLBACK_ENABLED: 'false',
     JWT_SECRET: 'flowdesk-smoke-synthetic-access-key-000', JWT_REFRESH_SECRET: 'flowdesk-smoke-synthetic-refresh-key-000',
     ENCRYPTION_KEY: '0'.repeat(64), META_WEBHOOK_SECRET: 'flowdesk-smoke-synthetic-webhook-key-000',
     FRONTEND_URL: 'http://127.0.0.1:5173',
@@ -35,7 +35,7 @@ try {
   childEnv.API_URL = `http://127.0.0.1:${port}`;
   const { apiOrigin } = smokeConfig(childEnv);
   child = spawn(process.execPath, ['--import', new URL('smoke-provider.mjs', import.meta.url).href, here('../dist/server.js')], {
-    env: childEnv, stdio: 'inherit', windowsHide: true, cwd: here('..'),
+    env: childEnv, stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true, cwd: here('..'),
   });
   const stopped = once(child, 'exit');
   const deadline = Date.now() + 45_000;
@@ -72,8 +72,9 @@ try {
   });
   const [code] = await once(runner, 'exit');
   process.exitCode = code ?? 1;
-  child.kill('SIGTERM');
-  await stopped;
+  child.send('synthetic-smoke-shutdown');
+  const [shutdownCode] = await stopped;
+  if (shutdownCode !== 0) throw new Error(`Synthetic API shutdown exited with code ${shutdownCode}`);
 } catch (error) {
   console.error(`Smoke fixture failed: ${error.message}`);
   process.exitCode = 1;

@@ -426,4 +426,32 @@ fixtureOnly('G1-02 delivery authorization with real PostgreSQL', () => {
     expect(await prisma.shipment.findUnique({ where: { orderId: target.id } })).toEqual(wrongShipment);
     expect(await prisma.orderStatusHistory.count({ where: { orderId: target.id } })).toBe(0);
   });
+
+  it('preserves the existing proof when replacement times out and recovers the orphan', async () => {
+    const target = await order(owner, rider, 'DISPATCHED');
+    const existing = await addLegacyProof(target.id, owner.businessId);
+    let stagedKey = '';
+    storage.upload.mockImplementationOnce(async (buffer, key) => {
+      stagedKey = key;
+      storage.objects.set(key, buffer);
+      throw new Error('Synthetic object upload timeout after storage committed');
+    });
+    const response = await request(rider, 'POST', `/orders/${target.id}/dispatch/proof`, proofInput);
+    expect(response.statusCode).toBe(500);
+    expect(stagedKey).toBeTruthy();
+    expect(await prisma.shipment.findUniqueOrThrow({ where: { orderId: target.id } })).toEqual(existing);
+    expect(await prisma.fulfillmentTask.findFirst({ where: { subject: stagedKey } })).toMatchObject({
+      state: 'PENDING', reason: 'PROOF_UPLOAD_UNCERTAIN',
+    });
+    storage.delete.mockRejectedValueOnce(new Error('Synthetic object delete timeout'));
+    const { recoverFulfillment } = await import('../src/workers/fulfillment-recovery.js');
+    await recoverFulfillment(new Date(Date.now() + 121_000));
+    expect(await prisma.fulfillmentTask.findFirst({ where: { subject: stagedKey } })).toMatchObject({
+      state: 'PENDING', reason: 'PROOF_CLEANUP_FAILED',
+    });
+    await recoverFulfillment(new Date(Date.now() + 126_000));
+    expect(await prisma.fulfillmentTask.findFirst({ where: { subject: stagedKey } })).toMatchObject({ state: 'DONE' });
+    expect(storage.objects.has(stagedKey)).toBe(false);
+    expect(storage.objects.has(existing.proofKey!)).toBe(true);
+  });
 });

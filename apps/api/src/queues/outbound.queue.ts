@@ -176,7 +176,7 @@ export async function persistOutboundSend(
 ): Promise<string | null> {
   const business = await tx.business.findUnique({ where: { id: data.businessId }, select: { waPhoneNumberId: true } });
   const { count } = await tx.whatsAppSend.createMany({
-    data: { id, eventKey, businessId: data.businessId, phoneNumberId: business?.waPhoneNumberId,
+    data: { id, eventKey, businessId: data.businessId, phoneNumberId: business?.waPhoneNumberId ?? null,
       payload: JSON.parse(JSON.stringify({ ...data, to: normalizeGhanaPhone(data.to) })) as Prisma.InputJsonObject },
     skipDuplicates: true,
   });

@@ -1,5 +1,9 @@
 import { Socket } from 'node:net';
 
+process.on('message', (message) => {
+  if (message === 'synthetic-smoke-shutdown') process.emit('SIGTERM', 'SIGTERM');
+});
+
 const loopback = new Set(['127.0.0.1', '::1', 'localhost', '[::1]']);
 const connect = Socket.prototype.connect;
 Socket.prototype.connect = function (...args) {
