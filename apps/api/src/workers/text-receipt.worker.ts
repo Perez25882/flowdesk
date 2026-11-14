@@ -3,6 +3,8 @@ import { Redis } from 'ioredis';
 import { prisma } from '../config/database.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
+import { normalizeGhanaPhone } from '../utils/phone.js';
+import { processMediaReceipt } from './whatsapp-media-receipt.js';
 import {
   completeTextReceipt,
   delayTextReceipt,
@@ -55,19 +57,23 @@ export function openTextReceiptQueue(): { enqueue: EnqueueIntent; close: () => P
   };
 }
 
-async function activeOwner(
+export async function activeOwner(
   tx: Prisma.TransactionClient,
   receipt: WhatsAppTextReceipt,
   now: Date,
 ): Promise<string | null> {
+  if (Math.min(receipt.sentAt.getTime(), receipt.receivedAt.getTime()) < now.getTime() - TEXT_RECEIPT_RETENTION_MS) {
+    await failTextReceipt(tx, receipt, now, 'STALE_EVENT');
+    return null;
+  }
   if (!receipt.businessId) {
     // A later connection is not evidence that it owned the number at delivery.
     await failTextReceipt(tx, receipt, now, 'PHONE_OWNER_UNVERIFIED');
     return null;
   }
 
-  const [owner] = await tx.$queryRaw<Array<{ id: string; active: boolean }>>`
-    SELECT "id", "active" FROM "businesses"
+  const [owner] = await tx.$queryRaw<Array<{ id: string; active: boolean; waDisplayNumber: string | null }>>`
+    SELECT "id", "active", "waDisplayNumber" FROM "businesses"
     WHERE "waPhoneNumberId" = ${receipt.phoneNumberId} AND "deletedAt" IS NULL
     FOR SHARE
   `;
@@ -79,10 +85,23 @@ async function activeOwner(
     await delayTextReceipt(tx, receipt, now, 'PHONE_NOT_ACTIVE');
     return null;
   }
+  const [binding] = await tx.$queryRaw<Array<{ id: bigint }>>`
+    SELECT id FROM "whatsapp_phone_ownership"
+    WHERE "phoneNumberId" = ${receipt.phoneNumberId} AND "businessId" = ${owner.id} AND "endedAt" IS NULL
+  `;
+  if (receipt.ownershipId !== null && binding?.id !== receipt.ownershipId) {
+    await failTextReceipt(tx, receipt, now, 'PHONE_OWNER_CHANGED');
+    return null;
+  }
+  if (receipt.kind === 'ECHO' && owner.waDisplayNumber &&
+      normalizeGhanaPhone(owner.waDisplayNumber) !== receipt.echoSender) {
+    await failTextReceipt(tx, receipt, now, 'ECHO_SENDER_MISMATCH');
+    return null;
+  }
   return owner.id;
 }
 
-async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
+export async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
   return prisma.$transaction(async (tx) => {
     const receipt = await lockDueTextReceipt(tx, id, now);
     if (!receipt) return false;
@@ -90,10 +109,14 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
 
     const businessId = await activeOwner(tx, receipt, now);
     if (!businessId) return false;
-    if (receipt.sender === null || receipt.body === null) {
+    if (receipt.sender === null || (receipt.kind === 'TEXT' && receipt.body === null)) {
       await failTextReceipt(tx, receipt, now, 'MESSAGE_MISSING');
       return false;
     }
+
+    const echo = receipt.kind === 'ECHO';
+    const direction = echo ? 'OUTBOUND' : 'INBOUND';
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`whatsapp-message:${receipt.waMessageId}`}, 0))`;
 
     // Message.waMessageId is globally unique in the existing schema.
     // Reuse compatible legacy rows, and refuse collisions before any write.
@@ -104,6 +127,7 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
         businessId: true,
         direction: true,
         type: true,
+        sentFromApp: true,
         customer: { select: { businessId: true, waNumber: true } },
         textReceipt: { select: { id: true } },
       },
@@ -111,8 +135,9 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
     if (
       existing &&
       (existing.businessId !== businessId ||
-        existing.direction !== 'INBOUND' ||
-        existing.type !== 'TEXT' ||
+        existing.direction !== direction ||
+        existing.type !== receipt.messageType ||
+        (echo && (!existing.sentFromApp || existing.customer === null)) ||
         (existing.customer !== null &&
           (existing.customer.businessId !== businessId ||
             existing.customer.waNumber !== receipt.sender)) ||
@@ -128,13 +153,13 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
         businessId,
         waNumber: receipt.sender,
         name: receipt.profileName,
-        lastInboundAt: receipt.sentAt,
+        lastInboundAt: echo ? null : receipt.sentAt,
         lastInteractionAt: receipt.sentAt,
       },
       update: {},
       select: { id: true },
     });
-    await tx.customer.updateMany({
+    if (!echo) await tx.customer.updateMany({
       where: {
         id: customer.id,
         OR: [{ lastInboundAt: null }, { lastInboundAt: { lt: receipt.sentAt } }],
@@ -163,11 +188,15 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
             businessId,
             customerId: customer.id,
             waMessageId: receipt.waMessageId,
-            direction: 'INBOUND',
-            type: 'TEXT',
+            direction,
+            type: receipt.messageType,
             body: receipt.body,
             createdAt: receipt.sentAt,
             replyToWaId: receipt.replyToWaId,
+            mediaType: receipt.mediaMime,
+            reactionEmoji: receipt.reactionEmoji,
+            reactedToWaId: receipt.reactionTarget,
+            ...(echo ? { sentFromApp: true, processed: true, processedAt: now } : {}),
           },
           select: { id: true },
         });
@@ -176,6 +205,10 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
       where: { id },
       data: { messageId: message.id },
     });
+    if (echo) {
+      await completeTextReceipt(tx, receipt, now);
+      return false;
+    }
     return true;
   }, TRANSACTION_OPTIONS);
 }
@@ -183,18 +216,27 @@ async function materializeTextMessage(id: string, now: Date): Promise<boolean> {
 async function handOffTextMessage(id: string, enqueue: EnqueueIntent, now: Date): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const receipt = await lockDueTextReceipt(tx, id, now);
-    if (!receipt) return;
+    if (!receipt || receipt.kind === 'ECHO' || (receipt.kind === 'MEDIA' && !receipt.mediaArchivedAt)) return;
 
     const businessId = await activeOwner(tx, receipt, now);
     if (!businessId) return;
     const message = receipt.messageId
       ? await tx.message.findUnique({
-          where: { id: receipt.messageId, businessId },
+          where: { id: receipt.messageId, businessId, waMessageId: receipt.waMessageId, direction: 'INBOUND',
+            type: receipt.messageType, customer: { businessId, waNumber: receipt.sender ?? '' } },
           select: { id: true, processed: true },
         })
       : null;
     if (!message) {
       await failTextReceipt(tx, receipt, now, 'MESSAGE_MISSING');
+      return;
+    }
+    if (receipt.kind === 'MEDIA' && !receipt.body?.trim() && !message.processed) {
+      await tx.message.update({
+        where: { id: message.id, businessId },
+        data: { processed: true, processedAt: now, requiresReview: true, processingError: 'MEDIA_ANALYSIS_UNSUPPORTED' },
+      });
+      await completeTextReceipt(tx, receipt, now);
       return;
     }
 
@@ -222,18 +264,25 @@ async function handOffTextMessage(id: string, enqueue: EnqueueIntent, now: Date)
 export async function dispatchTextReceipts(
   enqueue: EnqueueIntent,
   now = new Date(),
+  businessId?: string,
+  lane?: 'media' | 'other',
 ): Promise<number> {
   const due = await prisma.whatsAppTextReceipt.findMany({
-    where: { nextAttemptAt: { lte: now } },
-    orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
-    select: { id: true },
-    take: BATCH_SIZE,
+    where: {
+      nextAttemptAt: { lte: now }, OR: [{ leaseUntil: null }, { leaseUntil: { lte: now } }],
+      ...(businessId ? { businessId } : {}),
+      ...(lane ? { kind: lane === 'media' ? 'MEDIA' : { not: 'MEDIA' } } : {}),
+    },
+    orderBy: [{ nextAttemptAt: 'asc' }, { sentAt: 'asc' }, { id: 'asc' }],
+    select: { id: true, kind: true },
+    take: lane === 'media' ? 2 : BATCH_SIZE,
   });
 
-  for (const { id } of due) {
+  for (const { id, kind } of due) {
     try {
       // Commit the customer and message before the classifier can read them.
       if (await materializeTextMessage(id, now)) {
+        if (kind === 'MEDIA' && !(await processMediaReceipt(id, now, activeOwner))) continue;
         await handOffTextMessage(id, enqueue, now);
       }
     } catch (error) {
@@ -258,18 +307,39 @@ async function pruneTextReceipts(now: Date): Promise<number> {
   `;
 }
 
+async function expireWaitingReceipts(now: Date): Promise<void> {
+  const cutoff = new Date(now.getTime() - TEXT_RECEIPT_RETENTION_MS);
+  await prisma.$executeRaw`
+    UPDATE "whatsapp_text_receipts" SET status = 'FAILED', reason = 'STALE_EVENT', "finishedAt" = ${now},
+      "nextAttemptAt" = NULL, sender = NULL, body = NULL, "profileName" = NULL, "replyToWaId" = NULL,
+      "mediaId" = NULL, "mediaMime" = NULL, "mediaDigest" = NULL, "echoSender" = NULL,
+      "reactionEmoji" = NULL, "reactionTarget" = NULL, "leaseToken" = NULL, "leaseUntil" = NULL
+    WHERE id IN (SELECT id FROM "whatsapp_text_receipts" WHERE LEAST("sentAt", "receivedAt") < ${cutoff} AND "finishedAt" IS NULL
+      AND ("leaseUntil" IS NULL OR "leaseUntil" <= ${now}) LIMIT 100 FOR UPDATE SKIP LOCKED)
+  `;
+}
+
 export function startTextReceiptWorker(): () => Promise<void> {
   const { enqueue, close } = openTextReceiptQueue();
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
   let inFlight: Promise<void> | undefined;
+  let mediaTimer: NodeJS.Timeout | undefined;
+  let mediaInFlight: Promise<void> | undefined;
   let nextPruneAt = 0;
 
   function tick(): void {
     inFlight = (async () => {
       const now = new Date();
-      await dispatchTextReceipts(enqueue, now);
+      await dispatchTextReceipts(enqueue, now, undefined, 'other');
       if (now.getTime() >= nextPruneAt) {
+        await expireWaitingReceipts(now);
+        await prisma.$executeRaw`
+          DELETE FROM "whatsapp_phone_ownership" WHERE id IN (
+            SELECT id FROM "whatsapp_phone_ownership" WHERE "endedAt" < ${new Date(now.getTime() - 2 * TEXT_RECEIPT_RETENTION_MS)}
+            ORDER BY "endedAt" LIMIT 100 FOR UPDATE SKIP LOCKED
+          )
+        `;
         const deleted = await pruneTextReceipts(now);
         nextPruneAt = deleted === 100 ? now.getTime() : now.getTime() + 60_000;
       }
@@ -282,11 +352,22 @@ export function startTextReceiptWorker(): () => Promise<void> {
       });
   }
 
+  function tickMedia(): void {
+    mediaInFlight = dispatchTextReceipts(enqueue, new Date(), undefined, 'media')
+      .then(() => undefined)
+      .catch((error: Error) => logger.warn({ name: error.name }, 'WhatsApp media recovery pass failed'))
+      .finally(() => {
+        if (!stopped) mediaTimer = setTimeout(tickMedia, POLL_INTERVAL_MS);
+      });
+  }
+
   tick();
+  tickMedia();
   return async () => {
     stopped = true;
     clearTimeout(timer);
-    await inFlight;
+    clearTimeout(mediaTimer);
+    await Promise.all([inFlight, mediaInFlight]);
     await close();
   };
 }

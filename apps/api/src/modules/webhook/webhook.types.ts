@@ -236,9 +236,11 @@ export interface ParsedEchoMessage {
   displayPhoneNumber: string;
   waMessageId: string;
   to: string;
+  from: string;
   timestamp: Date;
   type: MessageType;
   body?: string | undefined;
+  reaction?: ParsedIncomingMessage['reaction'];
   rawPayload: MetaEchoMessage;
 }
 

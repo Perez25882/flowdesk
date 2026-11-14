@@ -17,6 +17,25 @@ import type {
 } from './messages.schema.js';
 import * as repository from './messages.repository.js';
 import { draftAudit, verifyAssistantDraft } from '../../services/assistant/draft-policy.js';
+import { getArchivedMedia, type ArchivedMedia } from '../../services/s3/media.js';
+import { isWhatsAppArchiveMime, whatsappMediaKey } from '../../services/media/whatsapp-archive.js';
+
+export async function readInboundArchive(businessId: string, messageId: string): Promise<ArchivedMedia | null> {
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, businessId, direction: 'INBOUND', customer: { businessId } },
+    select: { waMessageId: true, mediaKey: true, mediaType: true, mediaUrl: true, mediaPhoneNumberId: true },
+  });
+  if (!message?.mediaUrl || !message.mediaType || !message.mediaPhoneNumberId ||
+      !message.waMessageId || message.mediaKey !== whatsappMediaKey({
+        businessId, phoneNumberId: message.mediaPhoneNumberId, waMessageId: message.waMessageId,
+      }) || !isWhatsAppArchiveMime(message.mediaType)) return null;
+  const media = await getArchivedMedia(message.mediaKey);
+  if (media && media.contentType !== message.mediaType) {
+    media.body.destroy();
+    return null;
+  }
+  return media;
+}
 
 async function requireMessageActor(businessId: string, staffId: string | null, tx?: Prisma.TransactionClient): Promise<void> {
   if (staffId === null) return;

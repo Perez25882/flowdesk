@@ -1,14 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { logger } from '../../config/logger.js';
-import { redis } from '../../config/redis.js';
-import { incomingMessagesQueue } from '../../queues/message.queue.js';
-import { maskPhone } from '../../utils/phone.js';
-import { recordAppEcho } from './echo.service.js';
 import { acceptTextReceipts } from './text-receipts.js';
 import type { MetaWebhookPayload } from './webhook.types.js';
 import {
   describeUnhandledFields,
   handleVerification,
+  isMediaMessage,
   parseEchoPayload,
   parseWebhookPayload,
   validateWebhookSignature,
@@ -22,35 +19,6 @@ interface WebhookGetQuery {
 
 interface WebhookPostRequest extends FastifyRequest {
   rawBody?: Buffer | string;
-}
-
-/**
- * Redis dedupe remains the legacy path for media and app echoes. Text
- * acknowledgement is tied to a committed Postgres receipt.
- */
-const DEDUPE_TTL_SECONDS = 24 * 60 * 60;
-const DEDUPE_KEY_PREFIX = 'flowdesk:webhook:seen:';
-
-/**
- * Claims a message id for processing. Returns false when this id has already
- * been seen, which happens routinely — Meta re-delivers on any timeout.
- */
-async function claimMessage(waMessageId: string): Promise<boolean> {
-  try {
-    const result = await redis.set(
-      `${DEDUPE_KEY_PREFIX}${waMessageId}`,
-      '1',
-      'EX',
-      DEDUPE_TTL_SECONDS,
-      'NX',
-    );
-    return result === 'OK';
-  } catch (error: unknown) {
-    // Redis down: process the message rather than drop it. The queue's job id
-    // and the unique index on waMessageId both still guard against duplicates.
-    logger.warn({ error, waMessageId }, 'Webhook dedupe unavailable — allowing message through');
-    return true;
-  }
 }
 
 export default async function webhookRoutes(app: FastifyInstance): Promise<void> {
@@ -114,73 +82,31 @@ export default async function webhookRoutes(app: FastifyInstance): Promise<void>
           .send({ success: false, error: 'Invalid JSON payload', code: 'INVALID_JSON' });
       }
 
+      if (payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry) ||
+          !payload.entry.some((entry) => Array.isArray(entry?.changes) && entry.changes.some((change) =>
+            typeof change?.field === 'string' && change.value !== null && typeof change.value === 'object' && !Array.isArray(change.value)))) {
+        return reply.status(400).send({ success: false, code: 'INVALID_WHATSAPP_ENVELOPE' });
+      }
+
       const messages = parseWebhookPayload(payload);
+      const echoes = parseEchoPayload(payload);
+      const hasMessageMembers = payload.entry.some((entry) => Array.isArray(entry?.changes) &&
+        entry.changes.some((change) => (
+          (change?.field === 'messages' && Array.isArray(change.value?.messages) && change.value.messages.length > 0) ||
+          (change?.field === 'smb_message_echoes' && Array.isArray(change.value?.message_echoes) && change.value.message_echoes.length > 0)
+        )));
       const texts = messages.filter((message) => message.type === 'TEXT');
+      const mediaCount = messages.filter((message) => isMediaMessage(message.type)).length;
+      const interactions = messages.length - texts.length - mediaCount;
       try {
-        await acceptTextReceipts(texts);
+        await acceptTextReceipts(messages, echoes);
       } catch {
-        logger.error({ textCount: texts.length }, 'Could not commit WhatsApp text receipts');
+        logger.error({ eventCount: messages.length + echoes.length }, 'Could not commit WhatsApp receipts');
         return reply.status(503).send({
           success: false,
-          error: 'Could not accept inbound text messages. Retry this delivery.',
-          code: 'TEXT_RECEIPT_UNAVAILABLE',
+          error: 'Could not accept WhatsApp events. Retry this delivery.',
+          code: messages.length === texts.length && !echoes.length ? 'TEXT_RECEIPT_UNAVAILABLE' : 'WHATSAPP_RECEIPT_UNAVAILABLE',
         });
-      }
-
-      let enqueued = 0;
-
-      for (const message of messages) {
-        if (message.type === 'TEXT') continue;
-        if (!(await claimMessage(message.waMessageId))) {
-          logger.debug({ waMessageId: message.waMessageId }, 'Duplicate webhook delivery ignored');
-          continue;
-        }
-
-        try {
-          await incomingMessagesQueue.add(
-            // @ts-expect-error BullMQ v5 type inference issue
-            'process-incoming-message',
-            {
-              businessPhoneNumberId: message.businessPhoneNumberId,
-              waMessageId: message.waMessageId,
-              message,
-              receivedAt: new Date().toISOString(),
-            },
-            { jobId: `msg-${message.waMessageId}` },
-          );
-          enqueued += 1;
-        } catch (error: unknown) {
-          // Release the dedupe claim so Meta's retry can be processed.
-          await redis.del(`${DEDUPE_KEY_PREFIX}${message.waMessageId}`).catch(() => undefined);
-          logger.error(
-            { error, waMessageId: message.waMessageId, from: maskPhone(message.from) },
-            'Failed to enqueue inbound message',
-          );
-        }
-      }
-
-      // Coexistence: messages the owner sent from their own phone. Recorded
-      // rather than enqueued — they need no classification, and running one
-      // would have the assistant answer the owner's own words.
-      let echoed = 0;
-
-      for (const echo of parseEchoPayload(payload)) {
-        if (!(await claimMessage(echo.waMessageId))) {
-          logger.debug({ waMessageId: echo.waMessageId }, 'Duplicate echo delivery ignored');
-          continue;
-        }
-
-        try {
-          if (await recordAppEcho(echo)) {
-            echoed += 1;
-          }
-        } catch (error: unknown) {
-          await redis.del(`${DEDUPE_KEY_PREFIX}${echo.waMessageId}`).catch(() => undefined);
-          logger.error(
-            { error, waMessageId: echo.waMessageId, to: maskPhone(echo.to) },
-            'Failed to record app echo',
-          );
-        }
       }
 
       const unhandled = describeUnhandledFields(payload);
@@ -191,15 +117,23 @@ export default async function webhookRoutes(app: FastifyInstance): Promise<void>
           'Webhook delivered fields nothing consumes yet — subscribed but dropped',
         );
       }
+      if (hasMessageMembers && messages.length + echoes.length === 0) {
+        logger.info('Signed WhatsApp batch contained no supported valid message members');
+      }
 
       logger.info(
-        { received: messages.length, acceptedText: texts.length, enqueued, echoed },
+        { received: messages.length, acceptedText: texts.length, acceptedMedia: mediaCount, acceptedEchoes: echoes.length },
         'Webhook batch accepted',
       );
 
       return reply.status(200).send({
         success: true,
-        data: { processed: messages.length, acceptedText: texts.length, enqueued, echoed },
+        data: {
+          processed: messages.length, acceptedText: texts.length, enqueued: 0, echoed: 0,
+          ...(mediaCount ? { acceptedMedia: mediaCount } : {}),
+          ...(echoes.length ? { acceptedEchoes: echoes.length } : {}),
+          ...(interactions ? { acceptedInteractions: interactions } : {}),
+        },
       });
     },
   );

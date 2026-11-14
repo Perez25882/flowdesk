@@ -176,7 +176,9 @@ async function handleInboundImage(
     await flagPaymentScreenshot(context, { assessment, caption, archiveKey });
   }
 
-  const archive = await archiveInboundMedia({ mediaId, businessId, mimeType, key: archiveKey });
+  const archive = await archiveInboundMedia({
+    mediaId, businessId, waMessageId: jobData.waMessageId, phoneNumberId: jobData.businessPhoneNumberId, mimeType, key: archiveKey,
+  });
 
   if (archive.status !== 'archived') {
     // Not silent: the review item the owner sees says the image could not be

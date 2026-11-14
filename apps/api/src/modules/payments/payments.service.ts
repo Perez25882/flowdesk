@@ -202,7 +202,7 @@ export async function readPaymentScreenshot(
 ): Promise<ArchivedMedia> {
   const screenshot = await repository.findScreenshotKey(paymentId, businessId);
 
-  if (!screenshot || !screenshot.archived) {
+  if (!screenshot || !screenshot.archived || !screenshot.key.startsWith(`businesses/${businessId}/media/`)) {
     throw new NotFoundError('No screenshot is stored for this payment');
   }
 

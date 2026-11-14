@@ -1,0 +1,16 @@
+# G1-06 WhatsApp event inventory
+
+The approved baseline is `65a6410934e238d393844c60132f84153f88e038`, including the G1-05 verification record. The worktree was clean. G1-06 starts on `codex/g1-06-whatsapp-media-echo`. The milestone register, G1-01 and G1-05 contracts were available. The separately named Codex Engineering Prompt Book was unavailable in tracked files and supplied attachments.
+
+| Signed Meta field and member | Baseline behavior |
+| --- | --- |
+| `messages.messages[]` text | Durable receipt before HTTP success. Customer and message linkage, followed by deterministic classifier handoff. [G1-01 contract](whatsapp-text-ingress.md) |
+| Image | Redis claim then queue. Worker records an inbound row and may flag a MoMo claim before archiving. Archive failures can still lead to classification. [Webhook route](../../apps/api/src/modules/webhook/webhook.route.ts) · [Message processor](../../apps/api/src/workers/message-processor.worker.ts) |
+| Audio, document, video, sticker | Recognized message types with media IDs and applicable captions. The worker records message metadata and hands it to the classifier. It only downloads images. Audio transcription and document/video/sticker analysis are absent. [Parser](../../apps/api/src/modules/webhook/webhook.service.ts) · [Message processor](../../apps/api/src/workers/message-processor.worker.ts) |
+| Button, interactive button/list, reaction | Parsed into the existing message types and sent to the legacy queue. Reactions have a target and emoji. Other interactive variants and unknown types have no specific business handler. [Webhook types](../../apps/api/src/modules/webhook/webhook.types.ts) |
+| `smb_message_echoes.message_echoes[]` | Redis claim then synchronous insert/upsert. Recorded outbound with `sentFromApp` and `processed`, without classifier handoff. The route still acknowledges a write failure. Existing echo media are conversation metadata or captions. [Baseline echo service](https://github.com/Perez25882/flowdesk/blob/65a6410934e238d393844c60132f84153f88e038/apps/api/src/modules/webhook/echo.service.ts) |
+| `messages.statuses[]`, `history`, `smb_app_state_sync` and other fields | No lifecycle consumer in this path. Delivery status belongs to G1-08. Historical imports and app state sync are outside G1-06. [Webhook types](../../apps/api/src/modules/webhook/webhook.types.ts) |
+
+The intake validates the HMAC over the original request bytes. Media retrieval uses Meta's media ID lookup, the phone-number query parameter and authenticated download. The official Meta documentation endpoint was rate-limited during review. The media protocol was checked against Meta's published Postman requests. The checked-in coexistence parser and fixture establish the supported echo envelope. [Meta webhooks](https://developers.facebook.com/docs/graph-api/webhooks/) · [Meta retrieve media URL](https://www.postman.com/meta/whatsapp-business-platform/request/ptjyi84/retrieve-media-url) · [Meta download media](https://www.postman.com/meta/whatsapp-business-platform/request/zsq66eh/download-media)
+
+The [G1-06 workflow](whatsapp-media-echo.md) specifies durable acceptance, handoff, phone ownership and recovery. The [G0 register](../g0/defects.md) records D-06.

@@ -382,15 +382,16 @@ describe.skipIf(!databaseUrl || !redisUrl)(
         },
       ]);
       expect(reply.statusCode).toBe(200);
-      expect(reply.json().data).toEqual({ processed: 2, acceptedText: 1, enqueued: 1, echoed: 1 });
-      expect(await prisma.whatsAppTextReceipt.count({ where: { phoneNumberId: phone } })).toBe(1);
-      expect((await incoming.getJob(`msg-${audio}`))?.data.message.type).toBe('AUDIO');
+      expect(reply.json().data).toEqual({ processed: 2, acceptedText: 1, enqueued: 0, echoed: 0, acceptedMedia: 1, acceptedEchoes: 1 });
+      expect(await prisma.whatsAppTextReceipt.count({ where: { phoneNumberId: phone } })).toBe(3);
+      expect((await receipt(phone, audio)).kind).toBe('MEDIA');
+      expect(await incoming.getJob(`msg-${audio}`)).toBeUndefined();
+      await dispatch(producer.enqueue);
       expect(await prisma.message.findUnique({ where: { waMessageId: echo } })).toMatchObject({
         businessId: business.id,
         direction: 'OUTBOUND',
         sentFromApp: true,
       });
-      await dispatch(producer.enqueue);
       expect((await receipt(phone, id)).status).toBe('COMPLETED');
     });
 

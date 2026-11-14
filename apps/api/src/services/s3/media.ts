@@ -2,12 +2,12 @@ import {
   S3Client,
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import type { Readable } from 'node:stream';
 import { env, features } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
-import { loadTenantCredentials } from '../whatsapp/client.js';
 
 // Constructed lazily so the process boots without AWS credentials. When media
 // storage is unconfigured (local development), inbound media is still recorded
@@ -50,6 +50,8 @@ export async function uploadBufferToS3(
   buffer: Buffer,
   key: string,
   contentType: string,
+  signal?: AbortSignal,
+  metadata?: Record<string, string>,
 ): Promise<UploadResult> {
   const bucket = env.AWS_S3_BUCKET as string;
 
@@ -59,7 +61,8 @@ export async function uploadBufferToS3(
       Key: key,
       Body: buffer,
       ContentType: contentType,
-    }),
+      ...(metadata ? { Metadata: metadata } : {}),
+    }), signal ? { abortSignal: signal } : undefined,
   );
 
   logger.info({ key, contentType, size: buffer.length }, 'Uploaded media to object storage');
@@ -79,6 +82,24 @@ function objectUrl(bucket: string, key: string): string {
     return `${env.S3_ENDPOINT.replace(/\/+$/, '')}/${bucket}/${key}`;
   }
   return `https://${bucket}.s3.${env.AWS_REGION}.amazonaws.com/${key}`;
+}
+
+interface StoredMediaMetadata {
+  url: string;
+  contentType: string | undefined;
+  size: number | undefined;
+  metadata: Record<string, string> | undefined;
+}
+
+export async function inspectStoredMedia(key: string, signal: AbortSignal): Promise<StoredMediaMetadata | null> {
+  if (!features.mediaStorage) return null;
+  const bucket = env.AWS_S3_BUCKET as string;
+  try {
+    const result = await getS3Client().send(new HeadObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: signal });
+    return { url: objectUrl(bucket, key), contentType: result.ContentType, size: result.ContentLength, metadata: result.Metadata };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -135,153 +156,27 @@ export interface ImageDimensions {
   height: number;
 }
 
-/**
- * Meta's media URLs live about five minutes, and there is no second copy: if
- * the transfer fails, that image is gone for good and the customer has to be
- * asked to send it again. A short bounded retry is therefore worth it for the
- * failures that are plausibly transient — a dropped connection, an S3 5xx —
- * and pointless for the ones that are not (no credentials, Meta refusing the
- * id). Three attempts inside a few seconds sits comfortably within the window
- * without holding a worker slot open long enough to matter.
- *
- * Retrying at the job level instead would be worse: the job also enqueues intent
- * classification, and making an S3 outage replay that is a much larger blast
- * radius than losing one image.
- */
-const ARCHIVE_ATTEMPTS = 3;
-const ARCHIVE_RETRY_DELAY_MS = 500;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Fetches inbound media from Meta with the owning business's own credentials
- * and archives it to S3 under `key`.
- *
- * Returns a result rather than throwing: archival failing must never stop the
- * message being recorded or reviewed. The caller decides what to tell the owner.
- */
 export async function archiveInboundMedia(params: {
   mediaId: string;
   businessId: string;
+  waMessageId: string;
+  phoneNumberId: string;
   mimeType: string;
   key: string;
 }): Promise<MediaArchiveResult> {
-  const { mediaId, businessId, mimeType, key } = params;
-
-  if (!features.mediaStorage) {
-    logger.warn(
-      { mediaId, businessId },
-      'Media storage not configured — inbound media recorded and reviewed but not archived',
-    );
-    return { status: 'unavailable', reason: 'storage_not_configured' };
-  }
-
-  // Media is fetched with the credentials of the business the message belongs
-  // to, matching how outbound sending works (`whatsapp/client.ts`). This used
-  // to use the single global `META_ACCESS_TOKEN`, which broke tenant isolation
-  // — every business's inbound media travelled on one shared credential — and
-  // also meant a deployment with only per-tenant tokens archived nothing,
-  // because `features.whatsapp` is false without the global var.
-  const credentials = await loadTenantCredentials(businessId);
-
-  if (!credentials) {
-    logger.warn(
-      { mediaId, businessId },
-      'Business has no connected WhatsApp number — cannot fetch media from Meta',
-    );
-    return { status: 'unavailable', reason: 'no_tenant_credentials' };
-  }
-
-  let lastFailure: MediaArchiveFailure = 'transfer_failed';
-
-  for (let attempt = 1; attempt <= ARCHIVE_ATTEMPTS; attempt += 1) {
-    const outcome = await attemptArchive(mediaId, credentials.accessToken, mimeType, key);
-
-    if (outcome.status === 'archived') {
-      return outcome;
-    }
-
-    lastFailure = outcome.reason;
-
-    // Meta refusing the id means the URL has expired or the id is not ours.
-    // Asking again cannot change that answer.
-    if (outcome.reason === 'meta_rejected' || attempt === ARCHIVE_ATTEMPTS) {
-      break;
-    }
-
-    await sleep(ARCHIVE_RETRY_DELAY_MS * attempt);
-  }
-
-  logger.error(
-    { mediaId, businessId, key, reason: lastFailure },
-    'Inbound media could not be archived — the Meta URL has expired and the image is unrecoverable',
-  );
-  return { status: 'unavailable', reason: lastFailure };
-}
-
-async function attemptArchive(
-  mediaId: string,
-  accessToken: string,
-  mimeType: string,
-  key: string,
-): Promise<MediaArchiveResult> {
+  if (!features.mediaStorage) return { status: 'unavailable', reason: 'storage_not_configured' };
+  const { businessId, waMessageId, phoneNumberId, mediaId, mimeType, key } = params;
+  const { archiveWhatsAppMedia, WhatsAppMediaError } = await import('../media/whatsapp-archive.js');
   try {
-    const metaUrl = `https://graph.facebook.com/${env.META_API_VERSION}/${mediaId}`;
-    const metaResponse = await fetch(metaUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const result = await archiveWhatsAppMedia({
+      businessId, waMessageId, phoneNumberId, mediaId, mediaMime: mimeType, mediaDigest: null, type: 'IMAGE', key,
     });
-
-    if (!metaResponse.ok) {
-      logger.error(
-        { status: metaResponse.status, mediaId },
-        'Failed to fetch media URL from Meta API',
-      );
-      // A 5xx from Graph is worth another go; anything else is a settled answer.
-      return {
-        status: 'unavailable',
-        reason: metaResponse.status >= 500 ? 'transfer_failed' : 'meta_rejected',
-      };
+    return { status: 'archived', url: result.url, key: result.key, ...(result.dimensions ? { dimensions: result.dimensions } : {}) };
+  } catch (error) {
+    if (error instanceof WhatsAppMediaError) {
+      if (error.reason === 'MEDIA_CREDENTIALS_UNAVAILABLE') return { status: 'unavailable', reason: 'no_tenant_credentials' };
+      if (error.reason === 'MEDIA_PROVIDER_REJECTED') return { status: 'unavailable', reason: 'meta_rejected' };
     }
-
-    const metaData = (await metaResponse.json()) as { url?: string };
-    const downloadUrl = metaData.url;
-
-    if (!downloadUrl) {
-      logger.error({ mediaId }, 'Meta API did not return download URL');
-      return { status: 'unavailable', reason: 'meta_rejected' };
-    }
-
-    const downloadResponse = await fetch(downloadUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    if (!downloadResponse.ok) {
-      logger.error(
-        { status: downloadResponse.status, mediaId },
-        'Failed to download media from Meta',
-      );
-      return {
-        status: 'unavailable',
-        reason: downloadResponse.status >= 500 ? 'transfer_failed' : 'meta_rejected',
-      };
-    }
-
-    const arrayBuffer = await downloadResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    const uploaded = await uploadBufferToS3(buffer, key, mimeType);
-    const dimensions = readImageDimensions(buffer);
-
-    return {
-      status: 'archived',
-      url: uploaded.url,
-      key: uploaded.key,
-      ...(dimensions ? { dimensions } : {}),
-    };
-  } catch (error: unknown) {
-    logger.error({ error, mediaId }, 'Error downloading/uploading media');
     return { status: 'unavailable', reason: 'transfer_failed' };
   }
 }

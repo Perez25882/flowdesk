@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { MessageType } from '../../types/prisma-enums.js';
 import { env } from '../../config/env.js';
+import { normalizeGhanaPhone } from '../../utils/phone.js';
 import type {
   MetaContact,
   MetaEchoMessage,
@@ -188,6 +189,11 @@ function webhookChanges(payload: MetaWebhookPayload): MetaWebhookChange[] {
   );
 }
 
+const isPhone = (value: unknown): value is string => typeof value === 'string' && /^\+?\d[\d ()-]{5,23}$/.test(value) && /^(?:\d{7,15})$/.test(normalizeGhanaPhone(value));
+
+const mediaTypes = new Set<MessageType>(['IMAGE', 'AUDIO', 'VIDEO', 'DOCUMENT', 'STICKER']);
+export const isMediaMessage = (type: MessageType): boolean => mediaTypes.has(type);
+
 function isIdentifier(value: unknown): value is string {
   return (
     typeof value === 'string' &&
@@ -217,8 +223,7 @@ export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncoming
     return change.value.messages.flatMap((message) => {
       if (
         !isIdentifier(message?.id) ||
-        typeof message.from !== 'string' ||
-        !/\d/.test(message.from)
+        !isPhone(message.from)
       ) {
         return [];
       }
@@ -230,6 +235,14 @@ export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncoming
       const name = contact?.profile?.name;
 
       try {
+        const type = extractMessageType(message);
+        const body = extractBody(message);
+        const media = extractMedia(message);
+        const reaction = extractReaction(message);
+        if (type === 'UNKNOWN' || (body !== undefined && typeof body !== 'string') ||
+            (isMediaMessage(type) && !isIdentifier(media?.id)) ||
+            (type === 'REACTION' && (!isIdentifier(reaction?.reactedToWaMessageId) || typeof reaction?.emoji !== 'string')) ||
+            ((type === 'BUTTON_REPLY' || type === 'LIST_REPLY') && typeof body !== 'string')) return [];
         return [
           {
             businessPhoneNumberId: phoneNumberId,
@@ -238,10 +251,7 @@ export function parseWebhookPayload(payload: MetaWebhookPayload): ParsedIncoming
             from: message.from,
             profileName: typeof name === 'string' ? name : undefined,
             timestamp,
-            type: extractMessageType(message),
-            body: extractBody(message),
-            media: extractMedia(message),
-            reaction: extractReaction(message),
+            type, body, media, reaction,
             // What they were replying to, when they were replying to anything.
             //
             // Meta sets `context.id` on a quoted reply and on a reply to a Status
@@ -281,22 +291,33 @@ export function parseEchoPayload(payload: MetaWebhookPayload): ParsedEchoMessage
 
     return change.value.message_echoes.flatMap((echo: MetaEchoMessage) => {
       // An echo with no recipient cannot be attributed to a conversation.
-      if (!isIdentifier(echo?.id) || typeof echo.to !== 'string' || !/\d/.test(echo.to)) {
+      if (!isIdentifier(echo?.id) || !isPhone(echo.to) || !isPhone(echo.from)) {
         return [];
       }
+      const display = change.value.metadata.display_phone_number;
+      if (display !== undefined && (!isPhone(display) || normalizeGhanaPhone(display) !== normalizeGhanaPhone(echo.from))) return [];
       const timestamp = parseTimestamp(echo.timestamp);
       if (!timestamp) return [];
 
       try {
+        const type = extractMessageType(echo);
+        const body = extractBody(echo);
+        const media = extractMedia(echo);
+        const reaction = extractReaction(echo);
+        if (type === 'UNKNOWN' || (type === 'TEXT' && typeof body !== 'string') ||
+            (body !== undefined && typeof body !== 'string') ||
+            (isMediaMessage(type) && !isIdentifier(media?.id)) ||
+            ((type === 'BUTTON_REPLY' || type === 'LIST_REPLY') && typeof body !== 'string') ||
+            (type === 'REACTION' && (!isIdentifier(reaction?.reactedToWaMessageId) || typeof reaction?.emoji !== 'string'))) return [];
         return [
           {
             businessPhoneNumberId: change.value.metadata.phone_number_id,
             displayPhoneNumber: change.value.metadata.display_phone_number,
             waMessageId: echo.id,
             to: echo.to,
+            from: echo.from,
             timestamp,
-            type: extractMessageType(echo),
-            body: extractBody(echo),
+            type, body, reaction,
             rawPayload: echo,
           },
         ];
@@ -323,7 +344,7 @@ export function describeUnhandledFields(
   payload: MetaWebhookPayload,
 ): Array<{ field: string; valueKeys: string[] }> {
   return webhookChanges(payload)
-    .filter((change) => !HANDLED_FIELDS.has(change.field))
+    .filter((change) => typeof change.field === 'string' && !HANDLED_FIELDS.has(change.field))
     .map((change) => ({
       field: change.field,
       valueKeys: Object.keys(change.value ?? {}),

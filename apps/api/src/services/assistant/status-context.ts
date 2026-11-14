@@ -113,7 +113,7 @@ export async function resolveRepliedTo(
   }
 
   // Nothing stored yet. Read it once, keep it, and never read it again.
-  if (describeImage && target.mediaKey) {
+  if (describeImage && target.mediaKey?.startsWith(`businesses/${businessId}/media/`)) {
     const described = await describeAndStore(target.id, target.mediaKey, describeImage);
     if (described) {
       return { body: described, fromShop, isImage: true, unresolved: false };

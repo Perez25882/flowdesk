@@ -60,6 +60,8 @@ const ASSISTANT_INTENTS: ReadonlySet<IntentType> = new Set([
 ]);
 
 interface ClassifiedMessage {
+  textReceipt: { kind: string } | null;
+  mediaPhoneNumberId: string | null;
   id: string;
   waMessageId: string;
   body: string | null;
@@ -85,6 +87,8 @@ async function fetchMessageWithCustomer(messageId: string): Promise<ClassifiedMe
       processed: true,
       intent: true,
       direction: true,
+      textReceipt: { select: { kind: true } },
+      mediaPhoneNumberId: true,
       customer: {
         select: { id: true, businessId: true, waNumber: true, name: true, blacklisted: true },
       },
@@ -222,6 +226,8 @@ export async function processIntentClassification(jobData: IntentClassificationJ
   const message = await fetchMessageWithCustomer(jobData.messageId);
   if (message.businessId !== jobData.businessId || message.waMessageId !== jobData.waMessageId || message.direction !== 'INBOUND' ||
       (message.customer && message.customer.businessId !== message.businessId)) return;
+  const mediaReceipt = Boolean(message.mediaPhoneNumberId) || message.textReceipt?.kind === 'MEDIA';
+  if (mediaReceipt && !message.mediaPhoneNumberId) return;
 
   if (message.processed) {
     await abandonRetryOfHandledMessage(message);

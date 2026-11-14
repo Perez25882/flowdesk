@@ -21,6 +21,9 @@ This directory contains the versioned engineering record. It is separate from th
 | [G1-05 AI decision contract](g1/ai-decision-contract.md) | Evidence, autonomy, action boundaries and inbox recovery |
 | [G1-05 source inventory](g1/ai-trust-boundaries.md) | Model input, output, service and approval boundaries |
 | [G1-05 verification](g1/ai-decision-verification.md) | Final fixture runs, regression checks and limitations |
+| [G1-06 WhatsApp source inventory](g1/whatsapp-event-inventory.md) | Baseline event types, routing and acknowledgment |
+| [G1-06 WhatsApp media and echo workflow](g1/whatsapp-media-echo.md) | Receipt, storage, ownership and recovery contract |
+| [G1-06 verification](g1/whatsapp-media-echo-verification.md) | Migration, integration and regression evidence |
 
 ## Engineering conventions
 

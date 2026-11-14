@@ -87,6 +87,7 @@ export interface ScreenshotClaimResult {
  */
 export async function recordScreenshotClaim(
   input: ScreenshotClaimInput,
+  transaction?: Prisma.TransactionClient,
 ): Promise<ScreenshotClaimResult> {
   const data: Prisma.PaymentUncheckedCreateInput = {
     businessId: input.businessId,
@@ -100,10 +101,10 @@ export async function recordScreenshotClaim(
     ...(input.screenshotUrl !== undefined ? { screenshotUrl: input.screenshotUrl } : {}),
   };
 
-  const result = await prisma.$transaction(async (tx) => {
+  const write = async (tx: Prisma.TransactionClient): Promise<ScreenshotClaimResult> => {
     const identity = JSON.stringify([input.businessId, input.screenshotKey]);
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`;
     await lockPaymentRelationship(tx, input);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${identity}, 0))`;
     const existing = await tx.payment.findFirst({
       where: { businessId: input.businessId, screenshotKey: input.screenshotKey },
       orderBy: { createdAt: 'asc' },
@@ -115,7 +116,8 @@ export async function recordScreenshotClaim(
     }
     const payment = await tx.payment.create({ data, select: { id: true } });
     return { paymentId: payment.id, created: true };
-  });
+  };
+  const result = transaction ? await write(transaction) : await prisma.$transaction(write);
   if (!result.created) return result;
 
   logger.info(
@@ -144,8 +146,9 @@ export async function attachScreenshotArchive(
   customerId: string,
   screenshotKey: string,
   screenshotUrl: string,
+  transaction?: Prisma.TransactionClient,
 ): Promise<void> {
-  await prisma.payment.updateMany({
+  await (transaction ?? prisma).payment.updateMany({
     where: { businessId, customerId, customer: { businessId }, screenshotKey },
     data: { screenshotUrl },
   });

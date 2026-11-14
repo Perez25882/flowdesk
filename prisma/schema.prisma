@@ -801,6 +801,19 @@ model WhatsAppTextReceipt {
   body          String?
   sentAt        DateTime
   replyToWaId   String?
+  kind          String                    @default("TEXT")
+  messageType   MessageType               @default(TEXT)
+  mediaId       String?
+  mediaMime     String?
+  mediaDigest   String?
+  mediaArchivedAt DateTime?
+  echoSender    String?
+  reactionEmoji String?
+  reactionTarget String?
+  leaseToken    String?
+  leaseUntil    DateTime?
+  ownershipId   BigInt?
+  mediaClaims   Int @default(0)
   status        WhatsAppTextReceiptStatus @default(PENDING)
   reason        String?
   attempts      Int                       @default(0)
@@ -816,6 +829,7 @@ model WhatsAppTextReceipt {
   @@index([nextAttemptAt, id])
   @@index([finishedAt])
   @@index([businessId, status])
+  @@index([waMessageId])
   @@map("whatsapp_text_receipts")
 }
 
@@ -823,8 +837,20 @@ enum WhatsAppTextReceiptStatus {
   PENDING
   WAITING_MAPPING
   WAITING_QUEUE
+  WAITING_MEDIA
   FAILED
   COMPLETED
+}
+
+model WhatsAppPhoneOwnership {
+  id            BigInt    @id @default(autoincrement())
+  phoneNumberId String
+  businessId    String
+  startedAt     DateTime
+  endedAt       DateTime?
+
+  @@index([phoneNumberId, startedAt])
+  @@map("whatsapp_phone_ownership")
 }
 
 /// Every WhatsApp message — inbound and outbound.
@@ -916,6 +942,7 @@ model Message {
 
   @@index([businessId])
   textReceipt      WhatsAppTextReceipt?
+  mediaPhoneNumberId String?
 
   @@index([waMessageId])
   @@index([businessId, processed])

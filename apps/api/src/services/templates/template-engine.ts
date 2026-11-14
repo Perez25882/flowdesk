@@ -186,7 +186,7 @@ export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
  * Free-form messages may only be sent inside a window that a message FROM the
  * customer opens, so this takes `lastInboundAt` — never `lastInteractionAt`,
  * which the owner's own replies from the WhatsApp Business app also bump
- * (`echo.service.ts`). Gating on the latter let us believe the window was open
+ * (the WhatsApp receipt worker). Gating on the latter let us believe the window was open
  * after Meta had closed it: the send was accepted here, rejected by Meta as
  * non-retryable, and dead-lettered without anything surfacing to the owner.
  *

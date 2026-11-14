@@ -57,6 +57,22 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.get(
+    '/messages/:id/media',
+    { preHandler: requireCapability('messages.read') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const media = await service.readInboundArchive(request.business!.id, id);
+      if (!media) return reply.code(404).send({ success: false, code: 'MEDIA_NOT_FOUND' });
+      reply.header('Cache-Control', 'private, no-store')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Content-Disposition', 'attachment')
+        .type(media.contentType);
+      if (media.contentLength !== undefined) reply.header('Content-Length', media.contentLength);
+      return reply.send(media.body);
+    },
+  );
+
   /**
    * Reply to a customer.
    *
