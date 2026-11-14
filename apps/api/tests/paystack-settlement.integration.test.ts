@@ -47,7 +47,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     }
     const fixtureDatabase = new URL(dbUrl!);
     if (!fixtureDatabase.searchParams.has('connection_limit')) fixtureDatabase.searchParams.set('connection_limit', '8');
-    fixtureDatabase.searchParams.set('pool_timeout', '4');
+    fixtureDatabase.searchParams.set('pool_timeout', '10');
     process.env.DATABASE_URL = fixtureDatabase.toString();
     process.env.REDIS_URL = redisUrl!;
     process.env.PAYSTACK_SECRET_KEY = secret;
@@ -257,6 +257,8 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     const { processIntentClassification, intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
     const outboundWorker = await import('../src/workers/outbound.worker.js');
     const { dispatchTextReceipts } = await import('../src/workers/text-receipt.worker.js');
+    const { logger } = await import('../src/config/logger.js');
+    const warnings = vi.spyOn(logger, 'warn');
     await intentClassifierWorker.close(true);
     async function admitText(text: string, id: string) {
       const data = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
@@ -284,15 +286,22 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
         }),
       } });
       const inquiry = await admitText('How much is Rice?', `wamid.${randomUUID()}`);
-      const quote = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: {
+      const quote = await prisma.whatsAppSend.findUnique({ where: { businessId_eventKey: {
         businessId: fixture.tenant.id, eventKey: `assistant-reply-${inquiry}`,
       } } });
+      if (!quote) {
+        const audit = await prisma.message.findUniqueOrThrow({ where: { id: inquiry }, select: { aiPolicy: true } });
+        const causes = warnings.mock.calls.flatMap(([details, message]) => message === 'Assistant turn requires recovery' &&
+          details && typeof details === 'object' && 'errorType' in details ? [details.errorType] : []);
+        throw new Error(`Expected price response to commit. Synthetic audit ${JSON.stringify({ policy: audit.aiPolicy, causes })}`);
+      }
       expect(quote.payload).toMatchObject({ body: expect.stringContaining('GHS 25.00'), customerId: fixture.customer.id });
       await outboundWorker.processDurableOutbound(quote.id);
       expect(metaCalls.get(quote.id)).toBeDefined();
       await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF' } });
       await admitText(body, providerEventId);
     } finally {
+      warnings.mockRestore();
       await whatsapp.close();
       await outboundWorker.outboundWorker.close();
     }
