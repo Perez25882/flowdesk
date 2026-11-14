@@ -315,4 +315,26 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     await outbound.processDurableOutbound(notice.id);
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notice.id } })).toMatchObject({ state: 'PROVIDER_ACCEPTED' });
   });
+
+  it('rolls back shipment, history and notification together when the fulfillment transaction fails', async () => {
+    const { business, customer, source, body } = await shop();
+    const { order } = await orders.createOrderFromMessage(body, business.id, customer.id, source.id);
+    await orders.confirmOrder(order.id, business.id, null);
+    await orders.markProcessing(order.id, business.id, null);
+    const actor = { businessId: business.id, staffId: null } as const;
+    const { dispatchOrder } = await import('../src/modules/shipments/shipments.service.js');
+    await prisma.$executeRawUnsafe("ALTER TABLE fulfillment_tasks ADD CONSTRAINT g1_batch_deny_dispatch CHECK (subject <> 'DISPATCHED') NOT VALID");
+    try {
+      await expect(dispatchOrder(order.id, actor, { courier: 'Synthetic courier' })).rejects.toThrow();
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ status: 'PROCESSING' });
+      expect(await prisma.shipment.findUnique({ where: { orderId: order.id } })).toBeNull();
+      expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id, toStatus: 'DISPATCHED' } })).toBe(0);
+      expect(await prisma.fulfillmentTask.count({ where: { orderId: order.id, subject: 'DISPATCHED' } })).toBe(0);
+    } finally {
+      await prisma.$executeRawUnsafe('ALTER TABLE fulfillment_tasks DROP CONSTRAINT g1_batch_deny_dispatch');
+    }
+    await dispatchOrder(order.id, actor, { courier: 'Synthetic courier' });
+    expect(await prisma.shipment.findUnique({ where: { orderId: order.id } })).toMatchObject({ businessId: business.id });
+    expect(await prisma.fulfillmentTask.count({ where: { orderId: order.id, subject: 'DISPATCHED' } })).toBe(1);
+  });
 });

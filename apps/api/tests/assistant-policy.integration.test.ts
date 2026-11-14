@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { ASSISTANT_CONTRACT_VERSION, IntentType, type AssistantDecision } from '@flowdesk/shared';
 import type { AiAssistMode, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import Fastify from 'fastify';
 
 const database = process.env.G1_05_TEST_DATABASE_URL;
 const cache = process.env.G1_05_TEST_REDIS_URL;
@@ -312,6 +313,60 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     await expect(messages.dismissDraft(input.messageId, other.business.id)).rejects.toMatchObject({ statusCode: 404 });
     expect(await durableJob(`assistant-approved-${input.messageId}`)).toBeUndefined();
   });
+
+  it('takes rejected AI output through a staff reply and signed recipient delivery evidence', async () => {
+    const fixture = await shop();
+    await prisma.business.update({ where: { id: fixture.business.id }, data: { waPhoneNumberId: 'synthetic' } });
+    const manager = await prisma.staff.create({ data: { businessId: fixture.business.id, name: 'Synthetic manager',
+      phone: '233200000010', role: 'MANAGER', active: true } });
+    const rider = await prisma.staff.create({ data: { businessId: fixture.business.id, name: 'Synthetic rider',
+      phone: '233200000011', role: 'DELIVERY', active: true } });
+    const input = await inbound(fixture, 'Can you confirm my refund?');
+    model.generate.mockResolvedValue(output(decision({ answer: {
+      canAnswer: true, text: 'Your refund of GHS 100 was processed.', groundedOn: [],
+    } })));
+    await assistant.runAssistant(input);
+    expect(await read(input.messageId)).toMatchObject({ requiresReview: true, aiPolicy: { state: 'REVIEW' } });
+    expect(await job(input.messageId)).toBeUndefined();
+    const reply = { body: 'I will check your refund request and get back to you.', source: 'human' } as const;
+    await expect(messages.sendReply(input.messageId, input.businessId, reply, rider.id)).rejects.toMatchObject({ statusCode: 403 });
+    const accepted = await messages.sendReply(input.messageId, input.businessId, reply, manager.id);
+    expect(accepted.sendId).toBeDefined();
+    const providerId = `wamid.${randomUUID()}`;
+    const mockedFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (request) => {
+      if (new URL(request instanceof Request ? request.url : request).hostname !== 'graph.facebook.com') {
+        throw new Error('Unexpected provider request');
+      }
+      return Response.json({ messages: [{ id: providerId }] });
+    });
+    const outboundWorker = await import('../src/workers/outbound.worker.js');
+    const api = Fastify();
+    try {
+      await outboundWorker.processDurableOutbound(accepted.sendId!);
+      expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: accepted.sendId! } }))
+        .toMatchObject({ state: 'PROVIDER_ACCEPTED' });
+      await api.register(import('fastify-raw-body'), { field: 'rawBody', global: false, encoding: false, runFirst: true });
+      await api.register((await import('../src/modules/webhook/webhook.route.js')).default);
+      const payload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
+        metadata: { phone_number_id: 'synthetic' }, statuses: [{ id: providerId, status: 'delivered',
+          recipient_id: fixture.customer.waNumber, timestamp: String(Math.floor(Date.now() / 1000)),
+          biz_opaque_callback_data: accepted.sendId }],
+      } }] }] });
+      const signed = await api.inject({ method: 'POST', url: '/webhook', payload, headers: { 'content-type': 'application/json',
+        'x-hub-signature-256': 'sha256=' + createHmac('sha256', process.env.META_WEBHOOK_SECRET!).update(payload).digest('hex'),
+      } });
+      expect(signed.statusCode).toBe(200);
+      await outboundWorker.recoverDurableOutbound();
+      expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: accepted.sendId! } }))
+        .toMatchObject({ state: 'DELIVERED', providerMessageId: providerId });
+      expect(await prisma.message.findUnique({ where: { waMessageId: providerId } }))
+        .toMatchObject({ businessId: fixture.business.id, customerId: fixture.customer.id, sentByStaffId: manager.id });
+    } finally {
+      mockedFetch.mockRestore();
+      await api.close();
+      await outboundWorker.outboundWorker.close();
+    }
+  }, 30_000);
 
   it('creates one checkout for a verified balance and refuses a payment claim as authority', async () => {
     const fixture = await shop();
