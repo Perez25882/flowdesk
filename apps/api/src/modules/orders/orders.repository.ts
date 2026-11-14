@@ -23,6 +23,7 @@ export interface CreateOrderInput {
   isManual: boolean;
   items: CreateOrderItemInput[];
   notes?: string;
+  inboundSourceMessageId?: string;
 }
 
 export interface OrderWithRelations {
@@ -172,6 +173,7 @@ export async function createOrder(
       isManual: data.isManual,
       totalAmount: new Prisma.Decimal(totalAmount),
       notes: data.notes ?? null,
+      inboundSourceMessageId: data.inboundSourceMessageId ?? null,
       items: {
         create: data.items.map((item) => ({
           productId: item.productId ?? null,
@@ -454,13 +456,14 @@ export async function assignOrderToStaff(
   orderId: string,
   staffId: string,
   businessId: string,
+  tx: PrismaTransaction = prisma,
 ): Promise<OrderWithRelations> {
   // The staff member must belong to THIS business. The order update below is
   // scoped by businessId, but `assignedStaffId` was trusted verbatim — so one
   // tenant could pin another tenant's employee onto its own order, breaking the
   // foreign key's tenant boundary and exposing that employee to order data
   // through any assignment-scoped read.
-  const staff = await prisma.staff.findFirst({
+  const staff = await tx.staff.findFirst({
     where: { id: staffId, businessId, active: true },
     select: { id: true },
   });
@@ -469,7 +472,7 @@ export async function assignOrderToStaff(
     throw new NotFoundError('Staff member not found');
   }
 
-  const order = await prisma.order.update({
+  const order = await tx.order.update({
     where: { id: orderId, businessId, deletedAt: null },
     data: {
       assignedStaffId: staffId,

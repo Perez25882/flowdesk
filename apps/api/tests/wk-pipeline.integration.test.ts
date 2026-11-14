@@ -105,6 +105,16 @@ vi.mock('../src/modules/orders/orders.service.js', () => ({
   createOrderFromMessage: mocks.createOrderFromMessage,
 }));
 
+vi.mock('../src/queues/outbound.queue.js', async (original) => {
+  const queue = await original<typeof import('../src/queues/outbound.queue.js')>();
+  return { ...queue, enqueueOutboundMessage: async (data: import('../src/queues/outbound.queue.js').OutboundJobData,
+    options?: import('../src/queues/outbound.queue.js').EnqueueOptions) => {
+    if (options?.idempotencyKey && await queue.outboundMessagesQueue.getJob(options.idempotencyKey)) return { queued: false };
+    await queue.outboundMessagesQueue.add('send-whatsapp-message', data, options?.idempotencyKey ? { jobId: options.idempotencyKey } : {});
+    return { queued: true };
+  } };
+});
+
 // The durable receipt and its Postgres/BullMQ handoff have their own real
 // integration suite. Here the adapter feeds the in-memory worker pipeline so
 // these tests continue to exercise classification and outbound behavior.
@@ -255,8 +265,8 @@ beforeEach(() => {
   });
 
   mocks.createOrderFromMessage.mockImplementation(
-    async (body: string, businessId: string, customerId: string) =>
-      db.seed('order', {
+    async (body: string, businessId: string, customerId: string, messageId: string) => {
+      const order = db.seed('order', {
         id: 'order_1',
         businessId,
         customerId,
@@ -264,7 +274,10 @@ beforeEach(() => {
         status: 'PENDING',
         totalAmount: 640,
         rawMessage: body,
-      }),
+      });
+      await db.client.message.update({ where: { id: messageId }, data: { relatedOrderId: order.id } });
+      return { order, created: true };
+    },
   );
 });
 
@@ -306,6 +319,7 @@ describe('a text order message, webhook to WhatsApp', () => {
       'Hello, I want to order 2 bags of rice',
       BUSINESS_ID,
       customer?.id,
+      inbound.id,
     );
 
     const queued = outboundJobs();

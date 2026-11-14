@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { requireCapability, requireOwner } from '../../middleware/role.middleware.js';
 import { created, success } from '../../utils/response.js';
+import { ValidationError } from '../../utils/errors.js';
 import {
   ConfirmPaymentSchema,
   ConnectPayoutSchema,
@@ -116,6 +117,10 @@ export default async function paymentRoutes(app: FastifyInstance): Promise<void>
     { preHandler: requireCapability('payments.create') },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const data = CreatePaymentSchema.parse(request.body);
+      const requestKey = request.headers['idempotency-key'];
+      if (requestKey !== undefined && (typeof requestKey !== 'string' || !/^[A-Za-z0-9._-]{16,128}$/.test(requestKey))) {
+        throw new ValidationError('Idempotency-Key must be an opaque identifier of 16 to 128 characters');
+      }
 
       // `attested` is not the caller's to assert unless they could attest a
       // payment outright. Staff without that capability record a claim for
@@ -126,6 +131,7 @@ export default async function paymentRoutes(app: FastifyInstance): Promise<void>
         { ...data, attested: canAttest ? data.attested : false },
         request.business!.id,
         request.user?.staffId ?? null,
+        requestKey,
       );
       return created(reply, payment);
     },

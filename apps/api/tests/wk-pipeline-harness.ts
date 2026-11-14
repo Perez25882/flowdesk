@@ -723,6 +723,8 @@ export class FakeQueue {
     return queues.add(this.queueName, name, data, options);
   }
 
+  on(): this { return this; }
+
   async getJob(id: string): Promise<FakeJob | undefined> {
     return queues.getJob(this.queueName, id);
   }

@@ -1,5 +1,5 @@
 import { createApp } from './app.js';
-import { connectDatabase, disconnectDatabase } from './config/database.js';
+import { connectDatabase, disconnectDatabase, prisma } from './config/database.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
@@ -7,12 +7,13 @@ import { syncAccessTokenFromEnv } from './services/whatsapp/sync-token.js';
 import { startSSEFanout, stopSSEFanout } from './services/sse/sse.manager.js';
 import { messageProcessorWorker } from './workers/message-processor.worker.js';
 import { intentClassifierWorker } from './workers/intent-classifier.worker.js';
-import { outboundWorker } from './workers/outbound.worker.js';
+import { outboundWorker, startDurableOutboundRecovery } from './workers/outbound.worker.js';
 import { deadLetterWorker } from './workers/dead-letter.worker.js';
 import { insightsWorker } from './workers/insights.worker.js';
 import { scheduleDailyInsights } from './queues/insights.queue.js';
 import { startTextReceiptWorker } from './workers/text-receipt.worker.js';
 import { startPaystackSettlementWorker } from './workers/paystack-settlement.worker.js';
+import { startFulfillmentRecovery } from './workers/fulfillment-recovery.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -32,6 +33,13 @@ async function startServer(): Promise<void> {
 
   await connectDatabase();
   await connectRedis();
+  await prisma.$queryRaw`SELECT 1 FROM fulfillment_tasks LIMIT 0`;
+  await prisma.$queryRaw`SELECT 1 FROM whatsapp_sends LIMIT 0`;
+  const workers = [outboundWorker, insightsWorker, ...(env.NODE_ENV === 'test'
+    ? [] : [messageProcessorWorker, intentClassifierWorker, deadLetterWorker])];
+  for (const worker of workers) {
+    void worker.run().catch((error: Error) => logger.error({ name: error.name, queue: worker.name }, 'Queue worker stopped'));
+  }
 
   // Must run before traffic is accepted: a dashboard connecting to this
   // instance would otherwise miss events raised on any other instance.
@@ -50,6 +58,8 @@ async function startServer(): Promise<void> {
 
   const stopTextReceipts = env.WHATSAPP_TEXT_DISPATCH_ENABLED ? startTextReceiptWorker() : undefined;
   const stopPaystack = startPaystackSettlementWorker();
+  const stopOutbound = startDurableOutboundRecovery();
+  const stopFulfillment = startFulfillmentRecovery();
   let isShuttingDown = false;
 
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -69,6 +79,8 @@ async function startServer(): Promise<void> {
       await app.close();
       await stopTextReceipts?.();
       await stopPaystack();
+      await stopOutbound();
+      await stopFulfillment();
       await drainQueues();
       await stopSSEFanout();
       await disconnectRedis();

@@ -122,6 +122,11 @@ export async function deleteObject(key: string): Promise<void> {
   }
 }
 
+export async function deleteProofObject(key: string): Promise<void> {
+  await getS3Client().send(new DeleteObjectCommand({ Bucket: env.AWS_S3_BUCKET as string, Key: key }),
+    { abortSignal: AbortSignal.timeout(8_000) });
+}
+
 /**
  * Where a message's media is archived.
  *

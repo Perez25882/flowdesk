@@ -91,5 +91,6 @@ export const deadLetterWorker = new Worker<DeadLetterJobData>(
     // @ts-expect-error ioredis v5.11.0 vs BullMQ bundled v5.10.1 type mismatch
     connection: redisSubscriber,
     concurrency: 1,
+    autorun: env.NODE_ENV === 'test',
   },
 );

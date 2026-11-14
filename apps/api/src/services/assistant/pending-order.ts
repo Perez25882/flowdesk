@@ -66,11 +66,8 @@ export async function withConversationLock<T>(
   try {
     acquired = (await redis.set(key, token, 'EX', MUTEX_TTL_SECONDS, 'NX')) === 'OK';
   } catch {
-    // Redis down: proceed anyway. The partial unique index is the real guard,
-    // and refusing to answer customers because a cache is unavailable is worse
-    // than the rare double-draft it would prevent.
-    logger.warn({ businessId, customerId }, 'Conversation lock unavailable — proceeding');
-    return work();
+    logger.warn({ businessId, customerId }, 'Conversation lock unavailable; turn requires review');
+    return null;
   }
 
   if (!acquired) return null;

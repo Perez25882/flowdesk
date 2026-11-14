@@ -170,6 +170,7 @@ export interface MetaMessageStatus {
   status: 'sent' | 'delivered' | 'read' | 'failed';
   timestamp: string;
   recipient_id: string;
+  biz_opaque_callback_data?: string;
   conversation?: {
     id: string;
     expiration_timestamp?: string;

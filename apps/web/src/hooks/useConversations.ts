@@ -31,6 +31,7 @@ export interface ThreadMessage {
   needsYou: boolean;
   /** An assistant suggestion awaiting the owner's approval, or null. */
   draft: string | null;
+  deliveryState?: string;
   createdAt: string;
 }
 

@@ -228,9 +228,10 @@ async function bookInTransaction(tx: Prisma.TransactionClient, input: BookInput)
 
   if (!service) throw new NotFoundError('Service not found');
   if (input.byAssistant) {
-    const message = assistantMessageId ? await tx.message.findFirst({
-      where: { id: assistantMessageId, businessId, customerId, direction: 'INBOUND' }, select: { body: true },
-    }) : null;
+    const [message] = assistantMessageId ? await tx.$queryRaw<Array<{ body: string | null }>>`
+      SELECT body FROM messages WHERE id = ${assistantMessageId} AND "businessId" = ${businessId}
+        AND "customerId" = ${customerId} AND direction = 'INBOUND' FOR UPDATE
+    ` : [];
     if (!assistantMessageId || !business?.bookingsEnabled || !business.active || business.deletedAt || business.deactivatedAt || customer.blacklisted ||
         (business.aiAssistMode !== 'GROUNDED_AUTO' && !(business.aiAssistMode === 'AUTONOMOUS' && business.autonomyAcceptedAt)) ||
         !message?.body || hasPolicyOverride(message.body) || !explicitBookingRequest(message.body, service.name, input.startsAt)) {

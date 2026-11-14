@@ -384,7 +384,7 @@ async function deliver(
   context: NotificationContext,
   key: TemplateKey,
   variables: Record<string, string>,
-  options: { idempotencyKey?: string } = {},
+  options: { idempotencyKey?: string; requireQueueHandoff?: boolean } = {},
 ): Promise<void> {
   const values = {
     name: getCustomerFirstName(context.customerName) || 'there',
@@ -399,6 +399,7 @@ async function deliver(
     templateKey: key,
     ...(fallback ? { templateFallback: fallback } : {}),
     ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+    ...(options.requireQueueHandoff ? { requireQueueHandoff: true } : {}),
   });
 }
 
@@ -461,7 +462,7 @@ export async function deliverText(
       options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {},
     );
 
-    if (!outcome.queued) {
+    if (!outcome.queued && (!outcome.accepted || !outcome.sendId)) {
       // Not an error, but not nothing either: the caller asked for a send and
       // did not get one. Logged so a suppression is never invisible.
       logger.info(
@@ -538,23 +539,27 @@ function toContext(row: OrderNotificationRow): NotificationContext {
  * lifecycle transition so the customer is kept informed without the owner
  * typing anything.
  */
-export async function notifyOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
+export async function notifyOrderStatus(orderId: string, status: OrderStatus, reliable?: { businessId: string; key: string }): Promise<void> {
   const key = getTemplateKeyForOrderStatus(status);
   if (!key) return;
 
   const row = await loadOrderContext(orderId).catch((error: unknown) => {
+    if (reliable) throw error;
     logger.error({ error, orderId }, 'Failed to load order for status notification');
     return null;
   });
 
-  if (!row) return;
+  if (!row || (reliable && row.business.id !== reliable.businessId)) {
+    if (reliable) throw new Error('Order notification target unavailable');
+    return;
+  }
 
   await deliver(toContext(row), key, {
     ref: row.referenceNumber,
     reason: row.cancelReason ?? '',
     status: humanizeStatus(status),
     details: status === 'DISPATCHED' ? await describeShipment(orderId) : '',
-  });
+  }, reliable ? { idempotencyKey: reliable.key, requireQueueHandoff: true } : {});
 }
 
 /**

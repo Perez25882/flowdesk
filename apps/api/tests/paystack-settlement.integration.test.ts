@@ -38,7 +38,9 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     for (const url of [dbUrl, redisUrl, upgradeUrl]) {
       if (!url || new URL(url).hostname !== '127.0.0.1') throw new Error('Use dedicated IPv4 loopback fixtures');
     }
-    process.env.DATABASE_URL = dbUrl!;
+    const fixtureDatabase = new URL(dbUrl!);
+    if (!fixtureDatabase.searchParams.has('connection_limit')) fixtureDatabase.searchParams.set('connection_limit', '8');
+    process.env.DATABASE_URL = fixtureDatabase.toString();
     process.env.REDIS_URL = redisUrl!;
     process.env.PAYSTACK_SECRET_KEY = secret;
     process.env.PAYSTACK_PUBLIC_KEY = 'pk_test_flowdesk_g103_synthetic';
@@ -285,6 +287,43 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     await expectCredit(fixture, 1);
   });
 
+  it('reports the Prisma code for saturated admission and settles the exact retry once', async () => {
+    const fixture = await shop();
+    verify(fixture);
+    const { logger } = await import('../src/config/logger.js');
+    const log = vi.spyOn(logger, 'error');
+    let ready!: () => void;
+    let release!: () => void;
+    const hasLock = new Promise<void>((resolve) => { ready = resolve; });
+    const releaseLock = new Promise<void>((resolve) => { release = resolve; });
+    const limit = Number(new URL(process.env.DATABASE_URL!).searchParams.get('connection_limit'));
+    if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error('Set a bounded fixture connection_limit');
+    // Saturate the same Prisma pool used by the webhook and preserve the
+    // unmodified interactive transaction acquisition deadline.
+    let occupied = 0;
+    const held = Array.from({ length: limit }, () => prisma.$transaction(async () => {
+      if (++occupied === limit) ready();
+      await releaseLock;
+    }, { maxWait: 10_000, timeout: 20_000 }));
+    const holding = Promise.all(held);
+    try {
+      await Promise.race([hasLock, holding]);
+      const first = await signed(payload(fixture.request.reference, fixture.transactionId));
+      release();
+      await holding;
+      expect(first.statusCode).toBe(503);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ databaseCode: 'P2028' }), 'Paystack receipt not durably accepted');
+      expect(await prisma.paystackReceipt.count({ where: { reference: fixture.request.reference } })).toBe(0);
+      await accept(fixture);
+      await drain(fixture.tenant.id);
+      await expectCredit(fixture, 1);
+    } finally {
+      release();
+      await holding.catch(() => undefined);
+      log.mockRestore();
+    }
+  });
+
   it('rejects one transaction identity presented for a second tenant and request', async () => {
     const first = await shop();
     const other = await shop();
@@ -462,7 +501,10 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
       expect(result.notificationState).toBe('HANDED_OFF');
     }, { timeout: 8_000, interval: 100 });
     const settlement = await prisma.paystackSettlement.findUniqueOrThrow({ where: { requestId: fixture.request.id } });
-    const job = await outboundQueue.getJob(`receipt-${settlement.paymentId}`);
+    const send = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: {
+      businessId: fixture.tenant.id, eventKey: `receipt-${settlement.paymentId}`,
+    } } });
+    const job = await outboundQueue.getJob(`send-${send.id}`);
     expect(job?.data).toMatchObject({ businessId: fixture.tenant.id, customerId: fixture.customer.id });
   });
 

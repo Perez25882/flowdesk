@@ -4,7 +4,7 @@ import { logger } from '../../config/logger.js';
 import { features } from '../../config/env.js';
 import { NotFoundError, ValidationError } from '../../utils/errors.js';
 import { describeRejection, inspectImageUpload } from '../../services/media/image-file.js';
-import { deleteObject, uploadBufferToS3 } from '../../services/s3/media.js';
+import { uploadBufferToS3 } from '../../services/s3/media.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
 import {
   lockOrderForDelivery,
@@ -62,8 +62,13 @@ export async function dispatchOrder(
 ): Promise<ShipmentView> {
   const { businessId, staffId } = actor;
   const { shipment } = await transitionDeliveryOrder(orderId, actor, 'DISPATCHED', async (tx, order) => {
-    const existing = await tx.shipment.findUnique({ where: { orderId }, select: { businessId: true } });
+    const existing = await tx.shipment.findUnique({ where: { orderId }, select: { ...SHIPMENT_SELECT, businessId: true } });
     if (existing && existing.businessId !== businessId) throw new NotFoundError('Order not found');
+    if (order.status === 'DISPATCHED') {
+      if (!existing) throw new ValidationError('Dispatched order has no shipment');
+      const { businessId: _owner, ...shipment } = existing;
+      return shipment;
+    }
 
     if (!order.deliveryAddress) {
       logger.info({ orderId, reference: order.referenceNumber }, 'Dispatch has no delivery address');
@@ -113,50 +118,50 @@ export async function attachProofOfDispatch(
   const { buffer, mimeType } = inspection.image;
   const extension = mimeType.split('/')[1];
   const key = `dispatch/${businessId}/${orderId}/${randomUUID()}.${extension}`;
+  const staged = await prisma.fulfillmentTask.create({
+    data: { businessId, orderId, kind: 'DELETE_PROOF', subject: key, nextAttemptAt: new Date(Date.now() + 120_000) },
+  });
 
   // Stage a private object without holding a database lock during storage I/O.
   // Recheck authorization before publishing its key and remove it on failure.
   let result;
   try {
-    await uploadBufferToS3(buffer, key, mimeType);
+    await uploadBufferToS3(buffer, key, mimeType, AbortSignal.timeout(10_000));
     result = await prisma.$transaction(async (tx) => {
       await lockOrderForDelivery(tx, orderId, actor);
       const previous = await tx.shipment.findUnique({ where, select: { proofKey: true } });
       if (!previous) throw new NotFoundError('Order not found');
+      const order = await tx.order.findUniqueOrThrow({ where: { id: orderId, businessId }, select: { status: true } });
+      if (order.status === 'CANCELLED') throw new ValidationError('A cancelled shipment cannot receive proof');
       const row = await tx.shipment.update({
         where,
         data: { proofKey: key, proofMimeType: mimeType, proofUploadedAt: new Date() },
         select: SHIPMENT_SELECT,
       });
-      return { row, previousKey: previous.proofKey };
+      await tx.fulfillmentTask.update({ where: { id: staged.id }, data: { state: 'DONE', nextAttemptAt: null } });
+      if (previous.proofKey && isOrderProofKey(previous.proofKey, businessId, orderId)) {
+        await tx.fulfillmentTask.upsert({
+          where: { businessId_orderId_kind_subject: { businessId, orderId, kind: 'DELETE_PROOF', subject: previous.proofKey } },
+          create: { businessId, orderId, kind: 'DELETE_PROOF', subject: previous.proofKey },
+          update: { state: 'PENDING', nextAttemptAt: new Date() },
+        });
+      }
+      if (staffId) await logActivity({
+        staffId, businessId, action: 'order.proof_uploaded', resourceId: orderId, resourceType: 'order',
+        note: 'Proof of dispatch added',
+      }, tx);
+      return row;
     });
   } catch (error: unknown) {
-    await discardProof(key);
+    await prisma.fulfillmentTask.updateMany({ where: { id: staged.id, state: 'PENDING' },
+      data: { reason: 'PROOF_LINK_INTERRUPTED' } }).catch(() => undefined);
     throw error;
   }
 
-  if (result.previousKey && isOrderProofKey(result.previousKey, businessId, orderId)) {
-    await discardProof(result.previousKey);
-  }
-  if (staffId) {
-    await logActivity({
-      staffId,
-      action: 'order.proof_uploaded',
-      resourceId: orderId,
-      resourceType: 'order',
-      note: 'Proof of dispatch added',
-    }).catch(() => {});
-  }
-  return toView(result.row);
+  return toView(result);
 }
 
-async function discardProof(key: string): Promise<void> {
-  await deleteObject(key).catch((error: unknown) => {
-    logger.warn({ error }, 'Could not remove an unlinked dispatch proof object');
-  });
-}
-
-function isOrderProofKey(key: string, businessId: string, orderId: string): boolean {
+export function isOrderProofKey(key: string, businessId: string, orderId: string): boolean {
   const prefix = `dispatch/${businessId}/${orderId}`;
   if (!key.startsWith(prefix)) return false;
   // Existing objects used a timestamp suffix. New objects use a per-order path.

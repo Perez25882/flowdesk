@@ -1,5 +1,10 @@
 import { Queue, type JobsOptions } from 'bullmq';
-import { redis } from '../config/redis.js';
+import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
+import { rateLimitRedis, redis } from '../config/redis.js';
+import { prisma } from '../config/database.js';
+import { logger } from '../config/logger.js';
+import { normalizeGhanaPhone } from '../utils/phone.js';
 
 export const OUTBOUND_MESSAGES_QUEUE_NAME = 'outbound-messages';
 
@@ -85,6 +90,7 @@ export interface OutboundJobData {
    * because a person recently replied is nonsense.
    */
   suppressIfOwnerRepliedSince?: string;
+  durableSendId?: string;
 }
 
 export interface EnqueueOptions {
@@ -111,6 +117,8 @@ export interface EnqueueResult {
    * message the owner believes was sent disappears without trace.
    */
   queued: boolean;
+  accepted?: boolean;
+  sendId?: string;
 }
 
 /**
@@ -140,38 +148,50 @@ export const outboundMessagesQueue = new Queue<OutboundJobData, unknown, string>
   },
 );
 
+const durableProducer = new Queue<OutboundJobData, unknown, string>(OUTBOUND_MESSAGES_QUEUE_NAME, {
+  // @ts-expect-error ioredis versions differ between packages
+  connection: rateLimitRedis,
+  skipWaitingForReady: true,
+  skipVersionCheck: true,
+});
+durableProducer.on('error', (error) => logger.warn({ name: error.name }, 'Outbound scheduler Redis error'));
+
 /** Enqueues a message for delivery through the owning tenant's own number. */
 export async function enqueueOutboundMessage(
   data: OutboundJobData,
   options: EnqueueOptions = {},
 ): Promise<EnqueueResult> {
-  if (!options.idempotencyKey) {
-    await outboundMessagesQueue.add(
-      // @ts-expect-error BullMQ v5 NameType inference
-      'send-whatsapp-message',
-      data,
-    );
-    return { queued: true };
-  }
+  const id = randomUUID();
+  const saved = await persistOutboundSend(prisma, data, options.idempotencyKey ?? randomUUID(), id);
+  if (!saved) return { queued: false, accepted: true };
+  const queued = await scheduleOutbound(id, data).then(() => true, () => {
+    logger.warn({ sendId: id }, 'Durable outbound send awaits Redis');
+    return false;
+  });
+  return { queued, accepted: true, sendId: id };
+}
 
-  // Asked before adding rather than inferred afterwards. `add` hands back the
-  // job it already held with no indication that it did nothing, so the only way
-  // to distinguish a delivery from a collision is to look first. The race
-  // between the two calls is exactly the double-submit this is here to collapse
-  // — BullMQ still keeps only one of them — so losing it costs a log line, not
-  // a duplicate message.
-  const existing = await outboundMessagesQueue.getJob(options.idempotencyKey);
+export async function persistOutboundSend(
+  tx: Prisma.TransactionClient, data: OutboundJobData, eventKey: string, id = randomUUID(),
+): Promise<string | null> {
+  const { count } = await tx.whatsAppSend.createMany({
+    data: { id, eventKey, businessId: data.businessId,
+      payload: JSON.parse(JSON.stringify({ ...data, to: normalizeGhanaPhone(data.to) })) as Prisma.InputJsonObject },
+    skipDuplicates: true,
+  });
+  return count ? id : null;
+}
 
-  if (existing) {
-    return { queued: false };
-  }
-
-  await outboundMessagesQueue.add(
+export async function scheduleOutbound(id: string, data: OutboundJobData): Promise<void> {
+  await durableProducer.add(
     // @ts-expect-error BullMQ v5 NameType inference
     'send-whatsapp-message',
-    data,
-    { jobId: options.idempotencyKey },
+    { ...data, durableSendId: id },
+    { jobId: `send-${id}`, attempts: 1, removeOnComplete: true, removeOnFail: true },
   );
-
-  return { queued: true };
+  await prisma.whatsAppSend.updateMany({
+    where: { id, OR: [{ state: 'AUTHORIZED' }, { state: 'QUEUED' },
+      { state: 'RETRY_PENDING', nextAttemptAt: { lte: new Date() } }] },
+    data: { state: 'QUEUED', nextAttemptAt: new Date(Date.now() + 15_000) },
+  });
 }

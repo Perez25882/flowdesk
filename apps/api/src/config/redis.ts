@@ -65,6 +65,7 @@ export const rateLimitRedis = new Redis(env.REDIS_URL, {
   connectionName: 'flowdesk-ratelimit',
   maxRetriesPerRequest: 1,
   enableOfflineQueue: false,
+  commandTimeout: 2_000,
   retryStrategy,
 });
 

@@ -4,7 +4,7 @@
   "outputDirectory": "dist",
   "framework": null,
   "rewrites": [
-    { "source": "/((?!assets/|favicon|apple-touch-icon|robots.txt|.*\\.[a-z0-9]+$).*)", "destination": "/index.html" }
+    { "source": "/((?!api(?:/|$)|assets/|favicon|apple-touch-icon|robots.txt|.*\\.[a-z0-9]+$).*)", "destination": "/index.html" }
   ],
   "headers": [
     {

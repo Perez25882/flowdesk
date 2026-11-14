@@ -12,7 +12,7 @@ import {
 // The table under test is data; the modules that carry it reach for Prisma and
 // Redis at import time and neither is available here.
 vi.mock('../src/config/database.js', () => ({ prisma: {} }));
-vi.mock('../src/config/redis.js', () => ({ redis: {}, redisSubscriber: {} }));
+vi.mock('../src/config/redis.js', () => ({ redis: {}, redisSubscriber: {}, rateLimitRedis: {} }));
 
 /**
  * The two channels have to say the same thing.

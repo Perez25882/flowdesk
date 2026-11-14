@@ -5,7 +5,7 @@ import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
 import { redis } from '../../config/redis.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
-import { enqueueOutboundMessage } from '../../queues/outbound.queue.js';
+import { enqueueOutboundMessage, persistOutboundSend, scheduleOutbound, type OutboundJobData } from '../../queues/outbound.queue.js';
 import { loadTenantCredentials } from '../../services/whatsapp/client.js';
 import { shouldSendAutoReply } from '../../services/templates/template-engine.js';
 import { canSendOutbound } from '../../services/plan/plan.service.js';
@@ -71,6 +71,7 @@ export interface SendReplyResult {
    * queued. The customer still receives the message — once.
    */
   duplicate: boolean;
+  sendId?: string;
 }
 
 /**
@@ -202,6 +203,11 @@ export async function sendReply(
     );
   }
 
+  const outbound: OutboundJobData = {
+    businessId, customerId: message.customerId, to: message.customer.waNumber,
+    body: data.body, inReplyToMessageId: message.id, ...(staffId ? { sentByStaffId: staffId } : {}),
+  };
+  let sendId: string | null = null;
   // Claim the draft. `updateMany` with the expected status is atomic, so only
   // one of two concurrent clicks can transition it — the same idiom used for
   // WhatsApp connection state. A message with no draft is still replyable.
@@ -210,18 +216,24 @@ export async function sendReply(
       message: message.body!, policy: message.aiPolicy, text: data.body });
     const claim = await prisma.$transaction(async (tx) => {
       await requireMessageActor(businessId, staffId, tx);
-      return tx.message.updateMany({
+      const change = await tx.message.updateMany({
         where: { id: messageId, businessId, customerId: message.customerId, aiReplyStatus: 'DRAFT', aiReplyText: data.body,
           customer: { businessId, deletedAt: null, blacklisted: false }, business: { active: true, deletedAt: null, deactivatedAt: null } },
-        data: { aiReplyStatus: 'SENT', requiresReview: true, aiPolicy: {
-          ...draftAudit(message.aiPolicy), state: 'WAITING_HANDOFF', approvedBy: staffId ?? 'owner',
+        data: { aiReplyStatus: 'SENT', requiresReview: false, aiPolicy: {
+          ...draftAudit(message.aiPolicy), state: 'APPROVED', approvedBy: staffId ?? 'owner',
         } },
       });
+      if (!change.count) return null;
+      const id = await persistOutboundSend(tx, outbound, `assistant-approved-${messageId}`);
+      if (!id) throw new ConflictError('The approved reply already exists');
+      return id;
     });
 
-    if (claim.count === 0) {
+    if (!claim) {
       throw new ConflictError('This reply was already sent or dismissed.');
     }
+    sendId = claim;
+    void scheduleOutbound(claim, outbound).catch(() => logger.warn({ sendId: claim }, 'Approved draft awaits Redis'));
   }
 
   const edited = message.aiReplyText !== null && message.aiReplyText !== data.body;
@@ -243,33 +255,17 @@ export async function sendReply(
   try {
     // Only draft approval uses a fixed job identity. The human composer can
     // send an independent follow-up for the same inbound message.
-    await enqueueOutboundMessage({
-      businessId,
-      customerId: message.customerId,
-      to: message.customer.waNumber,
-      body: data.body,
-      inReplyToMessageId: message.id,
-      ...(staffId ? { sentByStaffId: staffId } : {}),
-    }, approving ? { idempotencyKey: `assistant-approved-${messageId}` } : undefined);
+    if (!approving) {
+      const accepted = await enqueueOutboundMessage(outbound);
+      sendId = accepted.sendId ?? null;
+    }
   } catch (error: unknown) {
     // Release both claims so the owner can try again rather than being told for
     // the next minute that their own reply is a duplicate.
     if (!approving) await releaseReplyClaim(claimKey);
 
-    if (approving) {
-      await prisma.message
-        .updateMany({
-          where: { id: messageId, businessId, aiReplyStatus: 'SENT' },
-          data: { aiReplyStatus: 'DRAFT', aiPolicy: draftAudit(message.aiPolicy) },
-        })
-        .catch(() => undefined);
-    }
     throw error;
   }
-
-  if (approving) await prisma.message.update({ where: { id: messageId, businessId }, data: {
-    aiPolicy: { ...draftAudit(message.aiPolicy), state: 'APPROVED', approvedBy: staffId ?? 'owner' }, requiresReview: false,
-  } });
 
   if (staffId) {
     await logActivity({
@@ -283,10 +279,10 @@ export async function sendReply(
 
   logger.info(
     { businessId, messageId, staffId, hadDraft: message.aiReplyText !== null, edited },
-    'Reply sent from dashboard',
+    'Dashboard reply durably accepted',
   );
 
-  return { messageId, body: data.body, edited, duplicate: false };
+  return { messageId, body: data.body, edited, duplicate: false, ...(sendId ? { sendId } : {}) };
 }
 
 /** Discards a draft the owner does not want to send. */

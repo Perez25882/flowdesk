@@ -23,6 +23,8 @@ datasource db {
 /// are the login credentials. Meta OAuth is used solely to attach a WhatsApp
 /// number (`metaUserId` / `waPhoneNumberId`), never as the identity provider.
 model Business {
+  whatsAppSends WhatsAppSend[]
+  fulfillmentTasks FulfillmentTask[]
   id                 String             @id @default(cuid())
   name               String
   ownerName          String
@@ -325,6 +327,7 @@ model Customer {
 
 /// Created automatically from ORDER-intent messages or manually by owner.
 model Order {
+  inboundSourceMessageId String? @unique
   id              String               @id @default(cuid())
   businessId      String
   customerId      String
@@ -551,6 +554,8 @@ model StockMovement {
 
 /// Every payment logged against a customer or order.
 model Payment {
+  manualRequestKey String?
+  manualRequestHash String?
   id            String        @id @default(cuid())
   businessId    String
   customerId    String
@@ -596,6 +601,7 @@ model Payment {
   @@index([businessId, screenshotKey])
   @@index([reference])
   @@index([businessId, createdAt(sort: Desc)])
+  @@unique([businessId, manualRequestKey])
   @@map("payments")
 }
 
@@ -814,6 +820,8 @@ model WhatsAppTextReceipt {
   leaseUntil    DateTime?
   ownershipId   BigInt?
   mediaClaims   Int @default(0)
+  classificationCheckAt DateTime?
+  classificationChecks Int @default(0)
   status        WhatsAppTextReceiptStatus @default(PENDING)
   reason        String?
   attempts      Int                       @default(0)
@@ -830,6 +838,7 @@ model WhatsAppTextReceipt {
   @@index([finishedAt])
   @@index([businessId, status])
   @@index([waMessageId])
+  @@index([classificationCheckAt])
   @@map("whatsapp_text_receipts")
 }
 
@@ -959,6 +968,61 @@ model Message {
   @@index([businessId, aiReplyStatus, createdAt(sort: Desc)])
   @@index([inReplyToMessageId])
   @@map("messages")
+}
+
+enum WhatsAppSendState {
+  AUTHORIZED
+  QUEUED
+  SENDING
+  PROVIDER_ACCEPTED
+  DELIVERED
+  READ
+  FAILED
+  RETRY_PENDING
+  REVIEW_REQUIRED
+}
+
+model WhatsAppSend {
+  id String @id @default(uuid())
+  businessId String
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  eventKey String
+  payload Json
+  state WhatsAppSendState @default(AUTHORIZED)
+  attempts Int @default(0)
+  nextAttemptAt DateTime? @default(now())
+  leaseUntil DateTime?
+  phoneNumberId String?
+  providerMessageId String?
+  reason String?
+  acceptedAt DateTime?
+  deliveredAt DateTime?
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([businessId, eventKey])
+  @@unique([phoneNumberId, providerMessageId])
+  @@index([nextAttemptAt])
+  @@index([state, leaseUntil])
+  @@map("whatsapp_sends")
+}
+
+model WhatsAppDeliveryReceipt {
+  id String @id @default(uuid())
+  phoneNumberId String
+  providerMessageId String
+  recipient String
+  status String
+  outboundId String?
+  sentAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@unique([phoneNumberId, providerMessageId, recipient, status, sentAt], map: "whatsapp_delivery_receipts_identity")
+  @@index([phoneNumberId, providerMessageId, consumedAt], map: "whatsapp_delivery_receipts_pending")
+  @@index([outboundId, consumedAt])
+  @@map("whatsapp_delivery_receipts")
 }
 
 /// Tracks when owners manually correct the system's intent classification.
@@ -1425,6 +1489,24 @@ model Shipment {
   @@index([businessId, dispatchedAt(sort: Desc)])
   @@index([businessId, trackingNumber])
   @@map("shipments")
+}
+
+model FulfillmentTask {
+  id String @id @default(uuid())
+  businessId String
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  orderId String
+  kind String
+  subject String
+  attempts Int @default(0)
+  nextAttemptAt DateTime? @default(now())
+  state String @default("PENDING")
+  reason String?
+  createdAt DateTime @default(now())
+
+  @@unique([businessId, orderId, kind, subject])
+  @@index([nextAttemptAt])
+  @@map("fulfillment_tasks")
 }
 
 

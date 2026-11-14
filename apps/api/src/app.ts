@@ -226,7 +226,10 @@ export async function createApp(): Promise<FastifyInstance> {
     return sendError(reply, 500, 'Internal server error', 'INTERNAL_SERVER_ERROR');
   });
 
-  app.get('/health', async () => getHealth());
+  app.get('/health', async (_request, reply) => {
+    const health = await getHealth();
+    return reply.code(health.status === 'ok' ? 200 : 503).send(health);
+  });
 
   await app.register(async (apiApp: FastifyInstance) => {
     // Raw request bytes, for webhook signature verification.

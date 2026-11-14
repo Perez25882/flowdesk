@@ -1,6 +1,7 @@
 import { Worker } from 'bullmq';
 import { IntentType, ClassificationSource, type AssistantAction } from '@flowdesk/shared';
 import { prisma } from '../config/database.js';
+import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
 import { emitMessageFlagged } from '../services/sse/sse.events.js';
@@ -69,6 +70,7 @@ interface ClassifiedMessage {
   customerId: string | null;
   /** True once this message has been carried through the pipeline. */
   processed: boolean;
+  processingError: string | null;
   /** Prisma types this as a string union, and the SSE payload takes a string. */
   intent: string;
   direction: string;
@@ -85,6 +87,7 @@ async function fetchMessageWithCustomer(messageId: string): Promise<ClassifiedMe
       businessId: true,
       customerId: true,
       processed: true,
+      processingError: true,
       intent: true,
       direction: true,
       textReceipt: { select: { kind: true } },
@@ -113,21 +116,31 @@ async function handleOrderIntent(message: ClassifiedMessage): Promise<void> {
     return;
   }
 
+  await prisma.message.updateMany({
+    where: { id: message.id, businessId: message.businessId, processingError: null },
+    data: { processingError: 'ORDER_EFFECT_WAITING' },
+  });
   try {
-    const order = await createOrderFromMessage(
+    const { order } = await createOrderFromMessage(
       message.body ?? '',
       message.businessId,
       message.customerId,
+      message.id,
     );
-
-    await prisma.message.update({
-      where: { id: message.id },
-      data: { relatedOrderId: order.id },
+    await notifyOrderStatus(order.id, 'PENDING', {
+      businessId: message.businessId, key: `order-status-${order.id}-PENDING`,
     });
-
-    await notifyOrderStatus(order.id, 'PENDING');
+    await prisma.message.updateMany({
+      where: { id: message.id, businessId: message.businessId, processingError: 'ORDER_EFFECT_WAITING' },
+      data: { processingError: null },
+    });
   } catch (error: unknown) {
-    logger.error({ error, messageId: message.id }, 'Failed to create order from message');
+    await prisma.message.update({
+      where: { id: message.id, businessId: message.businessId },
+      data: { requiresReview: true, processingError: 'ORDER_EFFECT_WAITING' },
+    });
+    logger.error({ errorType: error instanceof Error ? error.name : 'Unknown', messageId: message.id }, 'Order effect requires review');
+    throw error;
   }
 }
 
@@ -230,6 +243,10 @@ export async function processIntentClassification(jobData: IntentClassificationJ
   if (mediaReceipt && !message.mediaPhoneNumberId) return;
 
   if (message.processed) {
+    if (message.processingError === 'ORDER_EFFECT_WAITING') {
+      await handleOrderIntent(message);
+      return;
+    }
     await abandonRetryOfHandledMessage(message);
     return;
   }
@@ -264,15 +281,22 @@ export async function processIntentClassification(jobData: IntentClassificationJ
   // nothing has been done to the message yet; the call below refines it once
   // the assistant has had its say.
   const provisionalReview = requiresReview(result.intent, result.confidence, 'none', false);
+  const ruleOrder = result.intent === IntentType.ORDER && result.source === ClassificationSource.RULE_ENGINE &&
+    explicitOrderRequest(message.body) && !hasPolicyOverride(message.body) && message.customerId &&
+    Boolean(await prisma.business.findFirst({
+      where: { id: message.businessId, active: true, deletedAt: null, deactivatedAt: null, aiAssistMode: 'OFF' }, select: { id: true },
+    }));
 
   const claimed = await prisma.message.updateMany({
-    where: { id: jobData.messageId, businessId: message.businessId, processed: false },
+    where: { id: jobData.messageId, businessId: message.businessId, processed: false,
+      OR: [{ processingError: null }, { processingError: { not: 'CLASSIFICATION_HANDOFF_EXHAUSTED' } }] },
     data: {
       intent: result.intent,
       intentConfidence: result.confidence,
       classifiedBy: result.source as ClassificationSource,
       processed: true,
       processedAt: new Date(),
+      ...(ruleOrder ? { processingError: 'ORDER_EFFECT_WAITING' } : {}),
       requiresReview: provisionalReview,
     },
   });
@@ -294,6 +318,11 @@ export async function processIntentClassification(jobData: IntentClassificationJ
       { messageId: jobData.messageId, customerId: message.customer.id },
       'Skipping intent side effects: customer is blacklisted',
     );
+    return;
+  }
+
+  if (ruleOrder) {
+    await handleOrderIntent(message);
     return;
   }
 
@@ -452,6 +481,7 @@ export const intentClassifierWorker = new Worker<IntentClassificationJobData>(
     // @ts-expect-error ioredis v5.11.0 vs BullMQ bundled v5.10.1 type mismatch
     connection: redisSubscriber,
     concurrency: WORKER_CONCURRENCY,
+    autorun: env.NODE_ENV === 'test',
   },
 );
 

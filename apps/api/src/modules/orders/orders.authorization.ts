@@ -72,7 +72,13 @@ export async function lockOrderForDelivery(
   actor: OrderActor,
 ): Promise<void> {
   const where = orderAccessWhere(orderId, actor, 'orders.transition');
-  await requireStaffMembership(tx, actor);
+  if (actor.staffId !== null) {
+    const [staff] = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM staff WHERE id = ${actor.staffId} AND "businessId" = ${actor.businessId}
+        AND active AND role::text = ${actor.role ?? ''} FOR SHARE
+    `;
+    if (!staff) throw new ForbiddenError('You do not have permission to perform this action');
+  }
   const assignment = where.assignedStaffId === undefined
     ? Prisma.empty
     : Prisma.sql`AND "assignedStaffId" = ${where.assignedStaffId}`;

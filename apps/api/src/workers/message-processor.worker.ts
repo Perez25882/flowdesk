@@ -392,6 +392,7 @@ export const messageProcessorWorker = new Worker<MessageJobData>(
     // @ts-expect-error library interop — versions are runtime-compatible
     connection: redisSubscriber,
     concurrency: WORKER_CONCURRENCY,
+    autorun: env.NODE_ENV === 'test',
   },
 );
 

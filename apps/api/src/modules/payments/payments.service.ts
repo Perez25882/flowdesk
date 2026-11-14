@@ -16,10 +16,13 @@ export async function logPayment(
   data: CreatePaymentInput,
   businessId: string,
   loggedById: string | null,
+  requestKey?: string,
 ): Promise<repository.PaymentWithCustomer> {
-  const payment = await repository.createPayment(data, businessId, loggedById);
+  const { payment, created } = requestKey
+    ? await repository.writeManualPayment(data, businessId, loggedById, requestKey)
+    : { payment: await repository.createPayment(data, businessId, loggedById), created: true };
 
-  if (payment.confidence !== 'CLAIMED') {
+  if (created && payment.confidence !== 'CLAIMED') {
     // Customer-facing notices only ever describe money coming IN. Firing
     // "payment received" on a refund (direction OUT) would write a false
     // statement into the customer's WhatsApp history at the exact moment

@@ -267,6 +267,7 @@ export interface ThreadMessage {
    */
   draft: string | null;
   createdAt: Date;
+  deliveryState?: string;
 }
 
 /** How far back a thread reaches. Older history is not what an owner is replying to. */
@@ -307,14 +308,22 @@ export async function getThread(
       sentByStaffId: true,
       aiReplyText: true,
       aiReplyStatus: true,
+      waMessageId: true,
       createdAt: true,
     },
   });
 
   const lastOutbound = rows.find((row) => row.direction === 'OUTBOUND')?.createdAt ?? null;
+  const sends = await prisma.whatsAppSend.findMany({
+    where: { businessId, payload: { path: ['customerId'], equals: customerId } },
+    orderBy: { createdAt: 'desc' }, take: THREAD_LIMIT,
+    select: { id: true, state: true, payload: true, createdAt: true, providerMessageId: true },
+  });
+  const providerIds = new Map(sends.filter((send) => send.providerMessageId).map((send) => [send.providerMessageId, send.state]));
 
   const messages: ThreadMessage[] = rows.reverse().map((row) => {
     const fromShop = row.direction === 'OUTBOUND';
+    const deliveryState = fromShop ? providerIds.get(row.waMessageId) : undefined;
     let sentBy: ThreadMessage['sentBy'] = null;
     if (fromShop && row.sentFromApp) sentBy = 'phone';
     else if (fromShop && row.sentByStaffId) sentBy = 'staff';
@@ -332,9 +341,17 @@ export async function getThread(
       // Only a suggestion still waiting to be sent. One the owner already sent,
       // dismissed, or that was superseded is history, not something to offer.
       draft: !fromShop && row.aiReplyStatus === 'DRAFT' ? row.aiReplyText : null,
+      ...(deliveryState ? { deliveryState } : {}),
       createdAt: row.createdAt,
     };
   });
 
-  return { customer, messages };
+  for (const send of sends) {
+    if (send.providerMessageId || !send.payload || typeof send.payload !== 'object' || Array.isArray(send.payload) ||
+        typeof send.payload.body !== 'string') continue;
+    messages.push({ id: send.id, body: send.payload.body, type: 'TEXT', fromShop: true,
+      sentBy: typeof send.payload.sentByStaffId === 'string' ? 'staff' : null,
+      needsYou: false, draft: null, createdAt: send.createdAt, deliveryState: send.state });
+  }
+  return { customer, messages: messages.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(-THREAD_LIMIT) };
 }

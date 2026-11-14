@@ -31,6 +31,7 @@ vi.mock('../src/services/s3/media.js', async (importOriginal) => ({
   uploadBufferToS3: storage.upload,
   getArchivedMedia: storage.get,
   deleteObject: storage.delete,
+  deleteProofObject: storage.delete,
 }));
 
 const fixtureOnly = databaseUrl || redisUrl ? describe : describe.skip;
@@ -406,6 +407,9 @@ fixtureOnly('G1-02 delivery authorization with real PostgreSQL', () => {
     }
     expect((await pending).statusCode).toBe(404);
     expect(await prisma.shipment.findUniqueOrThrow({ where: { orderId: target.id } })).toEqual(existing);
+    expect(await prisma.fulfillmentTask.findFirst({ where: { subject: stagedKey } })).toMatchObject({ state: 'PENDING' });
+    const { recoverFulfillment } = await import('../src/workers/fulfillment-recovery.js');
+    await recoverFulfillment(new Date(Date.now() + 121_000));
     expect(storage.delete).toHaveBeenCalledTimes(1);
     expect(storage.delete).toHaveBeenCalledWith(stagedKey);
     expect(storage.objects.has(stagedKey)).toBe(false);

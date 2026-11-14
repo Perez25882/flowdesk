@@ -328,6 +328,32 @@ export function parseEchoPayload(payload: MetaWebhookPayload): ParsedEchoMessage
   });
 }
 
+export interface WhatsAppStatusEvidence {
+  phoneNumberId: string;
+  providerMessageId: string;
+  recipient: string;
+  status: string;
+  sentAt: Date;
+  outboundId?: string;
+}
+
+export function parseStatusPayload(payload: MetaWebhookPayload): WhatsAppStatusEvidence[] {
+  return webhookChanges(payload).flatMap((change) => {
+    const phoneNumberId = change.value.metadata?.phone_number_id;
+    if (change.field !== 'messages' || !isIdentifier(phoneNumberId) || !Array.isArray(change.value.statuses)) return [];
+    return change.value.statuses.flatMap((item) => {
+      if (!isIdentifier(item?.id) || !isPhone(item.recipient_id) ||
+          !['sent', 'delivered', 'read', 'failed'].includes(item.status)) return [];
+      const sentAt = parseTimestamp(item.timestamp);
+      if (!sentAt || Math.abs(Date.now() - sentAt.getTime()) > 30 * 86_400_000) return [];
+      const opaque = typeof item.biz_opaque_callback_data === 'string' && /^[a-f0-9-]{36}$/.test(item.biz_opaque_callback_data)
+        ? item.biz_opaque_callback_data : null;
+      return [{ phoneNumberId, providerMessageId: item.id, recipient: normalizeGhanaPhone(item.recipient_id), status: item.status, sentAt,
+        ...(opaque ? { outboundId: opaque } : {}) }];
+    });
+  });
+}
+
 /**
  * Fields present in a delivery that nothing here consumes yet.
  *

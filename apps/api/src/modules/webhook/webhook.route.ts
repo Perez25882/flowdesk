@@ -7,6 +7,7 @@ import {
   handleVerification,
   isMediaMessage,
   parseEchoPayload,
+  parseStatusPayload,
   parseWebhookPayload,
   validateWebhookSignature,
 } from './webhook.service.js';
@@ -90,6 +91,7 @@ export default async function webhookRoutes(app: FastifyInstance): Promise<void>
 
       const messages = parseWebhookPayload(payload);
       const echoes = parseEchoPayload(payload);
+      const statuses = parseStatusPayload(payload);
       const hasMessageMembers = payload.entry.some((entry) => Array.isArray(entry?.changes) &&
         entry.changes.some((change) => (
           (change?.field === 'messages' && Array.isArray(change.value?.messages) && change.value.messages.length > 0) ||
@@ -99,13 +101,13 @@ export default async function webhookRoutes(app: FastifyInstance): Promise<void>
       const mediaCount = messages.filter((message) => isMediaMessage(message.type)).length;
       const interactions = messages.length - texts.length - mediaCount;
       try {
-        await acceptTextReceipts(messages, echoes);
+        await acceptTextReceipts(messages, echoes, statuses);
       } catch {
         logger.error({ eventCount: messages.length + echoes.length }, 'Could not commit WhatsApp receipts');
         return reply.status(503).send({
           success: false,
           error: 'Could not accept WhatsApp events. Retry this delivery.',
-          code: messages.length === texts.length && !echoes.length ? 'TEXT_RECEIPT_UNAVAILABLE' : 'WHATSAPP_RECEIPT_UNAVAILABLE',
+          code: messages.length === texts.length && !echoes.length && !statuses.length ? 'TEXT_RECEIPT_UNAVAILABLE' : 'WHATSAPP_RECEIPT_UNAVAILABLE',
         });
       }
 
@@ -132,6 +134,7 @@ export default async function webhookRoutes(app: FastifyInstance): Promise<void>
           processed: messages.length, acceptedText: texts.length, enqueued: 0, echoed: 0,
           ...(mediaCount ? { acceptedMedia: mediaCount } : {}),
           ...(echoes.length ? { acceptedEchoes: echoes.length } : {}),
+          ...(statuses.length ? { acceptedStatuses: statuses.length } : {}),
           ...(interactions ? { acceptedInteractions: interactions } : {}),
         },
       });

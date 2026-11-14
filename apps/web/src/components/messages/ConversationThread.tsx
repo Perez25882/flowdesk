@@ -80,6 +80,18 @@ export default function ConversationThread({
   );
 }
 
+const deliveryLabels: Record<string, string> = {
+  AUTHORIZED: 'Accepted by Flowdesk',
+  QUEUED: 'Queued',
+  SENDING: 'Sending',
+  PROVIDER_ACCEPTED: 'Accepted by WhatsApp',
+  DELIVERED: 'Delivered',
+  READ: 'Read',
+  FAILED: 'Delivery failed',
+  RETRY_PENDING: 'Waiting to retry',
+  REVIEW_REQUIRED: 'Delivery needs review',
+};
+
 function Bubble({ message }: { message: ThreadMessage }): React.JSX.Element {
   const body = message.body?.trim() || (message.type === 'IMAGE' ? 'Photo' : 'Attachment');
   const attribution =
@@ -101,6 +113,7 @@ function Bubble({ message }: { message: ThreadMessage }): React.JSX.Element {
       <p className="mt-0.5 px-1 text-2xs text-text-muted">
         {formatTime(message.createdAt)}
         {attribution && <span> — {attribution}</span>}
+        {message.deliveryState && <span> · {deliveryLabels[message.deliveryState]}</span>}
         {message.needsYou && <span className="font-semibold text-accent"> — Needs a reply</span>}
       </p>
     </div>

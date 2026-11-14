@@ -2,7 +2,7 @@ import { Prisma, type WhatsAppTextReceipt } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { normalizeGhanaPhone } from '../../utils/phone.js';
 import type { ParsedEchoMessage, ParsedIncomingMessage } from './webhook.types.js';
-import { isMediaMessage } from './webhook.service.js';
+import { isMediaMessage, type WhatsAppStatusEvidence } from './webhook.service.js';
 
 const UNBOUND_REVIEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const TEXT_RECEIPT_RETENTION_MS = 30 * UNBOUND_REVIEW_WINDOW_MS;
@@ -12,14 +12,18 @@ const MAX_FUTURE_SKEW_MS = 5 * 60_000;
 const clean = (value: unknown, max: number): string | null => typeof value === 'string'
   ? value.replaceAll('\0', '').slice(0, max) : null;
 
-export async function acceptTextReceipts(messages: ParsedIncomingMessage[], echoes: ParsedEchoMessage[] = []): Promise<void> {
-  if (messages.length === 0 && echoes.length === 0) return;
+export async function acceptTextReceipts(messages: ParsedIncomingMessage[], echoes: ParsedEchoMessage[] = [],
+  statuses: WhatsAppStatusEvidence[] = [],
+): Promise<void> {
+  if (messages.length === 0 && echoes.length === 0 && statuses.length === 0) return;
 
   const now = new Date();
   const events = [...messages, ...echoes];
   const phones = [...new Set(events.map((message) => message.businessPhoneNumberId))];
   const messageIds = [...new Set(events.map((message) => message.waMessageId))].sort();
   await prisma.$transaction(async (tx) => {
+    if (statuses.length) await tx.whatsAppDeliveryReceipt.createMany({ data: statuses, skipDuplicates: true });
+    if (!events.length) return;
     // Order admission across concurrent batches without tying it to Redis or
     // to the order in which consumers materialize different phone numbers.
     await tx.$executeRaw`

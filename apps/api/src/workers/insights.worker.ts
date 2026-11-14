@@ -105,6 +105,7 @@ export const insightsWorker = new Worker<InsightsJobData>(
     // @ts-expect-error ioredis vs BullMQ bundled types
     connection: redisSubscriber,
     concurrency: WORKER_CONCURRENCY,
+    autorun: false,
   },
 );
 

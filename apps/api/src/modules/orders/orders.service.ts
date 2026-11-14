@@ -3,7 +3,6 @@ import { logger } from '../../config/logger.js';
 import { prisma } from '../../config/database.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { extractItemsFromText } from '../../utils/item-extractor.js';
-import { notifyOrderStatus } from '../../services/notifications/customer-notifications.js';
 import { recordOrder } from '../../services/plan/plan.service.js';
 import { notifyOwnerLowStock, notifyOwnerNewOrder } from '../../services/notifications/owner-notifications.js';
 import { emitOrderCreated, emitOrderUpdated, emitStockAlert } from '../../services/sse/sse.events.js';
@@ -158,43 +157,63 @@ export async function createOrderFromMessage(
   body: string,
   businessId: string,
   customerId: string,
-): Promise<OrderWithRelations> {
-  const catalog = await findActiveCatalogProducts(businessId);
-  const extracted = extractItemsFromText(body, catalog);
+  messageId: string,
+): Promise<{ order: OrderWithRelations; created: boolean }> {
+  const referenceNumber = await generateOrderReference(businessId);
+  const result = await prisma.$transaction(async (tx) => {
+    const source = await lockInboundOrderSource(tx, businessId, customerId, messageId, body);
+    const existing = await recoverInboundOrder(tx, businessId, customerId, source.relatedOrderId);
+    if (existing) return { order: existing, created: false };
+    const [business] = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM businesses WHERE id = ${businessId} AND active AND "deletedAt" IS NULL
+        AND "deactivatedAt" IS NULL AND "aiAssistMode" = 'OFF' FOR SHARE
+    `;
+    if (!business || !explicitOrderRequest(body) || hasPolicyOverride(body)) {
+      throw new ForbiddenError('Inbound order is outside the current policy');
+    }
+    await tx.$queryRaw`SELECT id FROM products WHERE "businessId" = ${businessId} AND active AND "deletedAt" IS NULL ORDER BY id FOR SHARE`;
+    const extracted = extractItemsFromText(body, await findActiveCatalogProducts(businessId, tx));
+    const items = extracted.length ? toOrderItems(extracted) : [{ description: body, quantity: 1, unitPrice: 0 }];
+    const order = await createOrder({
+      businessId, customerId, referenceNumber, rawMessage: body, isManual: false, items, inboundSourceMessageId: messageId,
+    }, tx);
+    await tx.message.update({ where: { id: messageId }, data: { relatedOrderId: order.id } });
+    await recalculateCustomerTotals(customerId, tx);
+    return { order, created: true };
+  }, { timeout: 10_000 });
+  if (result.created) await Promise.allSettled([recordOrder(businessId), emitCreated(result.order)]);
+  return result;
+}
 
-  const items: CreateOrderItemInput[] =
-    extracted.length > 0
-      ? toOrderItems(extracted)
-      : // Never drop an order because parsing failed — record the raw text and
-        // let the owner price it by hand.
-        [{ description: body, quantity: 1, unitPrice: 0 }];
+async function lockInboundOrderSource(
+  tx: Prisma.TransactionClient,
+  businessId: string,
+  customerId: string,
+  messageId: string,
+  body: string,
+): Promise<{ relatedOrderId: string | null }> {
+  const customer = await lockCustomerForTotals(tx, customerId, businessId);
+  if (!customer || customer.deletedAt) throw new NotFoundError('Customer not found');
+  const [source] = await tx.$queryRaw<Array<{ relatedOrderId: string | null }>>`
+    SELECT m."relatedOrderId" FROM messages m JOIN customers c ON c.id = m."customerId"
+    WHERE m.id = ${messageId} AND m."businessId" = ${businessId} AND m."customerId" = ${customerId}
+      AND m.direction = 'INBOUND' AND m.body = ${body} AND c."businessId" = ${businessId} AND NOT c.blacklisted
+    FOR UPDATE OF m
+  `;
+  if (!source) throw new NotFoundError('Inbound message not found');
+  return source;
+}
 
-  const order = await createOrderWithReference(businessId, (referenceNumber) => ({
-    businessId,
-    customerId,
-    referenceNumber,
-    rawMessage: body,
-    isManual: false,
-    items,
-  }));
-
-  await Promise.all([recalculateCustomerTotals(customerId), recordOrder(businessId)]);
-
-  await emitCreated(order);
-
-  logger.info(
-    {
-      orderId: order.id,
-      businessId,
-      reference: order.referenceNumber,
-      itemCount: items.length,
-      matched: extracted.filter((item) => item.matched).length,
-      total: Number(order.totalAmount),
-    },
-    'Order created from customer message',
-  );
-
-  return order;
+async function recoverInboundOrder(
+  tx: Prisma.TransactionClient,
+  businessId: string,
+  customerId: string,
+  orderId: string | null,
+): Promise<OrderWithRelations | null> {
+  if (!orderId) return null;
+  const prior = await findOrderById(orderId, businessId, { tx });
+  if (!prior || prior.customerId !== customerId) throw new ConflictError('Inbound order cannot be recovered');
+  return prior;
 }
 
 export interface AssistantOrderItem {
@@ -224,17 +243,13 @@ export async function createOrderFromAssistant(
 ): Promise<OrderWithRelations> {
   const referenceNumber = await generateOrderReference(businessId);
   const { order, created } = await prisma.$transaction(async (tx) => {
-    const customer = await lockCustomerForTotals(tx, customerId, businessId);
-    if (!customer || customer.deletedAt) throw new NotFoundError('Customer not found');
-    const message = await tx.message.findFirst({ where: {
-      id: source.messageId, businessId, customerId, direction: 'INBOUND', body: rawMessage,
-      customer: { blacklisted: false },
-    }, select: { relatedOrderId: true } });
-    if (!message) throw new NotFoundError('Inbound message not found');
-    if (message.relatedOrderId) {
-      const existing = await findOrderById(message.relatedOrderId, businessId, { tx });
-      if (!existing || existing.customerId !== customerId) throw new ConflictError('Inbound order cannot be recovered');
-      return { order: existing, created: false };
+    const message = await lockInboundOrderSource(tx, businessId, customerId, source.messageId, rawMessage);
+    const prior = await recoverInboundOrder(tx, businessId, customerId, message.relatedOrderId);
+    if (prior) return { order: prior, created: false };
+    if (source.pendingOrderId) {
+      const pending = await tx.pendingOrder.findFirst({ where: { id: source.pendingOrderId, businessId, customerId,
+        status: 'AWAITING_REPLY', expiresAt: { gt: new Date() } }, select: { id: true } });
+      if (!pending) throw new ConflictError('Pending order expired or was resolved');
     }
     const [business] = await tx.$queryRaw<Array<{ aiAssistMode: string; bargainingEnabled: boolean }>>`
       SELECT "aiAssistMode"::text, "bargainingEnabled" FROM businesses WHERE id = ${businessId}
@@ -264,12 +279,13 @@ export async function createOrderFromAssistant(
       if (!approvedNegotiatedPrice({ ...product, ladder }, item.quantity, item.unitPrice)) throw new ConflictError('Order price changed');
       return { ...item, description: product.name };
     });
-    const order = await createOrder({ businessId, customerId, referenceNumber, rawMessage, isManual: false, items: verified }, tx);
+    const order = await createOrder({ businessId, customerId, referenceNumber, rawMessage, isManual: false,
+      items: verified, inboundSourceMessageId: source.messageId }, tx);
     await tx.message.update({ where: { id: source.messageId }, data: { relatedOrderId: order.id } });
-    if (source.pendingOrderId) await tx.pendingOrder.updateMany({
+    if (source.pendingOrderId && !(await tx.pendingOrder.updateMany({
       where: { id: source.pendingOrderId, businessId, customerId, status: 'AWAITING_REPLY', expiresAt: { gt: new Date() } },
       data: { status: 'RESOLVED', resolvedOrderId: order.id },
-    });
+    })).count) throw new ConflictError('Pending order expired or was resolved');
     await recalculateCustomerTotals(customerId, tx);
     return { order, created: true };
   });
@@ -389,140 +405,54 @@ async function transitionOrder(
   next: OrderStatus,
   options: TransitionOptions = {},
 ): Promise<OrderWithRelations> {
-  const existing = await findOrderById(orderId, businessId);
-
-  if (!existing) {
-    throw new NotFoundError('Order not found');
-  }
-
-  validateTransition(existing.status, next);
-
-  if (next === 'CANCELLED' && !options.reason?.trim()) {
-    throw new ValidationError('A reason is required when cancelling an order');
-  }
-
-  const previousStatus = existing.status;
-
-  if (options.assignStaffId) {
-    await assignOrderToStaff(orderId, options.assignStaffId, businessId);
-  }
-
-  const note = options.reason ?? `Order moved to ${next}`;
-  const order = await updateOrderStatus(
-    orderId,
-    businessId,
-    next,
-    actorId,
-    note,
-    previousStatus,
-    options.reason ?? null,
-  );
-
-  // Someone else moved this order between our read and our write. The work
-  // below — notifying the customer, moving stock, recomputing balances — has
-  // already been done by whoever won, so doing it again is exactly the double
-  // send and double deduction the conditional write exists to prevent.
-  //
-  // What the caller sees depends on what they asked for. If the order is now in
-  // the state they wanted, their intent was carried out and a 200 is honest. If
-  // the winner moved it somewhere else, their request genuinely did not happen
-  // and they need to know.
-  if (!order) {
-    const current = await findOrderById(orderId, businessId);
-
-    if (!current) {
-      throw new NotFoundError('Order not found');
+  if (next === 'CANCELLED' && !options.reason?.trim()) throw new ValidationError('A reason is required when cancelling an order');
+  const result = await prisma.$transaction(async (tx) => {
+    const target = await findOrderById(orderId, businessId, { tx });
+    if (!target || !await lockCustomerForTotals(tx, target.customerId, businessId)) throw new NotFoundError('Order not found');
+    await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} AND "businessId" = ${businessId} AND "deletedAt" IS NULL FOR UPDATE`;
+    const existing = await findOrderById(orderId, businessId, { tx });
+    if (!existing) throw new NotFoundError('Order not found');
+    if (actorId) {
+      const [actor] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM staff WHERE id = ${actorId} AND "businessId" = ${businessId} AND active
+          AND role IN ('MANAGER','OPERATIONS') FOR SHARE
+      `;
+      if (!actor) throw new ForbiddenError('You do not have permission to perform this action');
     }
-
-    if (current.status === next) {
-      return current;
+    if (existing.status === next) return { order: existing, previous: next, alerts: [] };
+    if (next === 'CANCELLED' && existing.status === 'DISPATCHED') {
+      const shipment = await tx.shipment.findUnique({ where: { orderId }, select: { businessId: true, deliveredAt: true } });
+      if (!shipment || shipment.businessId !== businessId || shipment.deliveredAt) {
+        throw new ConflictError('The shipment requires review before cancellation');
+      }
     }
-
-    throw new ConflictError(
-      `This order was already moved to ${current.status} by someone else.`,
-    );
-  }
-
-  // Stock leaves inventory at CONFIRMED, not at PENDING: an unconfirmed order
-  // must not deplete stock the owner has not agreed to sell.
-  //
-  // The claim, not `order.stockDeducted`, is what makes this happen once. The
-  // flag was read and written in two separate statements, so two concurrent
-  // confirmations both saw false and both deducted.
-  if (next === 'CONFIRMED' && (await claimStockMovement(orderId, businessId, false))) {
-    const alerts = await deductStockForOrderItems(
-      orderId,
-      businessId,
-      actorId,
-      order.items.map((item) => ({
-        productId: item.productId,
-        quantity: item.quantity,
-        matched: item.matched,
-      })),
-    );
-
-    for (const alert of alerts) {
-      emitStockAlert(businessId, alert);
-      // Stock most often falls low through selling, not through a manual
-      // adjustment, so this is the path that matters. The owner-notification
-      // cooldown is what keeps a busy morning from becoming forty messages.
-      await notifyOwnerLowStock(alert.productId);
+    validateTransition(existing.status, next);
+    if (options.assignStaffId) await assignOrderToStaff(orderId, options.assignStaffId, businessId, tx);
+    const order = await updateOrderStatus(orderId, businessId, next, actorId, options.reason ?? `Order moved to ${next}`,
+      existing.status, options.reason ?? null, tx);
+    if (!order) throw new ConflictError('The order changed during transition');
+    const items = order.items.map(({ productId, quantity, matched }) => ({ productId, quantity, matched }));
+    const ids = items.flatMap((item) => item.productId ? [item.productId] : []);
+    if (ids.length && (next === 'CANCELLED' || next === 'CONFIRMED')) {
+      await tx.$queryRaw`SELECT id FROM products WHERE "businessId" = ${businessId} AND id IN (${Prisma.join(ids)}) ORDER BY id FOR UPDATE`;
     }
+    const alerts = next === 'CONFIRMED' && await claimStockMovement(orderId, businessId, false, tx)
+      ? await deductStockForOrderItems(orderId, businessId, actorId, items, tx) : [];
+    if (next === 'CANCELLED' && await claimStockMovement(orderId, businessId, true, tx)) {
+      await restoreStockForOrderItems(orderId, businessId, actorId, items, tx);
+    }
+    await recalculateCustomerTotals(order.customerId, tx);
+    await tx.fulfillmentTask.create({ data: { businessId, orderId, kind: 'NOTIFY', subject: next } });
+    await logActivity({ staffId: actorId, businessId, action: `order.${next.toLowerCase()}`,
+      resourceId: orderId, resourceType: 'order', note: `Order ${order.referenceNumber} → ${next}` }, tx);
+    return { order: (await findOrderById(orderId, businessId, { tx })) ?? order, previous: existing.status, alerts };
+  }, { timeout: 10_000 });
+  if (result.previous !== next) emitOrderUpdated(businessId, { orderId, status: next, previousStatus: result.previous });
+  for (const alert of result.alerts) {
+    emitStockAlert(businessId, alert);
+    await notifyOwnerLowStock(alert.productId);
   }
-
-  // Cancelling an order that had already taken stock out of inventory has to
-  // put it back. Without this the shop's stock count drifts down by the size of
-  // every cancelled order and never recovers — and the reorder alerts that
-  // depend on it start firing on stock the shop still has on the shelf.
-  if (next === 'CANCELLED' && (await claimStockMovement(orderId, businessId, true))) {
-    await restoreStockForOrderItems(
-      orderId,
-      businessId,
-      actorId,
-      order.items.map((item) => ({
-        productId: item.productId,
-        quantity: item.quantity,
-        matched: item.matched,
-      })),
-    );
-  }
-
-  await publishOrderTransition(order, previousStatus, actorId, options.reason);
-  return order;
-}
-
-async function publishOrderTransition(
-  order: OrderWithRelations,
-  previousStatus: OrderStatus,
-  actorId: string | null,
-  reason?: string,
-): Promise<void> {
-  const { businessId, id: orderId, status: next } = order;
-  // A status change moves the order in or out of the billable set, so the
-  // customer's outstanding balance has to be recomputed.
-  await recalculateCustomerTotals(order.customerId);
-
-  emitOrderUpdated(businessId, {
-    orderId: order.id,
-    status: order.status,
-    previousStatus,
-  });
-
-  await notifyOrderStatus(order.id, next);
-
-  // Staff activity is a staff-only audit trail — `StaffActivity.staffId` is a
-  // foreign key to Staff, and the owner has no staff row. Calling this with a
-  // placeholder id threw a constraint error that the `.catch` below swallowed,
-  // so owner transitions were silently never recorded. Skipped explicitly now.
-  if (actorId) {
-    await logActivity({
-      staffId: actorId,
-      action: `order.${next.toLowerCase()}`,
-      resourceId: orderId,
-      resourceType: 'order',
-      note: `Order ${order.referenceNumber} → ${next}${reason ? `: ${reason}` : ''}`,
-    }).catch(() => {});
-  }
+  return result.order;
 }
 
 /**
@@ -574,20 +504,25 @@ export async function transitionDeliveryOrder<T>(
     const existing = await findOrderById(orderId, actor.businessId, { tx });
     if (!existing) throw new NotFoundError('Order not found');
 
-    const alreadyFulfilled = allowAlreadyFulfilled && next === 'FULFILLED' && existing.status === next;
-    if (!alreadyFulfilled) validateTransition(existing.status, next);
+    const replay = existing.status === next && (next === 'DISPATCHED' || allowAlreadyFulfilled);
+    if (!replay) validateTransition(existing.status, next);
 
     const shipment = await updateShipment(tx, existing);
-    const order = alreadyFulfilled ? existing : await updateOrderStatus(
+    const order = replay ? existing : await updateOrderStatus(
       orderId, actor.businessId, next, actor.staffId, `Order moved to ${next}`, existing.status, null, tx,
     );
     if (!order) throw new ConflictError('The order changed during delivery');
 
+    if (!replay) {
+      await tx.fulfillmentTask.create({ data: { businessId: actor.businessId, orderId, kind: 'NOTIFY', subject: next } });
+      await logActivity({ staffId: actor.staffId, businessId: actor.businessId, action: `order.${next.toLowerCase()}`,
+        resourceId: orderId, resourceType: 'order', note: `Order ${order.referenceNumber} → ${next}` }, tx);
+    }
     return { order, shipment, previousStatus: existing.status };
   });
 
   if (result.previousStatus !== next) {
-    await publishOrderTransition(result.order, result.previousStatus, actor.staffId);
+    emitOrderUpdated(actor.businessId, { orderId, status: next, previousStatus: result.previousStatus });
   }
   return { order: result.order, shipment: result.shipment };
 }
@@ -596,7 +531,12 @@ export async function fulfillOrder(
   orderId: string,
   actor: OrderActor,
 ): Promise<OrderWithRelations> {
-  const { order } = await transitionDeliveryOrder(orderId, actor, 'FULFILLED', async () => null);
+  const { order } = await transitionDeliveryOrder(orderId, actor, 'FULFILLED', async (tx, current) => {
+    if (current.status !== 'DISPATCHED') return;
+    const shipment = await tx.shipment.updateMany({ where: { orderId, businessId: actor.businessId, deliveredAt: null },
+      data: { deliveredAt: new Date() } });
+    if (!shipment.count) throw new ConflictError('Dispatched order has no active shipment');
+  }, true);
   return order;
 }
 

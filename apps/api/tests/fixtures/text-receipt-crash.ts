@@ -17,11 +17,17 @@ if (
   throw new Error('Use this fixture through the local text receipt integration suite');
 }
 const producer = openTextReceiptQueue();
+await producer.ready();
 
-await dispatchTextReceipts(async (job, jobId) => {
+try {
+  await dispatchTextReceipts(async (job, jobId) => {
   if (job.waMessageId !== target) return producer.enqueue(job, jobId);
   if (phase === 'after-enqueue') await producer.enqueue(job, jobId);
   process.send!(phase);
   // The parent kills this process while the real Postgres handoff transaction is open.
   await new Promise(() => {});
-});
+  });
+} finally {
+  await producer.close();
+}
+throw new Error('Crash fixture did not reach the targeted handoff');

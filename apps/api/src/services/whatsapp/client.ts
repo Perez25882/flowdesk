@@ -272,6 +272,7 @@ export async function sendText(
   credentials: TenantCredentials,
   to: string,
   text: string,
+  outboundId?: string,
 ): Promise<SendResult> {
   const recipient = normalizeGhanaPhone(to);
 
@@ -289,6 +290,7 @@ export async function sendText(
     recipient_type: 'individual',
     to: recipient,
     type: 'text',
+    ...(outboundId ? { biz_opaque_callback_data: outboundId } : {}),
     text: { body: text },
   });
 }
@@ -300,6 +302,7 @@ export async function sendTemplate(
   templateName: string,
   languageCode: string,
   components?: Array<Record<string, unknown>>,
+  outboundId?: string,
 ): Promise<SendResult> {
   const recipient = normalizeGhanaPhone(to);
 
@@ -322,6 +325,7 @@ export async function sendTemplate(
     recipient_type: 'individual',
     to: recipient,
     type: 'template',
+    ...(outboundId ? { biz_opaque_callback_data: outboundId } : {}),
     template,
   });
 }
@@ -343,6 +347,7 @@ export async function sendImage(
   to: string,
   mediaId: string,
   caption?: string,
+  outboundId?: string,
 ): Promise<SendResult> {
   const recipient = normalizeGhanaPhone(to);
 
@@ -356,6 +361,7 @@ export async function sendImage(
     recipient_type: 'individual',
     to: recipient,
     type: 'image',
+    ...(outboundId ? { biz_opaque_callback_data: outboundId } : {}),
     image: {
       id: mediaId,
       // Meta caps an image caption at 1024 characters and rejects the whole

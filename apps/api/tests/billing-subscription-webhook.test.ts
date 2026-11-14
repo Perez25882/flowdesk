@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   disableSubscription: vi.fn(),
 }));
 
-vi.mock('../src/config/redis.js', () => ({ redis }));
+vi.mock('../src/config/redis.js', () => ({ redis, rateLimitRedis: redis }));
 vi.mock('../src/config/database.js', () => ({
   prisma: { business: { findFirst: mocks.businessFindFirst, update: mocks.businessUpdate } },
 }));

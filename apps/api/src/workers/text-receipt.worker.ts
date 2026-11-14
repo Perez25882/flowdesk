@@ -22,8 +22,13 @@ const POLL_INTERVAL_MS = 1_000;
 const TRANSACTION_OPTIONS = { maxWait: 3_000, timeout: 10_000 };
 
 type EnqueueIntent = (job: IntentClassificationJobData, jobId: string) => Promise<unknown>;
+const CLASSIFICATION_CHECK_INTERVAL_MS = 30_000;
 
-export function openTextReceiptQueue(): { enqueue: EnqueueIntent; close: () => Promise<void> } {
+function classifierJobId(receipt: { id: string; waMessageId: string }): string {
+  return receipt.waMessageId.includes(':') ? `intent-receipt-${receipt.id}` : `intent-${receipt.waMessageId}`;
+}
+
+export function openTextReceiptQueue(): { enqueue: EnqueueIntent; ready: () => Promise<void>; close: () => Promise<void> } {
   // A producer must fail in bounded time while holding a receipt row lock.
   // The ordinary worker connections buffer commands through Redis outages.
   const connection = new Redis(env.REDIS_URL, {
@@ -45,6 +50,18 @@ export function openTextReceiptQueue(): { enqueue: EnqueueIntent; close: () => P
   });
 
   return {
+    ready: async () => {
+      if (connection.status === 'ready') return;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => finish(new Error('Receipt queue connection not ready')), 10_000);
+        function finish(error?: Error): void {
+          clearTimeout(timer);
+          connection.off('ready', finish);
+          if (error) reject(error); else resolve();
+        }
+        connection.once('ready', finish);
+      });
+    },
     enqueue: (job: IntentClassificationJobData, jobId: string) =>
       queue.add('classify-message-intent', job, { jobId, removeOnComplete: { age: 3_600 } }),
     close: async () => {
@@ -244,21 +261,79 @@ async function handOffTextMessage(id: string, enqueue: EnqueueIntent, now: Date)
     // evidence wins even after Redis evicts the job. Otherwise the same job ID
     // deduplicates a retry after Redis accepted it but this transaction rolled back.
     if (!message.processed) {
-      const jobId = receipt.waMessageId.includes(':')
-        ? `intent-receipt-${receipt.id}`
-        : `intent-${receipt.waMessageId}`;
       try {
         await enqueue(
           { businessId, messageId: message.id, waMessageId: receipt.waMessageId },
-          jobId,
+          classifierJobId(receipt),
         );
       } catch {
         await delayTextReceipt(tx, receipt, now, 'QUEUE_UNAVAILABLE');
         return;
       }
+      await tx.whatsAppTextReceipt.update({
+        where: { id: receipt.id },
+        data: { classificationCheckAt: new Date(now.getTime() + CLASSIFICATION_CHECK_INTERVAL_MS) },
+      });
     }
     await completeTextReceipt(tx, receipt, now);
   }, TRANSACTION_OPTIONS);
+}
+
+export async function recoverClassificationHandoffs(enqueue: EnqueueIntent, now = new Date()): Promise<number> {
+  const due = await prisma.whatsAppTextReceipt.findMany({
+    where: { classificationCheckAt: { lte: now } },
+    orderBy: { classificationCheckAt: 'asc' },
+    select: { id: true },
+    take: BATCH_SIZE,
+  });
+  for (const { id } of due) {
+    await prisma.$transaction(async (tx) => {
+      const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM whatsapp_text_receipts WHERE id = ${id} AND "classificationCheckAt" <= ${now}
+        FOR UPDATE SKIP LOCKED
+      `;
+      if (!locked) return;
+      const receipt = await tx.whatsAppTextReceipt.findUniqueOrThrow({ where: { id } });
+      const message = receipt.messageId && receipt.businessId ? await tx.message.findFirst({
+        where: { id: receipt.messageId, businessId: receipt.businessId, direction: 'INBOUND',
+          waMessageId: receipt.waMessageId, customer: { businessId: receipt.businessId } },
+        select: { id: true, businessId: true, processed: true, processingError: true },
+      }) : null;
+      if (!message || (message.processed && message.processingError !== 'ORDER_EFFECT_WAITING')) {
+        await tx.whatsAppTextReceipt.update({ where: { id }, data: { classificationCheckAt: null } });
+        return;
+      }
+      const business = await tx.business.findFirst({
+        where: { id: message.businessId, active: true, deletedAt: null, deactivatedAt: null, waPhoneNumberId: receipt.phoneNumberId },
+        select: { id: true },
+      });
+      if (!business) {
+        await tx.message.updateMany({ where: { id: message.id, businessId: message.businessId,
+          OR: [{ processed: false }, { processingError: 'ORDER_EFFECT_WAITING' }] },
+          data: { requiresReview: true, processingError: 'CLASSIFICATION_HANDOFF_EXHAUSTED' } });
+        await tx.whatsAppTextReceipt.update({ where: { id }, data: { classificationCheckAt: null } });
+        return;
+      }
+      const checks = receipt.classificationChecks + 1;
+      if (checks >= 12) {
+        await tx.message.updateMany({ where: { id: message.id, businessId: message.businessId,
+          OR: [{ processed: false }, { processingError: 'ORDER_EFFECT_WAITING' }] },
+          data: { requiresReview: true, processingError: 'CLASSIFICATION_HANDOFF_EXHAUSTED' } });
+        await tx.whatsAppTextReceipt.update({ where: { id }, data: { classificationCheckAt: null, classificationChecks: checks } });
+        return;
+      }
+      try {
+        await enqueue({ businessId: message.businessId, messageId: message.id, waMessageId: receipt.waMessageId }, classifierJobId(receipt));
+      } catch {
+        logger.warn({ receiptId: id }, 'Classifier handoff recovery is waiting for Redis');
+      }
+      await tx.whatsAppTextReceipt.update({ where: { id }, data: {
+        classificationChecks: checks,
+        classificationCheckAt: new Date(now.getTime() + CLASSIFICATION_CHECK_INTERVAL_MS),
+      } });
+    }, TRANSACTION_OPTIONS);
+  }
+  return due.length;
 }
 
 export async function dispatchTextReceipts(
@@ -332,6 +407,7 @@ export function startTextReceiptWorker(): () => Promise<void> {
     inFlight = (async () => {
       const now = new Date();
       await dispatchTextReceipts(enqueue, now, undefined, 'other');
+      await recoverClassificationHandoffs(enqueue, now);
       if (now.getTime() >= nextPruneAt) {
         await expireWaitingReceipts(now);
         await prisma.$executeRaw`

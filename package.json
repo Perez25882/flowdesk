@@ -25,6 +25,7 @@
     "db:studio": "prisma studio --schema prisma/schema.prisma",
     "smoke": "node apps/api/scripts/smoke-test.mjs",
     "smoke:fixture": "node apps/api/scripts/run-smoke.mjs",
+    "release:local": "node apps/api/scripts/release-gateway.mjs",
     "simulate": "pnpm --filter @flowdesk/api exec tsx scripts/simulate-incoming.ts",
     "tunnel": "node apps/api/scripts/tunnel.mjs",
     "whatsapp:setup": "node apps/api/scripts/whatsapp-setup.mjs",

@@ -117,7 +117,9 @@ export default async function billingRoutes(app: FastifyInstance): Promise<void>
         try {
           await acceptPaystackReceipt(rawBuffer, reference, normalized);
         } catch (error: unknown) {
-          logger.error({ reference, errorType: error instanceof Error ? error.name : 'Unknown' }, 'Paystack receipt not durably accepted');
+          const databaseCode = error && typeof error === 'object' && 'code' in error &&
+            typeof error.code === 'string' && /^P\d{4}$/.test(error.code) ? error.code : undefined;
+          logger.error({ reference, databaseCode, errorType: error instanceof Error ? error.name : 'Unknown' }, 'Paystack receipt not durably accepted');
           return reply.status(503).send({ success: false, code: 'PAYSTACK_RECEIPT_UNAVAILABLE' });
         }
         return success(reply, { received: true });

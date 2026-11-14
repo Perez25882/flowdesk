@@ -208,8 +208,9 @@ export async function adjustStock(
 
 export async function findActiveCatalogProducts(
   businessId: string,
+  tx: Prisma.TransactionClient = prisma,
 ): Promise<Array<{ id: string; name: string; aliases: string[]; unit: string; price: number }>> {
-  const products = await prisma.product.findMany({
+  const products = await tx.product.findMany({
     where: {
       businessId,
       active: true,

@@ -43,6 +43,7 @@ describe.skipIf(!databaseUrl || !redisUrl)(
     let queue: ReturnType<typeof createIntentClassificationQueue>;
     let incoming: typeof import('../src/queues/message.queue.js').incomingMessagesQueue;
     let dispatch: typeof import('../src/workers/text-receipt.worker.js').dispatchTextReceipts;
+    let recoverClassification: typeof import('../src/workers/text-receipt.worker.js').recoverClassificationHandoffs;
     let producer: ReturnType<
       typeof import('../src/workers/text-receipt.worker.js').openTextReceiptQueue
     >;
@@ -59,6 +60,7 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       const { default: webhookRoutes } = await import('../src/modules/webhook/webhook.route.js');
       const worker = await import('../src/workers/text-receipt.worker.js');
       dispatch = worker.dispatchTextReceipts;
+      recoverClassification = worker.recoverClassificationHandoffs;
       producer = worker.openTextReceiptQueue();
       redis = new Redis(redisUrl!);
       queue = createIntentClassificationQueue({ connection: redis });
@@ -124,6 +126,26 @@ describe.skipIf(!databaseUrl || !redisUrl)(
         data: { waPhoneNumberId, active, name: 'G1 Fixture', ownerName: 'Fixture' },
       });
     }
+
+    it('recreates an evicted classifier job until PostgreSQL records classification', async () => {
+      const phone = newId();
+      const business = await tenant(phone);
+      const providerId = newId();
+      expect((await signed([change(phone, text(providerId))])).statusCode).toBe(200);
+      await dispatch(producer.enqueue);
+      const handedOff = await receipt(phone, providerId);
+      expect(handedOff.status).toBe('COMPLETED');
+      const job = await queue.getJob(`intent-${providerId}`);
+      expect(job).toBeDefined();
+      await job!.remove();
+      const checkAt = handedOff.classificationCheckAt!;
+      await Promise.all([recoverClassification(producer.enqueue, checkAt), recoverClassification(producer.enqueue, checkAt)]);
+      expect((await queue.getJob(`intent-${providerId}`))?.data).toMatchObject({ businessId: business.id, messageId: handedOff.messageId });
+      await prisma.message.update({ where: { id: handedOff.messageId! }, data: { processed: true } });
+      const rescheduled = await receipt(phone, providerId);
+      await recoverClassification(producer.enqueue, rescheduled.classificationCheckAt!);
+      expect((await receipt(phone, providerId)).classificationCheckAt).toBeNull();
+    });
 
     function receipt(phoneNumberId: string, waMessageId: string) {
       return prisma.whatsAppTextReceipt.findUniqueOrThrow({

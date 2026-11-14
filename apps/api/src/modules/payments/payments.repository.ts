@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { prisma } from '../../config/database.js';
 import { Prisma, type PaymentMethod } from '@prisma/client';
 import type { PaymentConfidence, PaymentDirection } from '@flowdesk/shared';
 import type { CreatePaymentInput, ListPaymentsQueryInput } from './payments.schema.js';
 import { lockCustomerForTotals, recalculateCustomerTotals } from '../customers/customers.repository.js';
 import type { ConfirmPaymentInput } from './payments.schema.js';
-import { NotFoundError, ValidationError } from '../../utils/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
 import { lockPaymentRelationship, requirePaymentActor, type PaymentRelationship } from './payment-relationships.js';
 
@@ -43,9 +44,31 @@ export async function createPayment(
   businessId: string,
   loggedById: string | null,
 ): Promise<PaymentWithCustomer> {
+  return (await writeManualPayment(data, businessId, loggedById)).payment;
+}
+
+export async function writeManualPayment(
+  data: CreatePaymentInput,
+  businessId: string,
+  loggedById: string | null,
+  requestKey?: string,
+): Promise<{ payment: PaymentWithCustomer; created: boolean }> {
   return prisma.$transaction(async (tx) => {
     await requirePaymentActor(tx, businessId, loggedById, 'payments.create');
     if (data.attested) await requirePaymentActor(tx, businessId, loggedById, 'payments.verify');
+    const identity = requestKey && createHash('sha256').update(JSON.stringify([
+      loggedById, data.customerId, data.orderId ?? null, data.amount, data.method, data.direction,
+      data.reference ?? null, data.notes ?? null, data.attested,
+    ])).digest('hex');
+    if (requestKey) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['manual-payment', businessId, requestKey])}, 0))`;
+      const prior = await tx.payment.findUnique({ where: { businessId_manualRequestKey: { businessId, manualRequestKey: requestKey } },
+        select: { id: true, manualRequestHash: true } });
+      if (prior) {
+        if (prior.manualRequestHash !== identity) throw new ConflictError('Payment request key already belongs to another entry');
+        return { payment: await readWrittenPayment(tx, prior.id), created: false };
+      }
+    }
     await lockPaymentRelationship(tx, { ...data, businessId });
     const payment = await tx.payment.create({
       data: {
@@ -58,6 +81,8 @@ export async function createPayment(
         reference: data.reference ?? null,
         notes: data.notes ?? null,
         loggedById,
+        manualRequestKey: requestKey ?? null,
+        manualRequestHash: identity ?? null,
         confidence: data.attested ? 'SELLER_ATTESTED' : 'CLAIMED',
         // The ledger retains the existing owner marker for an attestation.
         // Owner activity records the business and has no staff foreign key.
@@ -80,7 +105,7 @@ export async function createPayment(
       note: `${data.direction === 'OUT' ? 'Refund' : 'Payment'} of GHS ${payment.amount.toFixed(2)} logged`,
     }, tx);
 
-    return readWrittenPayment(tx, payment.id);
+    return { payment: await readWrittenPayment(tx, payment.id), created: true };
   });
 }
 

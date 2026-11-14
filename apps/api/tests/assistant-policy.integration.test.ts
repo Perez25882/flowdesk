@@ -91,7 +91,12 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     fact: { kind: 'product_quote', target, quantity: null } } });
 
   const read = (id: string) => prisma.message.findUniqueOrThrow({ where: { id } });
-  const job = (id: string) => outbound.getJob(`assistant-reply-${id}`);
+  async function durableJob(key: string) {
+    const row = await prisma.whatsAppSend.findFirst({ where: { eventKey: key }, select: { id: true } });
+    if (!row) return undefined;
+    return outbound.getJob(`send-${row.id}`);
+  }
+  const job = (id: string) => durableJob(`assistant-reply-${id}`);
 
   async function noCommitment(fixture: Shop, id: string) {
     expect(await job(id)).toBeUndefined();
@@ -275,14 +280,14 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     expect(await job(valid.messageId)).toBeUndefined();
     const body = (await read(valid.messageId)).aiReplyText!;
     await messages.sendReply(valid.messageId, valid.businessId, { body, source: 'assistant_draft' }, null);
-    expect((await outbound.getJob(`assistant-approved-${valid.messageId}`))?.data.body).toContain('GHS 80.00');
+    await expect.poll(async () => (await durableJob(`assistant-approved-${valid.messageId}`))?.data.body).toContain('GHS 80.00');
     expect((await read(valid.messageId)).aiPolicy).toMatchObject({ state: 'APPROVED', approvedBy: 'owner' });
 
     const stale = await inbound(fixture, 'How much is Rice?');
     await assistant.runAssistant(stale);
     await prisma.product.update({ where: { id: fixture.product.id }, data: { price: 90 } });
     await expect(messages.sendReply(stale.messageId, stale.businessId, { body, source: 'assistant_draft' }, null)).rejects.toThrow('draft evidence changed');
-    expect(await outbound.getJob(`assistant-approved-${stale.messageId}`)).toBeUndefined();
+    expect(await durableJob(`assistant-approved-${stale.messageId}`)).toBeUndefined();
     await messages.dismissDraft(stale.messageId, stale.businessId);
     expect((await read(stale.messageId)).aiPolicy).toMatchObject({ state: 'REJECTED', rejectedBy: 'owner' });
 
@@ -305,7 +310,7 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     const body = (await read(input.messageId)).aiReplyText!;
     await expect(messages.sendReply(input.messageId, fixture.business.id, { body, source: 'assistant_draft' }, rider.id)).rejects.toMatchObject({ statusCode: 403 });
     await expect(messages.dismissDraft(input.messageId, other.business.id)).rejects.toMatchObject({ statusCode: 404 });
-    expect(await outbound.getJob(`assistant-approved-${input.messageId}`)).toBeUndefined();
+    expect(await durableJob(`assistant-approved-${input.messageId}`)).toBeUndefined();
   });
 
   it('creates one checkout for a verified balance and refuses a payment claim as authority', async () => {
@@ -336,7 +341,7 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
       const links = await prisma.paymentRequest.findMany({ where: { businessId: fixture.business.id } });
       expect(links).toHaveLength(1);
       expect(Number(links[0]?.amount)).toBe(60);
-      expect((await outbound.getJob(`assistant-checkout-${input.messageId}`))?.data.body).toContain('60.00');
+      expect((await durableJob(`assistant-checkout-${input.messageId}`))?.data.body).toContain('60.00');
       expect((await read(input.messageId)).aiPolicy).toMatchObject({ state: 'HANDED_OFF', evidence: [`order:${order.id}`, `payment_request:${links[0]?.id}`] });
       expect(fetch).toHaveBeenCalledTimes(1);
       await prisma.order.create({ data: { businessId: fixture.business.id, customerId: fixture.customer.id,
@@ -344,7 +349,7 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
       const ambiguous = await inbound(fixture, 'Please send me a payment link');
       await assistant.runAssistant(ambiguous);
       expect((await read(ambiguous.messageId)).aiPolicy).toMatchObject({ state: 'REVIEW' });
-      expect(await outbound.getJob(`assistant-checkout-${ambiguous.messageId}`)).toBeUndefined();
+      expect(await durableJob(`assistant-checkout-${ambiguous.messageId}`)).toBeUndefined();
       expect(fetch).toHaveBeenCalledTimes(1);
     } finally {
       fetch.mockRestore();
@@ -361,7 +366,7 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     await worker.processIntentClassification(input);
     await noCommitment(fixture, input.messageId);
     expect((await read(input.messageId)).aiPolicy).toMatchObject({ state: 'REVIEW' });
-    expect((await outbound.getJob(`intent-reply-${input.messageId}`))?.data.body).not.toMatch(/confirmed|received|GHS/i);
+    expect((await durableJob(`intent-reply-${input.messageId}`))?.data.body).not.toMatch(/confirmed|received|GHS/i);
     expect(model.generate).toHaveBeenCalledTimes(1);
   });
 
