@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { IntentType } from '@flowdesk/shared';
 import { PrismaClient } from '@prisma/client';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -14,6 +15,11 @@ const upgradeUrl = process.env.G1_03_UPGRADE_DATABASE_URL;
 const secret = 'sk_test_flowdesk_g103_synthetic';
 const fixtureOnly = dbUrl || redisUrl || upgradeUrl ? describe : describe.skip;
 const maxId = '18446744073709551615';
+const metaSecret = 'batch-retail-synthetic-meta-signing-secret';
+const assistant = vi.hoisted(() => ({ generate: vi.fn() }));
+vi.mock('../src/services/intent/assistant-providers/nvidia.js', () => ({
+  NvidiaAssistantProvider: class { name = 'synthetic'; generate = assistant.generate; },
+}));
 
 fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
   let prisma: PrismaClient;
@@ -32,6 +38,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
   const responses = new Map<string, { body: string; status: number; delayMs?: number }>();
   const verificationCalls = new Map<string, number>();
   const initializationCalls: string[] = [];
+  const metaCalls = new Map<string, string>();
   let failInitialization = false;
 
   beforeAll(async () => {
@@ -45,6 +52,10 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     process.env.REDIS_URL = redisUrl!;
     process.env.PAYSTACK_SECRET_KEY = secret;
     process.env.PAYSTACK_PUBLIC_KEY = 'pk_test_flowdesk_g103_synthetic';
+    process.env.META_WEBHOOK_SECRET = metaSecret;
+    process.env.AI_PROVIDER = 'nvidia';
+    process.env.NVIDIA_API_KEY = 'synthetic-local-fixture';
+    process.env.HAIKU_FALLBACK_ENABLED = 'false';
     ({ prisma } = await import('../src/config/database.js'));
     await prisma.$connect();
     ({ redis } = await import('../src/config/redis.js'));
@@ -87,6 +98,11 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     vi.stubGlobal('fetch', async (input: string | URL | Request, options?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : input);
       if (url.hostname === 'api.paystack.co') return originalFetch(new URL(url.pathname, origin), options);
+      if (url.hostname === 'graph.facebook.com' && url.pathname.endsWith('/messages')) {
+        const id = `wamid.${randomUUID()}`;
+        metaCalls.set(JSON.parse(String(options?.body)).biz_opaque_callback_data, id);
+        return Response.json({ messages: [{ id }] });
+      }
       return originalFetch(input, options);
     });
 
@@ -230,33 +246,55 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
   it('takes a priced inbound order through hosted settlement, authorized delivery and a durable customer notification', async () => {
     const fixture = await shop(true);
     const phone = randomUUID();
-    const webhookSecret = 'g1-local-fixture-webhook-signature-secret';
-    await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF', waPhoneNumberId: phone,
+    await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'GROUNDED_AUTO', waPhoneNumberId: phone,
       waAccessToken: 'synthetic-batch-token' } });
-    await prisma.product.create({ data: { businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10 } });
+    const product = await prisma.product.create({ data: { businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10 } });
     const body = 'I want to buy 1 bag of Rice';
     const providerEventId = `wamid.${randomUUID()}`;
     const whatsapp = Fastify();
     await whatsapp.register(import('fastify-raw-body'), { field: 'rawBody', global: false, encoding: false, runFirst: true });
     await whatsapp.register((await import('../src/modules/webhook/webhook.route.js')).default);
-    try {
+    const { processIntentClassification, intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
+    const outboundWorker = await import('../src/workers/outbound.worker.js');
+    const { dispatchTextReceipts } = await import('../src/workers/text-receipt.worker.js');
+    await intentClassifierWorker.close();
+    async function admitText(text: string, id: string) {
       const data = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
-        metadata: { phone_number_id: phone }, messages: [{ id: providerEventId, from: fixture.customer.waNumber,
-          type: 'text', text: { body }, timestamp: String(Math.floor(Date.now() / 1000)) }],
+        metadata: { phone_number_id: phone }, messages: [{ id, from: fixture.customer.waNumber,
+          type: 'text', text: { body: text }, timestamp: String(Math.floor(Date.now() / 1000)) }],
       } }] }] });
       const reply = await whatsapp.inject({ method: 'POST', url: '/webhook', payload: data, headers: {
-        'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + createHmac('sha256', webhookSecret).update(data).digest('hex'),
+        'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + createHmac('sha256', metaSecret).update(data).digest('hex'),
       } });
       expect(reply.statusCode, reply.body).toBe(200);
-      const { dispatchTextReceipts } = await import('../src/workers/text-receipt.worker.js');
-      const { processIntentClassification, intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
-      await intentClassifierWorker.close();
       const jobs: Array<Parameters<typeof processIntentClassification>[0]> = [];
       await dispatchTextReceipts(async (job) => { jobs.push(job); }, new Date(), fixture.tenant.id);
       expect(jobs).toHaveLength(1);
       await processIntentClassification(jobs[0]!);
+      return jobs[0]!.messageId;
+    }
+    try {
+      assistant.generate.mockResolvedValue({ ok: true, generation: {
+        model: 'synthetic', inputTokens: 1, outputTokens: 1, text: JSON.stringify({
+          intent: IntentType.INQUIRY, confidence: 0.99, language: 'gh_en', sentiment: 'neutral',
+          entities: { products: [], orderReferences: [], deliveryArea: null },
+          answer: { canAnswer: true, text: null, groundedOn: [], fact: { kind: 'product_quote', target: product.id, quantity: null } },
+          clarification: { needed: false, missing: [] }, order: { isOrder: false, complete: false },
+          escalate: { needed: false, reason: null }, priceOffer: null, booking: null,
+        }),
+      } });
+      const inquiry = await admitText('How much is Rice?', `wamid.${randomUUID()}`);
+      const quote = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: {
+        businessId: fixture.tenant.id, eventKey: `assistant-reply-${inquiry}`,
+      } } });
+      expect(quote.payload).toMatchObject({ body: expect.stringContaining('GHS 25.00'), customerId: fixture.customer.id });
+      await outboundWorker.processDurableOutbound(quote.id);
+      expect(metaCalls.get(quote.id)).toBeDefined();
+      await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF' } });
+      await admitText(body, providerEventId);
     } finally {
       await whatsapp.close();
+      await outboundWorker.outboundWorker.close();
     }
     const source = await prisma.message.findUniqueOrThrow({ where: { waMessageId: providerEventId } });
     expect(source).toMatchObject({ businessId: fixture.tenant.id, customerId: fixture.customer.id, processed: true });
@@ -288,9 +326,13 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
       await recoverFulfillment();
       if (await prisma.whatsAppSend.findFirst({ where: { businessId: fixture.tenant.id, eventKey: `order-status-${order.id}-FULFILLED` } })) break;
     }
-    expect(await prisma.whatsAppSend.findFirst({ where: {
+    const notification = await prisma.whatsAppSend.findFirstOrThrow({ where: {
       businessId: fixture.tenant.id, eventKey: `order-status-${order.id}-FULFILLED`,
-    } })).toMatchObject({ payload: expect.objectContaining({ customerId: fixture.customer.id, relatedOrderId: order.id }) });
+    } });
+    expect(notification).toMatchObject({ payload: expect.objectContaining({ customerId: fixture.customer.id, relatedOrderId: order.id }) });
+    await outboundWorker.processDurableOutbound(notification.id);
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }))
+      .toMatchObject({ state: 'PROVIDER_ACCEPTED', providerMessageId: metaCalls.get(notification.id) });
     expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ status: 'FULFILLED', customerId: fixture.customer.id });
   });
 
