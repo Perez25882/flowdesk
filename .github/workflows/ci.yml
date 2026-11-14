@@ -110,8 +110,8 @@ jobs:
       - name: Apply migrations
         run: pnpm db:migrate
 
-      - name: Build API and workspace dependencies
-        run: pnpm exec turbo run build --filter=@flowdesk/api
+      - name: Build API, SPA, and workspace dependencies
+        run: pnpm build
 
       - name: End-to-end suite
         run: pnpm smoke:fixture

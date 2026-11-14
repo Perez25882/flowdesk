@@ -23,15 +23,20 @@ export async function recoverFulfillment(now = new Date()): Promise<void> {
       data: { attempts: { increment: 1 }, nextAttemptAt: claim },
     })).count) return;
     let reason: string | null = null;
+    let suppressed = false;
     try {
       if (task.kind === 'DELETE_PROOF') {
         if (!isOrderProofKey(task.subject, task.businessId, task.orderId)) throw new Error('Invalid proof identity');
         const live = await prisma.shipment.findFirst({ where: { proofKey: task.subject }, select: { id: true } });
         if (!live) await deleteProofObject(task.subject);
       } else if (task.kind === 'NOTIFY' && Object.hasOwn(OrderStatus, task.subject)) {
-        await notifyOrderStatus(task.orderId, task.subject as OrderStatus, {
+        const decision = await notifyOrderStatus(task.orderId, task.subject as OrderStatus, {
           businessId: task.businessId, key: `order-status-${task.orderId}-${task.subject}`,
         });
+        if (!decision?.allowed) {
+          suppressed = true;
+          reason = decision?.reason ?? 'NO_STATUS_TEMPLATE';
+        }
       } else {
         reason = 'INVALID_TASK_IDENTITY';
       }
@@ -40,8 +45,9 @@ export async function recoverFulfillment(now = new Date()): Promise<void> {
     }
     const attempts = task.attempts + 1;
     await prisma.fulfillmentTask.updateMany({ where: { id: task.id, state: 'PENDING', attempts, nextAttemptAt: claim }, data: {
-      state: reason === null ? 'DONE' : attempts >= 12 ? 'FAILED' : 'PENDING', reason,
-      nextAttemptAt: reason !== null && attempts < 12 ? new Date(Date.now() + Math.min(300_000, 5_000 * 2 ** task.attempts)) : null,
+      state: suppressed ? 'SUPPRESSED' : reason === null ? 'DONE' : attempts >= 12 ? 'FAILED' : 'PENDING', reason,
+      nextAttemptAt: !suppressed && reason !== null && attempts < 12
+        ? new Date(Date.now() + Math.min(300_000, 5_000 * 2 ** task.attempts)) : null,
     } });
   }));
 }

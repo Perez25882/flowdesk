@@ -14,25 +14,17 @@ export async function acceptPaystackReceipt(
 ): Promise<void> {
   const eventKey = createHash('sha256').update(raw).digest('hex');
   const callbackTransactionId = data.id === undefined ? null : transactionIdOf(data.id) ?? '';
-  try {
-    await prisma.$transaction(async (tx) => {
-      const request = await tx.paymentRequest.findUnique({ where: { reference }, select: { id: true, businessId: true } });
-      const initialization = request ? null : await tx.paystackInitialization.findUnique({
-        where: { reference }, select: { businessId: true },
-      });
-      await tx.paystackReceipt.create({
-        data: {
-          eventKey, reference, callbackTransactionId, requestId: request?.id ?? null,
-          businessId: request?.businessId ?? initialization?.businessId ?? null,
-        },
-      });
-    });
-  } catch (error: unknown) {
-    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002' ||
-        !(await prisma.paystackReceipt.findUnique({ where: { eventKey }, select: { id: true } }))) {
-      throw error;
-    }
-  }
+  // A single autocommitted statement takes one snapshot for owner binding and
+  // receipt admission. Concurrent exact duplicates wait for the unique index
+  // winner to commit without holding an interactive transaction across queries.
+  await prisma.$executeRaw`
+    INSERT INTO paystack_receipts (id, "eventKey", reference, "callbackTransactionId", "requestId", "businessId", "updatedAt")
+    VALUES (${randomUUID()}, ${eventKey}, ${reference}, ${callbackTransactionId},
+      (SELECT id FROM payment_requests WHERE reference = ${reference}),
+      COALESCE((SELECT "businessId" FROM payment_requests WHERE reference = ${reference}),
+        (SELECT "businessId" FROM paystack_initializations WHERE reference = ${reference})), now())
+    ON CONFLICT ("eventKey") DO NOTHING
+  `;
 }
 
 export async function claimPaystackReceipt(businessId?: string): Promise<PaystackReceipt | null> {

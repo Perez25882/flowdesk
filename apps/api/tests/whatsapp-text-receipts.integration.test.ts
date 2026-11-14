@@ -143,7 +143,12 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       expect((await queue.getJob(`intent-${providerId}`))?.data).toMatchObject({ businessId: business.id, messageId: handedOff.messageId });
       await prisma.message.update({ where: { id: handedOff.messageId! }, data: { processed: true } });
       const rescheduled = await receipt(phone, providerId);
-      await recoverClassification(producer.enqueue, rescheduled.classificationCheckAt!);
+      expect(rescheduled.classificationChecks).toBe(1);
+      const due = rescheduled.classificationCheckAt!;
+      // Drain the bounded global scan just as the repeated production poll does.
+      for (let poll = 0; poll < 8 && (await receipt(phone, providerId)).classificationCheckAt; poll++) {
+        if (!await recoverClassification(producer.enqueue, due)) break;
+      }
       expect((await receipt(phone, providerId)).classificationCheckAt).toBeNull();
     });
 

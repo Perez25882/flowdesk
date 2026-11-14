@@ -21,11 +21,11 @@ await producer.ready();
 
 try {
   await dispatchTextReceipts(async (job, jobId) => {
-  if (job.waMessageId !== target) return producer.enqueue(job, jobId);
-  if (phase === 'after-enqueue') await producer.enqueue(job, jobId);
-  process.send!(phase);
-  // The parent kills this process while the real Postgres handoff transaction is open.
-  await new Promise(() => {});
+    if (job.waMessageId !== target) return producer.enqueue(job, jobId);
+    if (phase === 'after-enqueue') await producer.enqueue(job, jobId);
+    process.send!(phase);
+    // The parent kills this process while the real Postgres handoff transaction is open.
+    await new Promise(() => {});
   });
 } finally {
   await producer.close();

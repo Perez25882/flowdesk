@@ -385,7 +385,7 @@ async function deliver(
   key: TemplateKey,
   variables: Record<string, string>,
   options: { idempotencyKey?: string; requireQueueHandoff?: boolean } = {},
-): Promise<void> {
+): Promise<DeliveryDecision> {
   const values = {
     name: getCustomerFirstName(context.customerName) || 'there',
     business: context.businessName,
@@ -395,7 +395,7 @@ async function deliver(
   const text = renderTemplate(context.templateConfig, key, values);
   const fallback = resolveTemplateFallback(key, values);
 
-  await deliverText(context, text, {
+  return deliverText(context, text, {
     templateKey: key,
     ...(fallback ? { templateFallback: fallback } : {}),
     ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
@@ -539,7 +539,7 @@ function toContext(row: OrderNotificationRow): NotificationContext {
  * lifecycle transition so the customer is kept informed without the owner
  * typing anything.
  */
-export async function notifyOrderStatus(orderId: string, status: OrderStatus, reliable?: { businessId: string; key: string }): Promise<void> {
+export async function notifyOrderStatus(orderId: string, status: OrderStatus, reliable?: { businessId: string; key: string }): Promise<DeliveryDecision | undefined> {
   const key = getTemplateKeyForOrderStatus(status);
   if (!key) return;
 
@@ -554,7 +554,7 @@ export async function notifyOrderStatus(orderId: string, status: OrderStatus, re
     return;
   }
 
-  await deliver(toContext(row), key, {
+  return deliver(toContext(row), key, {
     ref: row.referenceNumber,
     reason: row.cancelReason ?? '',
     status: humanizeStatus(status),

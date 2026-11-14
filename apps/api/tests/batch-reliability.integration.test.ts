@@ -1,4 +1,7 @@
+import { fork } from 'node:child_process';
 import { createHmac, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { PrismaClient } from '@prisma/client';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -194,6 +197,34 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     });
   });
 
+  it('reconciles signed delivery after a real send process dies in the provider call', async () => {
+    const { business, customer, phone } = await shop();
+    const sendId = (await queue.persistOutboundSend(prisma, { businessId: business.id, customerId: customer.id,
+      to: customer.waNumber, body: 'Crash recovery fixture' }, randomUUID()))!;
+    const path = fileURLToPath(new URL('./fixtures/batch-outbound-crash.ts', import.meta.url));
+    const child = fork(path, [sendId], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    const exited = once(child, 'exit');
+    try {
+      const signal = AbortSignal.timeout(15_000);
+      await Promise.race([
+        once(child, 'message', { signal }).then(([message]) => expect(message).toBe('provider-request')),
+        exited.then(() => { throw new Error('Send process exited before reaching the synthetic provider'); }),
+      ]);
+      expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'SENDING', attempts: 1 });
+    } finally {
+      child.kill('SIGKILL');
+      await exited;
+    }
+    await prisma.whatsAppSend.update({ where: { id: sendId }, data: { leaseUntil: new Date(0) } });
+    await outbound.recoverDurableOutbound();
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'REVIEW_REQUIRED' });
+    const providerId = `wamid.${randomUUID()}`;
+    await callback(phone, providerId, sendId, customer.waNumber, 'delivered');
+    await outbound.recoverDurableOutbound();
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({ state: 'DELIVERED', attempts: 1 });
+    expect(await prisma.message.count({ where: { businessId: business.id, waMessageId: providerId } })).toBe(1);
+  });
+
   it('rejects a foreign recipient and an automation after owner takeover before provider I/O', async () => {
     const { business, customer } = await shop();
     const foreign = await shop();
@@ -209,6 +240,21 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     expect(fetchMock).not.toHaveBeenCalled();
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: bad } })).toMatchObject({ state: 'FAILED', reason: 'RECIPIENT_NOT_AUTHORIZED' });
     expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: interrupted } })).toMatchObject({ state: 'FAILED', reason: 'OWNER_TAKEOVER' });
+  });
+
+  it('records permanent provider rejection and refuses an intent pinned to a superseded sender', async () => {
+    const { business, customer } = await shop();
+    const data = { businessId: business.id, customerId: customer.id, to: customer.waNumber, body: 'Synthetic provider rejection' };
+    const rejected = (await queue.persistOutboundSend(prisma, data, randomUUID()))!;
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(Response.json({ error: { code: 190, message: 'synthetic token rejection' } }, { status: 401 }));
+    await outbound.processDurableOutbound(rejected);
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: rejected } })).toMatchObject({ state: 'FAILED', attempts: 1 });
+    const moved = (await queue.persistOutboundSend(prisma, data, randomUUID()))!;
+    await prisma.business.update({ where: { id: business.id }, data: { waPhoneNumberId: randomUUID() } });
+    await outbound.processDurableOutbound(moved);
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: moved } })).toMatchObject({ state: 'FAILED', reason: 'CONNECTION_CHANGED', attempts: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('links a paid order to duplicate-safe dispatch and a durable completion notification', async () => {

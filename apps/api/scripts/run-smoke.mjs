@@ -2,11 +2,13 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { releaseGateway } from './release-gateway.mjs';
 import { requireLoopbackUrl, smokeConfig } from './smoke-config.mjs';
 
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let child;
+let gateway;
 try {
   if (existsSync(here('../../../.env')) || existsSync(here('../.env'))) {
     throw new Error('Run the synthetic fixture from a checkout without application .env files');
@@ -51,7 +53,23 @@ try {
     await wait(300);
   }
   if (!healthy) throw new Error('Synthetic API did not reach healthy state');
-  const runner = spawn(process.execPath, [here('smoke-test.mjs')], { env: childEnv, stdio: 'inherit', windowsHide: true });
+  gateway = releaseGateway(new URL(apiOrigin), here('../../web/dist'));
+  gateway.listen(0, '127.0.0.1');
+  await once(gateway, 'listening');
+  const gatewayOrigin = `http://127.0.0.1:${gateway.address().port}`;
+  const [deepLink, unknownApi] = await Promise.all(['/orders/example', '/api/v1/fixture-unknown'].map((path) =>
+    fetch(gatewayOrigin + path, { signal: AbortSignal.timeout(5_000), redirect: 'error' })));
+  if (!deepLink.ok || !deepLink.headers.get('content-type')?.startsWith('text/html') || !(await deepLink.text()).includes('<div id="root">')) {
+    throw new Error('The release gateway did not serve the compiled SPA on a deep link');
+  }
+  if (unknownApi.status !== 404 || !unknownApi.headers.get('content-type')?.startsWith('application/json')) {
+    throw new Error('The release gateway did not preserve the API JSON 404');
+  }
+  await unknownApi.json();
+  console.log('Release gateway serves the compiled SPA deep link and preserves API JSON 404');
+  const runner = spawn(process.execPath, [here('smoke-test.mjs')], {
+    env: { ...childEnv, API_URL: gatewayOrigin }, stdio: 'inherit', windowsHide: true,
+  });
   const [code] = await once(runner, 'exit');
   process.exitCode = code ?? 1;
   child.kill('SIGTERM');
@@ -60,5 +78,7 @@ try {
   console.error(`Smoke fixture failed: ${error.message}`);
   process.exitCode = 1;
 } finally {
+  gateway?.closeAllConnections();
+  gateway?.close();
   if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
 }

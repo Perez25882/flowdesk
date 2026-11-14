@@ -40,6 +40,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     }
     const fixtureDatabase = new URL(dbUrl!);
     if (!fixtureDatabase.searchParams.has('connection_limit')) fixtureDatabase.searchParams.set('connection_limit', '8');
+    fixtureDatabase.searchParams.set('pool_timeout', '2');
     process.env.DATABASE_URL = fixtureDatabase.toString();
     process.env.REDIS_URL = redisUrl!;
     process.env.PAYSTACK_SECRET_KEY = secret;
@@ -226,6 +227,73 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     expect(await prisma.paystackSettlement.findUnique({ where: { transactionId: maxId } })).toMatchObject({ notificationState: 'SUPPRESSED' });
   });
 
+  it('takes a priced inbound order through hosted settlement, authorized delivery and a durable customer notification', async () => {
+    const fixture = await shop(true);
+    const phone = randomUUID();
+    const webhookSecret = 'g1-local-fixture-webhook-signature-secret';
+    await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF', waPhoneNumberId: phone,
+      waAccessToken: 'synthetic-batch-token' } });
+    await prisma.product.create({ data: { businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10 } });
+    const body = 'I want to buy 1 bag of Rice';
+    const providerEventId = `wamid.${randomUUID()}`;
+    const whatsapp = Fastify();
+    await whatsapp.register(import('fastify-raw-body'), { field: 'rawBody', global: false, encoding: false, runFirst: true });
+    await whatsapp.register((await import('../src/modules/webhook/webhook.route.js')).default);
+    try {
+      const data = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
+        metadata: { phone_number_id: phone }, messages: [{ id: providerEventId, from: fixture.customer.waNumber,
+          type: 'text', text: { body }, timestamp: String(Math.floor(Date.now() / 1000)) }],
+      } }] }] });
+      const reply = await whatsapp.inject({ method: 'POST', url: '/webhook', payload: data, headers: {
+        'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + createHmac('sha256', webhookSecret).update(data).digest('hex'),
+      } });
+      expect(reply.statusCode, reply.body).toBe(200);
+      const { dispatchTextReceipts } = await import('../src/workers/text-receipt.worker.js');
+      const { processIntentClassification, intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
+      await intentClassifierWorker.close();
+      const jobs: Array<Parameters<typeof processIntentClassification>[0]> = [];
+      await dispatchTextReceipts(async (job) => { jobs.push(job); }, new Date(), fixture.tenant.id);
+      expect(jobs).toHaveLength(1);
+      await processIntentClassification(jobs[0]!);
+    } finally {
+      await whatsapp.close();
+    }
+    const source = await prisma.message.findUniqueOrThrow({ where: { waMessageId: providerEventId } });
+    expect(source).toMatchObject({ businessId: fixture.tenant.id, customerId: fixture.customer.id, processed: true });
+    const inbound = await prisma.whatsAppTextReceipt.findUniqueOrThrow({ where: {
+      phoneNumberId_waMessageId: { phoneNumberId: phone, waMessageId: providerEventId },
+    } });
+    expect(inbound).toMatchObject({ status: 'COMPLETED', messageId: source.id });
+    const orders = await import('../src/modules/orders/orders.service.js');
+    const order = await prisma.order.findUniqueOrThrow({ where: { inboundSourceMessageId: source.id } });
+    expect(Number(order.totalAmount)).toBe(25);
+    await orders.confirmOrder(order.id, fixture.tenant.id, null);
+    const hosted = await links.createPaymentLink(fixture.tenant.id, { customerId: fixture.customer.id,
+      orderId: order.id, amount: 25, send: false }, null);
+    const request = await prisma.paymentRequest.findUniqueOrThrow({ where: { reference: hosted.reference } });
+    const sale = { ...fixture, order, request };
+    verify(sale);
+    await accept(sale);
+    await drain(fixture.tenant.id);
+    const payment = await prisma.payment.findFirstOrThrow({ where: { businessId: fixture.tenant.id, orderId: order.id } });
+    expect(payment).toMatchObject({ confidence: 'GATEWAY_CONFIRMED', customerId: fixture.customer.id });
+    expect(Number(payment.amount)).toBe(25);
+    await orders.markProcessing(order.id, fixture.tenant.id, null);
+    const actor = { businessId: fixture.tenant.id, staffId: null } as const;
+    const { dispatchOrder, markShipmentDelivered } = await import('../src/modules/shipments/shipments.service.js');
+    await dispatchOrder(order.id, actor, { courier: 'Synthetic carrier' });
+    expect((await markShipmentDelivered(order.id, actor)).deliveredAt).toBeInstanceOf(Date);
+    const { recoverFulfillment } = await import('../src/workers/fulfillment-recovery.js');
+    for (let round = 0; round < 5; round++) {
+      await recoverFulfillment();
+      if (await prisma.whatsAppSend.findFirst({ where: { businessId: fixture.tenant.id, eventKey: `order-status-${order.id}-FULFILLED` } })) break;
+    }
+    expect(await prisma.whatsAppSend.findFirst({ where: {
+      businessId: fixture.tenant.id, eventKey: `order-status-${order.id}-FULFILLED`,
+    } })).toMatchObject({ payload: expect.objectContaining({ customerId: fixture.customer.id, relatedOrderId: order.id }) });
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ status: 'FULFILLED', customerId: fixture.customer.id });
+  });
+
   it('rejects an invalid signature and ignores unsupported events without financial effects', async () => {
     const fixture = await shop();
     expect((await signed(payload(fixture.request.reference, fixture.transactionId), false)).statusCode).toBe(401);
@@ -277,10 +345,17 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
   it('deduplicates simultaneous identical deliveries and distinct events in competing workers', async () => {
     const fixture = await shop();
     verify(fixture);
-    await Promise.all([
-      ...Array.from({ length: 8 }, () => accept(fixture)),
-      ...Array.from({ length: 4 }, (_, i) => accept(fixture, i + 1)),
-    ]);
+    const { logger } = await import('../src/config/logger.js');
+    const log = vi.spyOn(logger, 'error');
+    try {
+      const replies = await Promise.all([0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4].map((nonce) =>
+        signed(payload(fixture.request.reference, fixture.transactionId, nonce))));
+      const admissionCodes = log.mock.calls.flatMap(([details]) =>
+        details && typeof details === 'object' && 'databaseCode' in details ? [details.databaseCode] : []);
+      expect(replies.map((reply) => reply.statusCode), JSON.stringify({ admissionCodes })).toEqual(Array(12).fill(200));
+    } finally {
+      log.mockRestore();
+    }
     expect(await prisma.paystackReceipt.count({ where: { reference: fixture.request.reference } })).toBe(5);
     await Promise.all(Array.from({ length: 5 }, () => drain(fixture.tenant.id)));
     expect(await prisma.paystackReceipt.count({ where: { reference: fixture.request.reference, state: 'SETTLED' } })).toBe(5);
@@ -298,8 +373,8 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     const releaseLock = new Promise<void>((resolve) => { release = resolve; });
     const limit = Number(new URL(process.env.DATABASE_URL!).searchParams.get('connection_limit'));
     if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error('Set a bounded fixture connection_limit');
-    // Saturate the same Prisma pool used by the webhook and preserve the
-    // unmodified interactive transaction acquisition deadline.
+    // Saturate the same Prisma pool used by the webhook. The fixture sets
+    // a short statement acquisition timeout so the 503 is deterministic.
     let occupied = 0;
     const held = Array.from({ length: limit }, () => prisma.$transaction(async () => {
       if (++occupied === limit) ready();
@@ -312,7 +387,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
       release();
       await holding;
       expect(first.statusCode).toBe(503);
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({ databaseCode: 'P2028' }), 'Paystack receipt not durably accepted');
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ databaseCode: 'P2024' }), 'Paystack receipt not durably accepted');
       expect(await prisma.paystackReceipt.count({ where: { reference: fixture.request.reference } })).toBe(0);
       await accept(fixture);
       await drain(fixture.tenant.id);
