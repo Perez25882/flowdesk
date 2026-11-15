@@ -221,7 +221,7 @@ fixtureOnly('Batch 3 commerce on PostgreSQL and BullMQ', () => {
       await delivery('commerce-quote-' + quote.id);
       await prisma.$executeRawUnsafe('CREATE SEQUENCE commerce_test_invoice_failure_seq');
       await prisma.$executeRawUnsafe(`CREATE FUNCTION commerce_test_invoice_failure() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN PERFORM nextval('commerce_test_invoice_failure_seq'); RAISE EXCEPTION 'synthetic invoice write failure'; END $$`);
+        BEGIN PERFORM nextval('commerce_test_invoice_failure_seq'); RAISE EXCEPTION 'synthetic invoice write failure'; END; $$`);
       await prisma.$executeRawUnsafe(`CREATE TRIGGER commerce_test_invoice_failure BEFORE INSERT ON commerce_invoices
         FOR EACH ROW EXECUTE FUNCTION commerce_test_invoice_failure()`);
       try {
