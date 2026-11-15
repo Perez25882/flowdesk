@@ -23,3 +23,7 @@ Parent `0f792ae67341bed49d655115aab0f0c378b875e0` matches the fetched Batch 2 br
 2. Invoices and payment obligations. Enforce current ledger balance in G1 checkout. Observe verified credits before releasing preparation.
 3. Fulfillment and care. Use scoped staff actions, physical evidence, support lifecycle, and consent.
 4. Owner commerce controls and signed end-to-end verification. Run the full prior regression and independent fresh fixtures before assigning a gate result.
+
+## Connected implementation checkpoint
+
+The current branch has version 3 quote, invoice, fulfillment, support and consent paths. The focused synthetic retail and custom pickup run and last-unit stock contention passed. Cancellation, repricing, stale roles and seeded Batch 2 approval migration are in the final regression candidate. The browser fixture uses the actual production UI and Fastify API with synthetic settlement data. See the [acceptance report](report.md) for gates and source details.

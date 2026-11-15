@@ -30,6 +30,10 @@ const EMPTY_FORM = {
   stockQuantity: '',
   reorderThreshold: '',
   aliases: '',
+  sku: '',
+  commerceMode: 'TRACKED' as NonNullable<Product['commerceMode']>,
+  variantOfId: '',
+  variantLabel: '',
 };
 
 /**
@@ -77,13 +81,16 @@ export default function ProductsPage(): React.JSX.Element {
         .split(',')
         .map((a) => a.trim())
         .filter(Boolean),
+      ...(form.sku.trim() ? { sku: form.sku.trim() } : {}),
       ...pricingToPayload(pricing),
     };
 
     if (editingId) {
       updateProduct.mutate({ id: editingId, data }, { onSuccess: closeForm });
     } else {
-      createProduct.mutate(data, { onSuccess: closeForm });
+      createProduct.mutate({ ...data, commerceMode: form.commerceMode,
+        ...(form.variantOfId ? { variantOfId: form.variantOfId, variantLabel: form.variantLabel.trim() } : {}),
+      }, { onSuccess: closeForm });
     }
   }
 
@@ -95,6 +102,10 @@ export default function ProductsPage(): React.JSX.Element {
       stockQuantity: String(product.stockQuantity),
       reorderThreshold: String(product.reorderThreshold),
       aliases: product.aliases.join(', '),
+      sku: product.sku ?? '',
+      commerceMode: product.commerceMode ?? 'TRACKED',
+      variantOfId: product.variantOfId ?? '',
+      variantLabel: product.variantLabel ?? '',
     });
     setPricing({
       floorPrice: product.floorPrice === null || product.floorPrice === undefined
@@ -190,6 +201,36 @@ export default function ProductsPage(): React.JSX.Element {
               </label>
 
               <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-text-primary">SKU for WhatsApp quotes</span>
+                <input className="fd-input fd-input-compact h-11 py-0 sm:h-10" value={form.sku}
+                  onChange={(event) => setForm({ ...form, sku: event.target.value })} />
+              </label>
+
+              {!editingId && <>
+                <label className="flex flex-col gap-1.5 text-sm font-medium">Item type
+                  <select className="fd-input fd-input-compact h-11 py-0 sm:h-10" value={form.commerceMode}
+                    onChange={(event) => setForm({ ...form, commerceMode: event.target.value as typeof form.commerceMode,
+                      ...(event.target.value !== 'TRACKED' ? { stockQuantity: '', reorderThreshold: '' } : {}) })}>
+                    <option value="TRACKED">Stocked product</option>
+                    <option value="MADE_TO_ORDER">Made to order</option>
+                    <option value="SERVICE">Service sold as an item</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1.5 text-sm font-medium">Variant of
+                  <select className="fd-input fd-input-compact h-11 py-0 sm:h-10" value={form.variantOfId}
+                    onChange={(event) => setForm({ ...form, variantOfId: event.target.value })}>
+                    <option value="">None</option>
+                    {products?.filter((item) => !item.variantOfId && item.active).map((item) =>
+                      <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </select>
+                </label>
+                {form.variantOfId && <label className="flex flex-col gap-1.5 text-sm font-medium">Variant label
+                  <input className="fd-input fd-input-compact h-11 py-0 sm:h-10" value={form.variantLabel}
+                    onChange={(event) => setForm({ ...form, variantLabel: event.target.value })} />
+                </label>}
+              </>}
+
+              <label className="flex flex-col gap-1.5">
                 <span className="text-sm font-medium text-text-primary">Price, in cedis</span>
                 <input
                   type="number"
@@ -210,6 +251,7 @@ export default function ProductsPage(): React.JSX.Element {
                   inputMode="numeric"
                   min={0}
                   value={form.stockQuantity}
+                  disabled={form.commerceMode !== 'TRACKED'}
                   onChange={(e) => setForm({ ...form, stockQuantity: e.target.value })}
                   placeholder="40"
                   className="fd-input fd-input-compact h-11 py-0 sm:h-10"
@@ -223,6 +265,7 @@ export default function ProductsPage(): React.JSX.Element {
                   inputMode="numeric"
                   min={0}
                   value={form.reorderThreshold}
+                  disabled={form.commerceMode !== 'TRACKED'}
                   onChange={(e) => setForm({ ...form, reorderThreshold: e.target.value })}
                   placeholder="8"
                   className="fd-input fd-input-compact h-11 py-0 sm:h-10"

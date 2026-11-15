@@ -1,8 +1,12 @@
 import type { Prisma, Workflow, WorkflowSettings } from '@prisma/client';
 import { logger } from '../../config/logger.js';
+import { prisma } from '../../config/database.js';
 import { day, minute, pinnedDefinition, presets, type BusinessEvent } from './workflow.contract.js';
 import { runDueWorkflow, transition } from './workflow.store.js';
 import { advanceSupport, supportRequest } from './workflow.support.js';
+import { observeCommerceCommands } from '../commerce/commerce.workflow.js';
+import { releasePreparation } from '../commerce/commerce.fulfillment.js';
+import { invoiceAmounts } from '../commerce/commerce.invoices.js';
 
 type Transaction = Prisma.TransactionClient;
 type Facts = Prisma.InputJsonObject;
@@ -50,14 +54,18 @@ async function observeSend(tx: Transaction, row: Workflow, eventKey: string, now
 
 async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now: Date): Promise<BusinessEvent | null> {
   const scope = { businessId: row.businessId, customerId: row.customerId };
-  const order = await tx.order.findFirst({ where: { id: orderId, inboundSourceMessageId: row.actionSourceId ?? row.sourceId, ...scope, deletedAt: null },
-    include: { shipment: { select: { id: true, businessId: true, dispatchedAt: true, deliveredAt: true } } } });
+  const sourceId = row.actionSourceId ?? row.sourceId;
+  const order = await tx.order.findFirst({ where: { id: orderId, ...scope, deletedAt: null,
+    OR: [{ inboundSourceMessageId: sourceId }, { commerceQuote: { sourceId } }] },
+    include: { shipment: { select: { id: true, businessId: true, dispatchedAt: true, deliveredAt: true } },
+      commerceQuote: { select: { id: true, deliveryMode: true } }, commerceInvoice: { include: { preparation: true } } } });
   if (!order) return review(row, 'ORDER_EVIDENCE_UNAVAILABLE');
   if (order.status === 'CANCELLED') {
     return next('CANCELLED', 'order:cancelled', 'CANCELLED', 'SALES', 'ORDER_CANCELLED', { orderId });
   }
   if (!row.orderId) return {
-    ...next('ORDER_LINKED', 'order:' + orderId, 'WAITING_STAFF', 'SALES', 'ORDER_RECORDED', { orderId }),
+    ...next('ORDER_LINKED', 'order:' + orderId, 'WAITING_STAFF', 'SALES', 'ORDER_RECORDED', { orderId,
+      ...(order.commerceInvoice ? { invoiceId: order.commerceInvoice.id, quoteId: order.commerceQuote?.id ?? null } : {}) }),
     links: { orderId }, deadlineAt: new Date(+now + 7 * day),
   };
   if (!order.totalAmount.gt(0)) return review(row, 'PAYABLE_TOTAL_UNAVAILABLE');
@@ -70,11 +78,15 @@ async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now
     orderBy: { id: 'asc' },
     select: { id: true, requestId: true, paymentId: true },
   });
-  const paid = settlement && order.amountPaid.gte(order.totalAmount);
+  const paid = settlement && (order.commerceInvoice
+    ? (await invoiceAmounts(tx, order.commerceInvoice)).verified.gte(order.commerceInvoice.releaseThreshold)
+    : order.amountPaid.gte(order.totalAmount));
   if (!paid) {
     if (row.operator === 'FULFILLMENT' || row.operator === 'CARE') return review(row, 'SETTLEMENT_NO_LONGER_VERIFIED');
     const request = await tx.paymentRequest.findFirst({ where: { ...scope, orderId, status: 'PENDING', expiresAt: { gt: now } },
       orderBy: { id: 'asc' }, select: { id: true, expiresAt: true } });
+    if (order.commerceInvoice && settlement) return next('PAYMENT_REQUEST', 'balance:' + settlement.id,
+      'WAITING_PROVIDER', 'PAYMENTS', 'AWAITING_INVOICE_BALANCE', { orderId, paymentId: settlement.paymentId, invoiceId: order.commerceInvoice.id });
     return request
       ? next('PAYMENT_REQUEST', 'checkout:' + request.id, 'WAITING_PROVIDER', 'PAYMENTS', 'AWAITING_VERIFIED_PAYMENT',
           { orderId, requestId: request.id, expiresAt: request.expiresAt.toISOString() })
@@ -86,8 +98,16 @@ async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now
       { orderId, requestId: settlement.requestId });
   }
   if (row.operator === 'PAYMENTS') {
+    if (order.commerceInvoice && !await releasePreparation(tx, row.businessId, orderId)) return review(row, 'PREPARATION_NOT_RELEASED');
     return next('PAYMENT_SETTLED', 'settlement:' + settlement.id, 'WAITING_STAFF', 'FULFILLMENT', 'READY_FOR_FULFILLMENT',
-      { orderId, ...settlement });
+      { orderId, ...settlement, ...(order.commerceInvoice ? { invoiceId: order.commerceInvoice.id } : {}) });
+  }
+  if (order.commerceQuote?.deliveryMode === 'PICKUP') {
+    const collected = order.commerceInvoice?.preparation?.collectedAt;
+    if (order.status !== 'FULFILLED' || !collected) return null;
+    if (row.operator === 'FULFILLMENT') return next('PICKUP_COMPLETED', 'pickup:' + orderId, 'READY', 'CARE', 'PICKUP_CONFIRMED',
+      { orderId, collectedAt: collected.toISOString() });
+    return observeSend(tx, row, 'order-status-' + orderId + '-FULFILLED', now);
   }
   const shipment = order.shipment;
   if (!shipment || !shipment.dispatchedAt) {
@@ -122,6 +142,9 @@ async function reconcile(tx: Transaction, row: Workflow, policy: WorkflowSetting
   if (!source.processed || source.processingError === 'CLASSIFICATION_EFFECT_WAITING' ||
       source.processingError === 'ORDER_EFFECT_WAITING') return null;
 
+  const commerce = row.version === 3 ? await observeCommerceCommands(tx, row, source, now) : undefined;
+  if (commerce !== undefined) return commerce;
+
   const support = supportRequest(source.body, source.intent === 'STATUS_CHECK');
   if (support) {
     if (row.sendId) return observeSend(tx, row, 'workflow-status-' + row.id, now);
@@ -139,7 +162,8 @@ async function reconcile(tx: Transaction, row: Workflow, policy: WorkflowSetting
     return event ? { ...event, facts: { ...event.facts, orderId, requestId } } : null;
   }
   const flows = presets[policy.profile as keyof typeof presets] as readonly string[] | undefined;
-  const order = await tx.order.findFirst({ where: { inboundSourceMessageId: source.id, ...customer, deletedAt: null }, select: { id: true } });
+  const order = await tx.order.findFirst({ where: { ...customer, deletedAt: null,
+    OR: [{ inboundSourceMessageId: source.id }, { commerceQuote: { sourceId: source.id } }] }, select: { id: true } });
   if (order) return flows?.includes('commerce') ? observeOrder(tx, row, order.id, now) : review(row, 'COMMERCE_PRESET_UNAVAILABLE');
   if (row.orderId) return review(row, 'ORDER_EVIDENCE_UNAVAILABLE');
 
@@ -200,6 +224,11 @@ async function advance(tx: Transaction, row: Workflow, now: Date): Promise<void>
 }
 
 export async function recoverWorkflows(now = new Date()): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE commerce_quotes SET state = 'EXPIRED'
+    WHERE id IN (SELECT id FROM commerce_quotes WHERE state IN ('DRAFT', 'OFFERED') AND "expiresAt" <= ${now}
+      ORDER BY "expiresAt", id LIMIT 12 FOR UPDATE SKIP LOCKED)
+  `;
   for (let count = 0; count < 12; count++) {
     if (!await runDueWorkflow(now, advance)) return;
   }

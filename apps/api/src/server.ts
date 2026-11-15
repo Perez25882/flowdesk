@@ -45,6 +45,7 @@ async function startServer(): Promise<void> {
   await prisma.$queryRaw`SELECT 1 FROM workflow_settings LIMIT 0`;
   await prisma.$queryRaw`SELECT 1 FROM workflow_evidence LIMIT 0`;
   await prisma.$queryRaw`SELECT 1 FROM workflow_approvals LIMIT 0`;
+  await prisma.$queryRaw`SELECT 1 FROM commerce_quotes LIMIT 0`;
   const workers = [outboundWorker, insightsWorker, intentClassifierWorker, ...(env.NODE_ENV === 'test'
     ? [] : [messageProcessorWorker, deadLetterWorker])];
   for (const worker of workers) {

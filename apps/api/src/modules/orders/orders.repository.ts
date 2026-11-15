@@ -160,9 +160,8 @@ export async function createOrder(
 ): Promise<OrderWithRelations> {
   const db = tx ?? prisma;
 
-  const totalAmount = data.items.reduce((sum, item) => {
-    return sum + item.quantity * item.unitPrice;
-  }, 0);
+  const subtotals = data.items.map((item) => new Prisma.Decimal(item.quantity).mul(item.unitPrice).toDecimalPlaces(2));
+  const totalAmount = subtotals.reduce((sum, subtotal) => sum.add(subtotal), new Prisma.Decimal(0));
 
   const order = await db.order.create({
     data: {
@@ -171,16 +170,16 @@ export async function createOrder(
       referenceNumber: data.referenceNumber,
       rawMessage: data.rawMessage,
       isManual: data.isManual,
-      totalAmount: new Prisma.Decimal(totalAmount),
+      totalAmount,
       notes: data.notes ?? null,
       inboundSourceMessageId: data.inboundSourceMessageId ?? null,
       items: {
-        create: data.items.map((item) => ({
+        create: data.items.map((item, index) => ({
           productId: item.productId ?? null,
           description: item.description,
           quantity: new Prisma.Decimal(item.quantity),
           unitPrice: new Prisma.Decimal(item.unitPrice),
-          subtotal: new Prisma.Decimal(item.quantity * item.unitPrice),
+          subtotal: subtotals[index]!,
           matched: !!item.productId,
           matchConfidence: item.matchConfidence ?? null,
         })),

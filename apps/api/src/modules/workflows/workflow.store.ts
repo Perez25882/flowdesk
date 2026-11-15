@@ -14,6 +14,9 @@ export async function admitWorkflow(
   const { businessId, customerId, messageId, receiptId } = identity;
   const policy = await tx.workflowSettings.findUnique({ where: { businessId } });
   if (!policy?.enabled) return;
+  const commerce = ['ONLINE_RETAIL', 'CUSTOM_ORDER'].includes(policy.profile) && await tx.commercePolicy.findUnique({
+    where: { businessId, enabled: true }, select: { businessId: true },
+  });
   const correlationKey = 'whatsapp:' + receiptId;
   if (identity.body && identity.replyTo && explicitOrderRequest(identity.body) && !hasPolicyOverride(identity.body)) {
     const [quote] = await tx.$queryRaw<Array<{ id: string; definition: string; version: number }>>`
@@ -38,7 +41,7 @@ export async function admitWorkflow(
   }
   await tx.workflow.create({
     data: {
-      businessId, customerId, sourceId: messageId, correlationKey, definition, version: Number(env.WORKFLOW_DEFINITION_VERSION),
+      businessId, customerId, sourceId: messageId, correlationKey, definition, version: commerce ? 3 : Number(env.WORKFLOW_DEFINITION_VERSION),
       policyRevision: policy.revision, reason: 'AUTHENTICATED_INBOUND', dueAt: now, deadlineAt: new Date(+now + day),
       evidence: { create: {
         eventKey: correlationKey, eventType: 'WHATSAPP_INBOUND', state: 'CREATED', operator: 'CARE',

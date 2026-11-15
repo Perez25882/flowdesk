@@ -18,6 +18,8 @@ import {
 import type { TemplateKey } from '../services/templates/template-engine.js';
 import { createOrderFromMessage } from '../modules/orders/orders.service.js';
 import { supportRequest } from '../modules/workflows/workflow.support.js';
+import { followupConsent, quoteCommand } from '../modules/commerce/commerce.contract.js';
+import { commerceCaseKind } from '../modules/commerce/commerce.workflow.js';
 import { findOrderByReference } from '../modules/orders/orders.repository.js';
 import { findActiveCatalogProducts } from '../modules/products/products.repository.js';
 import {
@@ -350,6 +352,11 @@ async function applyClassificationEffects(
     await handleOrderIntent(message);
     return;
   }
+
+  if ((quoteCommand(body) || followupConsent(body) !== undefined || commerceCaseKind(body, result.intent === IntentType.COMPLAINT)) &&
+      await prisma.commercePolicy.findUnique({ where: { businessId: message.businessId, enabled: true }, select: { businessId: true } }) &&
+      await prisma.workflow.findUnique({ where: { businessId_sourceId: { businessId: message.businessId, sourceId: message.id }, version: 3 },
+        select: { id: true } })) return;
 
   if (supportRequest(body, result.intent === IntentType.STATUS_CHECK) && await prisma.workflow.findUnique({
     where: { businessId_sourceId: { businessId: message.businessId, sourceId: message.id } },

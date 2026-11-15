@@ -1,5 +1,6 @@
 import { Prisma, type PaystackReceipt, type PaymentRequest } from '@prisma/client';
 import { prisma } from '../../config/database.js';
+import { invoiceAmounts } from '../commerce/commerce.invoices.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { verifyCharge, type VerifiedCharge } from '../../services/billing/paystack-connect.js';
@@ -156,6 +157,12 @@ async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedC
       return review(request.status === 'CANCELLED' ? 'REQUEST_CANCELLED' : 'REQUEST_NOT_PAYABLE');
     }
     if (paidAt >= request.expiresAt) return review('LATE_PAYMENT');
+    if (request.orderId) {
+      const invoice = await tx.commerceInvoice.findFirst({ where: { businessId, customerId: request.customerId, orderId: request.orderId },
+        include: { order: { select: { status: true, totalAmount: true } } } });
+      if (invoice && (invoice.order.status === 'CANCELLED' || !invoice.order.totalAmount.eq(invoice.total) ||
+          (await invoiceAmounts(tx, invoice)).due.mul(100).lt(amountMinor))) return review('INVOICE_RECONCILIATION_REQUIRED');
+    }
     const unlinked = await tx.payment.findFirst({
       where: { reference: request.reference, OR: [{ businessId }, { confidence: 'GATEWAY_CONFIRMED' }] }, select: { id: true },
     });

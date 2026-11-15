@@ -64,13 +64,20 @@ const CreateProductFields = z.object({
   stockQuantity: z.coerce.number().nonnegative().default(0),
   reorderThreshold: z.coerce.number().nonnegative().default(0),
   aliases: z.array(z.string()).default([]),
+  commerceMode: z.enum(['TRACKED', 'MADE_TO_ORDER', 'SERVICE']).optional(),
+  variantOfId: z.string().min(1).max(100).optional(),
+  variantLabel: z.string().trim().min(1).max(80).optional(),
   ...PricingFields,
 });
 
-export const CreateProductSchema = refinePricing(CreateProductFields);
+export const CreateProductSchema = refinePricing(CreateProductFields)
+  .refine((product) => Boolean(product.variantOfId) === Boolean(product.variantLabel), 'Provide a parent and variant label together')
+  .refine((product) => !product.variantOfId || Boolean(product.sku), 'A variant requires a SKU')
+  .refine((product) => !product.commerceMode || product.commerceMode === 'TRACKED' ||
+    (product.stockQuantity === 0 && product.reorderThreshold === 0), 'Only tracked products have physical stock');
 
 export const UpdateProductSchema = refinePricing(
-  CreateProductFields.partial().extend({
+  CreateProductFields.omit({ commerceMode: true, variantOfId: true, variantLabel: true }).partial().extend({
     active: z.boolean().optional(),
   }),
 );

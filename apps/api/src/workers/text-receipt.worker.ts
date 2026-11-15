@@ -13,6 +13,7 @@ import {
   TEXT_RECEIPT_RETENTION_MS,
 } from '../modules/webhook/text-receipts.js';
 import { admitWorkflow } from '../modules/workflows/workflow.store.js';
+import { followupConsent } from '../modules/commerce/commerce.contract.js';
 import {
   createIntentClassificationQueue,
   CLASSIFICATION_EFFECT_WAITING,
@@ -233,6 +234,12 @@ export async function materializeTextMessage(id: string, now: Date): Promise<boo
       data: { messageId: message.id },
     });
     if (receipt.kind === 'TEXT' && !existing) {
+      if (followupConsent(receipt.body) === false) {
+        await tx.customer.updateMany({ where: { id: customer.id, businessId,
+          OR: [{ commerceConsentAt: null }, { commerceConsentAt: { lte: receipt.sentAt } }] }, data: {
+          commerceConsentAt: receipt.sentAt, commerceConsentId: message.id, commerceFollowup: false,
+        } });
+      }
       await admitWorkflow(tx, { businessId, customerId: customer.id, messageId: message.id, receiptId: receipt.id,
         phoneNumberId: receipt.phoneNumberId, body: receipt.body, replyTo: receipt.replyToWaId }, now);
     }

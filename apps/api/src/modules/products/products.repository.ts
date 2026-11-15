@@ -1,5 +1,7 @@
 import { prisma } from '../../config/database.js';
 import { Prisma } from '@prisma/client';
+import { lockCommerceProducts, requireUnreservedStock } from '../commerce/commerce.stock.js';
+import { ConflictError, NotFoundError } from '../../utils/errors.js';
 import type { CreateProductInput, UpdateProductInput, StockAdjustmentInput, ListProductsQueryInput } from './products.schema.js';
 
 export interface ProductWithStock {
@@ -12,6 +14,9 @@ export interface ProductWithStock {
   reorderThreshold: Prisma.Decimal;
   aliases: string[];
   active: boolean;
+  commerceMode?: 'TRACKED' | 'MADE_TO_ORDER' | 'SERVICE';
+  variantOfId?: string | null;
+  variantLabel?: string | null;
   createdAt: Date;
   updatedAt: Date;
   /**
@@ -47,6 +52,9 @@ export async function createProduct(
   data: CreateProductInput,
   businessId: string,
 ): Promise<ProductWithStock> {
+  if (data.variantOfId && !await prisma.product.findFirst({ where: {
+    id: data.variantOfId, businessId, variantOfId: null, deletedAt: null, active: true,
+  }, select: { id: true } })) throw new NotFoundError('Variant parent not found');
   const product = await prisma.product.create({
     data: {
       businessId,
@@ -57,6 +65,8 @@ export async function createProduct(
       stockQuantity: new Prisma.Decimal(data.stockQuantity ?? 0),
       reorderThreshold: new Prisma.Decimal(data.reorderThreshold ?? 0),
       aliases: data.aliases ?? [],
+      ...(data.commerceMode ? { commerceMode: data.commerceMode } : {}),
+      ...(data.variantOfId && data.variantLabel ? { variantOfId: data.variantOfId, variantLabel: data.variantLabel } : {}),
       floorPrice: data.floorPrice === null || data.floorPrice === undefined
         ? null
         : new Prisma.Decimal(data.floorPrice),
@@ -143,6 +153,12 @@ export async function updateProduct(
   // create cannot leave a product with no bulk pricing the owner still sees on
   // their screen.
   const product = await prisma.$transaction(async (tx) => {
+    await lockCommerceProducts(tx, businessId, [id]);
+    if (data.stockQuantity !== undefined) {
+      const current = await tx.product.findFirstOrThrow({ where: { id, businessId }, select: { commerceMode: true } });
+      if (current.commerceMode !== 'TRACKED' && data.stockQuantity !== 0) throw new ConflictError('This item does not track stock');
+      await requireUnreservedStock(tx, businessId, id, new Prisma.Decimal(data.stockQuantity));
+    }
     if (data.tiers !== undefined) {
       await tx.quantityTier.deleteMany({ where: { productId: id } });
       if (data.tiers.length > 0) {
@@ -175,7 +191,7 @@ export async function adjustStock(
     await tx.$queryRaw`SELECT id FROM products WHERE id = ${id} AND "businessId" = ${businessId} AND "deletedAt" IS NULL FOR UPDATE`;
     const current = await tx.product.findFirst({
       where: { id, businessId, deletedAt: null },
-      select: { stockQuantity: true },
+      select: { stockQuantity: true, commerceMode: true },
     });
     if (!current) throw new Error('Product not found');
 
@@ -185,6 +201,8 @@ export async function adjustStock(
     const newQuantity = new Prisma.Decimal(current.stockQuantity.toString()).add(
       new Prisma.Decimal(data.quantity),
     );
+    if (current.commerceMode && current.commerceMode !== 'TRACKED') throw new ConflictError('This item does not track stock');
+    await requireUnreservedStock(tx, businessId, id, newQuantity);
 
     const product = await tx.product.update({
       where: { id, businessId },
@@ -363,14 +381,15 @@ export async function deductStockForOrderItems(
 
     const product = await db.product.findFirst({
       where: { id: item.productId, businessId },
-      select: { id: true, stockQuantity: true, name: true, reorderThreshold: true },
+      select: { id: true, stockQuantity: true, name: true, reorderThreshold: true, commerceMode: true },
     });
 
-    if (!product) continue;
+    if (!product || (product.commerceMode && product.commerceMode !== 'TRACKED')) continue;
 
     const newQty = new Prisma.Decimal(product.stockQuantity.toString()).sub(
       new Prisma.Decimal(item.quantity.toString()),
     );
+    await requireUnreservedStock(db, businessId, product.id, newQty);
 
     await db.product.update({
       where: { id: product.id },
@@ -466,10 +485,10 @@ export async function restoreStockForOrderItems(
 
     const product = await db.product.findFirst({
       where: { id: item.productId, businessId },
-      select: { id: true, stockQuantity: true },
+      select: { id: true, stockQuantity: true, commerceMode: true },
     });
 
-    if (!product) continue;
+    if (!product || (product.commerceMode && product.commerceMode !== 'TRACKED')) continue;
 
     const quantity = new Prisma.Decimal(item.quantity.toString());
     const newQty = new Prisma.Decimal(product.stockQuantity.toString()).add(quantity);

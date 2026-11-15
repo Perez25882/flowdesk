@@ -17,6 +17,7 @@ import EmptyState from '@/components/shared/EmptyState';
 import { formatCurrency, timeAgo, customerLabel } from '@/lib/utils';
 import { isOwner } from '@/hooks/useAuth';
 import WorkCenter from '@/components/shared/WorkCenter';
+import CommercePanel from '@/components/shared/CommercePanel';
 
 /**
  * The morning screen.
@@ -84,6 +85,7 @@ export default function DashboardPage(): React.JSX.Element {
       {/* Above everything, and gone the moment setup is finished. */}
       <SetupChecklist />
       {isOwner() && <WorkCenter />}
+      {isOwner() && <CommercePanel />}
 
       {/* What yesterday MEANT. The figures below say what happened. */}
       <DailyInsight />

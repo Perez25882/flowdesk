@@ -210,6 +210,12 @@ export async function processDurableOutbound(id: string): Promise<void> {
       workflowAuthorization: data.workflowAuthorization, id, businessId: candidate.businessId,
       customerId: data.customerId, orderId: data.relatedOrderId, body: data.body,
     })) reason = 'WORKFLOW_AUTHORIZATION_STALE';
+    if (!reason && data.commerceFollowupConsentId && (!data.customerId || !data.relatedOrderId ||
+        !await tx.order.findFirst({ where: { id: data.relatedOrderId, businessId: candidate.businessId,
+          customerId: data.customerId, status: 'FULFILLED', deletedAt: null,
+          customer: { commerceFollowup: true, commerceConsentId: data.commerceFollowupConsentId },
+          business: { commercePolicy: { enabled: true, allowFollowup: true } },
+        }, select: { id: true } }))) reason = 'ORDER_FOLLOWUP_CONSENT_STALE';
     if (!reason && data.sentByStaffId) {
       const [staff] = await tx.$queryRaw<Array<{ role: 'MANAGER' | 'OPERATIONS' | 'DELIVERY' }>>`
         SELECT role::text FROM staff WHERE id = ${data.sentByStaffId} AND "businessId" = ${candidate.businessId} AND active FOR SHARE

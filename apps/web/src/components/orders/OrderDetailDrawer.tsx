@@ -32,6 +32,8 @@ import ManualPaymentForm from '@/components/orders/ManualPaymentForm';
 import { decodeToken } from '@/lib/api';
 import { manualPaymentSlot } from '@/lib/manual-payment';
 import DispatchPanel from '@/components/orders/DispatchPanel';
+import OrderInvoice from '@/components/orders/OrderInvoice';
+import { isOwner } from '@/hooks/useAuth';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { formatCurrency, formatPhone, timeAgo, cn } from '@/lib/utils';
 
@@ -479,6 +481,8 @@ export default function OrderDetailDrawer({
                   <DispatchPanel orderId={order.id} status={order.status} />
                 </Section>
               )}
+
+              {isOwner() && <OrderInvoice orderId={order.id} status={order.status} />}
 
               <Section title="History">
                 <ol className="relative space-y-3 border-l border-border-subtle pl-4">

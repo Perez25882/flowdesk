@@ -1,4 +1,5 @@
 import { Prisma, type OrderStatus } from '@prisma/client';
+import { cancelCommerceOrder, prepareForDelivery, requireCommercePreparation } from '../commerce/commerce.fulfillment.js';
 import { logger } from '../../config/logger.js';
 import { prisma } from '../../config/database.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
@@ -427,6 +428,8 @@ async function transitionOrder(
       }
     }
     validateTransition(existing.status, next);
+    if (next === 'PROCESSING') await requireCommercePreparation(tx, businessId, orderId);
+    if (next === 'CANCELLED') await cancelCommerceOrder(tx, businessId, existing.customerId, orderId, existing.status);
     if (options.assignStaffId) await assignOrderToStaff(orderId, options.assignStaffId, businessId, tx);
     const order = await updateOrderStatus(orderId, businessId, next, actorId, options.reason ?? `Order moved to ${next}`,
       existing.status, options.reason ?? null, tx);
@@ -504,7 +507,10 @@ export async function transitionDeliveryOrder<T>(
     if (!existing) throw new NotFoundError('Order not found');
 
     const replay = existing.status === next && (next === 'DISPATCHED' || allowAlreadyFulfilled);
-    if (!replay) validateTransition(existing.status, next);
+    if (!replay) {
+      validateTransition(existing.status, next);
+      await prepareForDelivery(tx, actor, orderId, next, existing.status);
+    }
 
     const shipment = await updateShipment(tx, existing);
     const order = replay ? existing : await updateOrderStatus(

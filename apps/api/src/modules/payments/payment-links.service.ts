@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PaymentMethod, Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
+import { requireInvoiceCheckout } from '../commerce/commerce.invoices.js';
 import { env, features } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
@@ -213,6 +214,7 @@ export async function createPaymentLink(
   const prepared = await prisma.$transaction(async (tx) => {
     await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
     await lockPaymentRelationship(tx, { ...input, businessId });
+    await requireInvoiceCheckout(tx, businessId, input.customerId, input.orderId, amountMinor);
     await verifyAssistantCheckout(tx, businessId, normalized);
     const business = await requirePayoutReady(businessId, tx);
     if (input.orderId) {
@@ -246,6 +248,7 @@ export async function createPaymentLink(
       row = await prisma.$transaction(async (tx) => {
         await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
         await lockPaymentRelationship(tx, { ...normalized, businessId });
+        await requireInvoiceCheckout(tx, businessId, input.customerId, input.orderId, amountMinor);
         await verifyAssistantCheckout(tx, businessId, normalized);
         await tx.$queryRaw`SELECT id FROM businesses WHERE id = ${businessId} FOR SHARE`;
         const business = await requirePayoutReady(businessId, tx);

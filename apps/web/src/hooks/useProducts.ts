@@ -27,7 +27,10 @@ export interface ProductImage {
 export interface Product {
   id: string;
   name: string;
-  sku?: string;
+  sku?: string | null;
+  commerceMode?: 'TRACKED' | 'MADE_TO_ORDER' | 'SERVICE';
+  variantOfId?: string | null;
+  variantLabel?: string | null;
   unit: string;
   price: number;
   stockQuantity: number;
@@ -63,6 +66,9 @@ export interface CreateProductInput extends ProductPricingInput {
   reorderThreshold?: number;
   aliases?: string[];
   sku?: string;
+  commerceMode?: Product['commerceMode'];
+  variantOfId?: string;
+  variantLabel?: string;
 }
 
 export interface StockAdjustmentInput {
