@@ -35,6 +35,11 @@ async function startServer(): Promise<void> {
   await connectRedis();
   await prisma.$queryRaw`SELECT 1 FROM fulfillment_tasks LIMIT 0`;
   await prisma.$queryRaw`SELECT 1 FROM whatsapp_sends LIMIT 0`;
+  const [schema] = await prisma.$queryRaw<Array<{ applied: boolean }>>`
+    SELECT EXISTS (SELECT 1 FROM "_prisma_migrations" WHERE migration_name = '20261114210000_durable_low_stock'
+      AND finished_at IS NOT NULL AND rolled_back_at IS NULL) AS applied
+  `;
+  if (!schema?.applied) throw new Error('G1 schema is missing the durable stock alert migration');
   const workers = [outboundWorker, insightsWorker, intentClassifierWorker, ...(env.NODE_ENV === 'test'
     ? [] : [messageProcessorWorker, deadLetterWorker])];
   for (const worker of workers) {

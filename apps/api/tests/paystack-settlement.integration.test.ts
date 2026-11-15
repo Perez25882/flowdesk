@@ -49,7 +49,9 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     if (!fixtureDatabase.searchParams.has('connection_limit')) fixtureDatabase.searchParams.set('connection_limit', '8');
     fixtureDatabase.searchParams.set('pool_timeout', '10');
     process.env.DATABASE_URL = fixtureDatabase.toString();
-    process.env.REDIS_URL = redisUrl!;
+    const isolatedCache = new URL(redisUrl!);
+    isolatedCache.pathname = '/3';
+    process.env.REDIS_URL = isolatedCache.href;
     process.env.PAYSTACK_SECRET_KEY = secret;
     process.env.PAYSTACK_PUBLIC_KEY = 'pk_test_flowdesk_g103_synthetic';
     process.env.META_WEBHOOK_SECRET = metaSecret;
@@ -253,9 +255,9 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     const api = await createApp();
     const producer = openTextReceiptQueue();
     const workers = [intentClassifierWorker, outbound.outboundWorker];
-    const running = workers.map((worker) => worker.run());
     const workerErrors: string[] = [];
     for (const worker of workers) worker.on('error', (error) => workerErrors.push(error.name));
+    const running = workers.map((worker) => worker.run().catch((error: Error) => { workerErrors.push(error.name); }));
 
     const foreign = await shop(true);
     function owner(businessId: string) {

@@ -7,6 +7,7 @@ import { Worker } from 'bullmq';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { volatileRedis } from './fixtures/volatile-redis.js';
 import {
   createIntentClassificationQueue,
   INTENT_CLASSIFICATION_QUEUE_NAME,
@@ -17,6 +18,7 @@ import {
 
 const databaseUrl = process.env.G1_TEST_DATABASE_URL;
 const redisUrl = process.env.G1_TEST_REDIS_URL;
+const redisBinary = process.env.G1_TEST_REDIS_BINARY;
 const webhookSecret = 'g1-local-fixture-webhook-signature-secret';
 
 if (databaseUrl || redisUrl) {
@@ -191,6 +193,41 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       } })).toBe(0);
       expect(await prisma.whatsAppSend.count({ where: { businessId: business.id } })).toBe(0);
     }, 60_000);
+
+    it.skipIf(!redisBinary)('recovers the classifier job after the actual Redis process restarts without its queue', async () => {
+      const temporary = await volatileRedis(redisBinary!);
+      let connection: Redis | undefined;
+      let restartQueue: typeof queue | undefined;
+      try {
+        const phone = newId();
+        const business = await tenant(phone);
+        const providerId = newId();
+        const jobId = `intent-${providerId}`;
+        connection = await temporary.start();
+        restartQueue = createIntentClassificationQueue({ connection });
+        const deliver = (job: Parameters<typeof producer.enqueue>[0], id: string) =>
+          restartQueue!.add('classify-message-intent', job, { jobId: id });
+        expect((await signed([change(phone, text(providerId))])).statusCode).toBe(200);
+        await dispatch(deliver, new Date(), business.id);
+        const row = await receipt(phone, providerId);
+        expect(row.status).toBe('COMPLETED');
+        expect(await restartQueue.getJob(jobId)).toBeDefined();
+        await restartQueue.close();
+        connection.disconnect();
+        await temporary.stop();
+        connection = await temporary.start();
+        restartQueue = createIntentClassificationQueue({ connection });
+        expect(await restartQueue.getJob(jobId)).toBeUndefined();
+        for (let pass = 0; pass < 6 && !await restartQueue.getJob(jobId); pass++) {
+          await recoverClassification(deliver, row.classificationCheckAt!);
+        }
+        expect((await restartQueue.getJob(jobId))?.data).toMatchObject({ businessId: business.id, messageId: row.messageId });
+      } finally {
+        await restartQueue?.close();
+        connection?.disconnect();
+        await temporary.close();
+      }
+    }, 65_000);
 
     function receipt(phoneNumberId: string, waMessageId: string) {
       return prisma.whatsAppTextReceipt.findUniqueOrThrow({
