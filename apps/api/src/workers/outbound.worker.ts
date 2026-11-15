@@ -172,9 +172,11 @@ export async function processDurableOutbound(id: string): Promise<void> {
   const credentials = await loadTenantCredentials(candidate.businessId);
   const lease = new Date(Date.now() + SEND_LEASE_MS);
   const claimed = await prisma.$transaction(async (tx) => {
+    // The scheduler may still be committing QUEUED for this exact job. Wait
+    // for that short row lock and let PostgreSQL recheck state before claiming.
     const [locked] = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM whatsapp_sends WHERE id = ${id} AND state IN ('AUTHORIZED','QUEUED','RETRY_PENDING')
-        AND (state <> 'RETRY_PENDING' OR "nextAttemptAt" <= timezone('UTC', now())) FOR UPDATE SKIP LOCKED
+        AND (state <> 'RETRY_PENDING' OR "nextAttemptAt" <= timezone('UTC', now())) FOR UPDATE
     `;
     if (!locked) return false;
     const [business] = await tx.$queryRaw<Array<{ waPhoneNumberId: string | null; phone: string | null; notifyOnLowStock: boolean }>>`

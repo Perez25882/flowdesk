@@ -272,6 +272,47 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     });
   });
 
+  it('waits for a concurrent update of a queued send before claiming its single provider attempt', async () => {
+    const { business, customer } = await shop();
+    const sendId = (await queue.persistOutboundSend(prisma, { businessId: business.id, customerId: customer.id,
+      to: customer.waNumber, body: 'Synthetic queued send claim' }, randomUUID()))!;
+    await prisma.whatsAppSend.update({ where: { id: sendId }, data: { state: 'QUEUED', nextAttemptAt: new Date() } });
+    let unblocked!: () => void;
+    let acquired!: () => void;
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const release = new Promise<void>((resolve) => { unblocked = resolve; });
+    const scheduler = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM whatsapp_sends WHERE id = ${sendId} FOR UPDATE`;
+      acquired();
+      await release;
+    }, { timeout: 15_000 });
+    await Promise.race([locked, scheduler]);
+    const providerId = `wamid.${randomUUID()}`;
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValueOnce(Response.json({ messages: [{ id: providerId }] }));
+    const attempt = outbound.processDurableOutbound(sendId);
+    try {
+      await expect.poll(async () => {
+        const [row] = await prisma.$queryRaw<Array<{ waiting: boolean }>>`
+          SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock' AND query LIKE '%SELECT id FROM whatsapp_sends%'
+            AND query LIKE '%RETRY_PENDING%') AS waiting
+        `;
+        return row?.waiting;
+      }, { timeout: 3_000 }).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      unblocked();
+      await scheduler;
+      await attempt;
+    }
+    await outbound.processDurableOutbound(sendId);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).toMatchObject({
+      state: 'PROVIDER_ACCEPTED', attempts: 1, providerMessageId: providerId,
+    });
+  });
+
   it('keeps an authorized intent when Redis refuses queue writes and recovers the handoff', async () => {
     const { business, customer } = await shop();
     const { redis: fixtureRedis } = await import('../src/config/redis.js');
