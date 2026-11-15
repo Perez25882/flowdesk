@@ -39,6 +39,7 @@ export default function ManualPaymentForm({ slot, orderId, customerId, remaining
     sending.current = true;
     setError(null);
     try {
+      const hadUnconfirmedSubmission = loadManualPayment(sessionStorage, slot) !== null;
       const request = prepareManualPayment(sessionStorage, slot, {
         customerId, orderId, amount: number, method, ...(reference ? { reference } : {}),
       });
@@ -49,7 +50,7 @@ export default function ManualPaymentForm({ slot, orderId, customerId, remaining
       try {
         await creating.mutateAsync(request);
       } catch (failure) {
-        if (failure instanceof ApiError && [400, 422].includes(failure.status)) {
+        if (!hadUnconfirmedSubmission && failure instanceof ApiError && [400, 422].includes(failure.status)) {
           clearManualPayment(sessionStorage, slot, request.key);
           setPending(null);
         }
