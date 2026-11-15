@@ -45,6 +45,7 @@ const reasons: Record<string, string> = {
   APPROVAL_EXPIRED: 'The approval window closed.',
   APPROVAL_STALE: 'Business records changed after this approval was requested.',
   BUSINESS_POLICY_CHANGED: 'Business settings changed while this was in progress.',
+  ESCALATED_BY_OWNER: 'You moved this work to review.',
 };
 const profiles = {
   ONLINE_RETAIL: 'Online retailer', CUSTOM_ORDER: 'Custom orders', APPOINTMENT: 'Appointment business',
@@ -55,10 +56,10 @@ type Settings = { profile: Profile; enabled: boolean; supportMode: 'OWNER_REVIEW
 type Workflow = {
   id: string; state: string; operator: string; revision: number; reason: string; updatedAt: string;
   customer: { name: string | null };
-  actions: { approve: boolean; cancel: boolean; retry: boolean };
+  actions: { approve: boolean; cancel: boolean; retry: boolean; escalate: boolean };
 };
 type Detail = Workflow & { order: { referenceNumber: string } | null; evidence: { id: string; eventType: string; createdAt: string }[] };
-type Command = { path: 'decision' | 'cancel' | 'retry'; approve?: boolean };
+type Command = { path: 'decision' | 'cancel' | 'retry' | 'escalate'; approve?: boolean };
 
 function Setup({ settings }: { settings: Settings | null }) {
   const queryClient = useQueryClient();
@@ -170,6 +171,8 @@ export default function WorkCenter(): React.JSX.Element {
             </>}
             {current.actions.retry && <Button size="sm" variant="secondary" disabled={action.isPending}
               onClick={() => action.mutate({ path: 'retry' })}>Check progress again</Button>}
+            {current.actions.escalate && <Button size="sm" variant="secondary" disabled={action.isPending}
+              onClick={() => action.mutate({ path: 'escalate' })}>Move to review</Button>}
             {current.actions.cancel && <Button size="sm" variant="secondary" disabled={action.isPending}
               onClick={() => action.mutate({ path: 'cancel' })}>Cancel work</Button>}
           </div>

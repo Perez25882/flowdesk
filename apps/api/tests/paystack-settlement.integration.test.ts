@@ -472,6 +472,8 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
             payload: { revision: open.revision } })).statusCode).toBe(200);
           expect((await api.inject({ method: 'POST', url: '/api/v1/workflows/' + open.id + '/decision', headers: account,
             payload: { revision: open.revision, approve: true } })).statusCode).toBe(409);
+          await signedMeta({ statuses: [{ id: 'wamid.' + randomUUID(), status: 'delivered', recipient_id: fixture.customer.waNumber,
+            timestamp: String(Math.floor(Date.now() / 1000)), biz_opaque_callback_data: open.id }] });
           expect(await getWork(toCancel.id)).toMatchObject({ state: 'CANCELLED', sendId: null, dueAt: null });
 
           expect((await api.inject({ method: 'PUT', url: '/api/v1/workflow-settings', headers: account,

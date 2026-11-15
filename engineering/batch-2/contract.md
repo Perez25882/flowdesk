@@ -63,7 +63,7 @@ On the dashboard, the owner chooses Online retailer, Custom orders, Appointment 
 - `GET /api/v1/workflow-settings` returns settings and preset recommendations.
 - `PUT /api/v1/workflow-settings` accepts `{"profile":"ONLINE_RETAIL","enabled":true,"supportMode":"OWNER_REVIEW","revision":0}`. Use revision zero to create and the current revision to edit.
 - `POST /api/v1/workflows/<id>/decision` accepts `{"approve":true,"revision":2}`.
-- `POST /api/v1/workflows/<id>/cancel` and `POST /api/v1/workflows/<id>/retry` accept `{"revision":2}` only while eligible.
+- `POST /api/v1/workflows/<id>/cancel`, `POST /api/v1/workflows/<id>/retry` and `POST /api/v1/workflows/<id>/escalate` accept `{"revision":2}` only while eligible. Escalation pauses new workflow work and records who moved it to review.
 
 The work center shows recent work with status filters, history, approval, decline, cancellation and safe reconciliation. It polls and uses the existing authenticated API client. Owners hold these controls today. Staff still use their existing domain surfaces. Amount attribution is unknown without billing data. Verified quote and booking evidence includes model token counts when the provider supplied them locally.
 

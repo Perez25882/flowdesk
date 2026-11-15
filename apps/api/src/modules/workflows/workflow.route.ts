@@ -27,6 +27,8 @@ function actions(row: Workflow) {
   return {
     approve: row.state === 'WAITING_OWNER_APPROVAL',
     cancel: row.state === 'WAITING_OWNER_APPROVAL' || row.reason === 'OWNER_APPROVED',
+    escalate: !row.sendId && !terminal.has(row.state) && row.state !== 'REVIEW_REQUIRED' &&
+      row.state !== 'WAITING_OWNER_APPROVAL' && row.reason !== 'OWNER_APPROVED',
     retry: row.state === 'REVIEW_REQUIRED' && canRetryReasons.has(row.reason) && row.recoveryCount < 3 &&
       Boolean(row.sendId || row.orderId || row.appointmentId),
   };
@@ -147,6 +149,20 @@ export default async function workflowRoutes(app: FastifyInstance): Promise<void
         reason: row.reason, deadlineAt: new Date(+now + 30 * minute),
         facts: { mode: 'reconcile-existing-effects', actor: 'business-owner' },
       }, now);
+    });
+    return success(reply, { id });
+  });
+
+  app.post('/workflows/:id/escalate', owner, async (request, reply) => {
+    const { id } = idInput.parse(request.params);
+    const { revision } = commandInput.parse(request.body);
+    await prisma.$transaction(async (tx) => {
+      const row = await inspect(tx, request.business!.id, id, revision);
+      if (!actions(row).escalate) throw new ConflictError('This workflow cannot be escalated');
+      await transition(tx, row, {
+        type: 'REVIEW', key: 'owner:escalated', state: 'REVIEW_REQUIRED', operator: row.operator,
+        reason: 'ESCALATED_BY_OWNER', facts: { actor: 'business-owner' },
+      }, null);
     });
     return success(reply, { id });
   });

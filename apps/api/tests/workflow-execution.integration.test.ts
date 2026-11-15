@@ -121,6 +121,40 @@ fixtureOnly('Batch 2 workflow recovery and permissions with PostgreSQL', () => {
     expect(await read()).toMatchObject({ state: 'REVIEW_REQUIRED', reason: 'BUSINESS_POLICY_CHANGED', sendId: null });
   });
 
+  it('pauses eligible workflow work for an owner review without creating an outbound effect', async () => {
+    const { row, read, headers } = await setup();
+    const request = { method: 'POST' as const, url: '/api/v1/workflows/' + row.id + '/escalate', headers,
+      payload: { revision: row.revision } };
+    expect((await app.inject(request)).statusCode).toBe(200);
+    expect((await app.inject(request)).statusCode).toBe(409);
+    await worker.recoverWorkflows(new Date(Date.now() + 3_000));
+    expect(await read()).toMatchObject({ state: 'REVIEW_REQUIRED', reason: 'ESCALATED_BY_OWNER', dueAt: null, sendId: null,
+      evidence: expect.arrayContaining([expect.objectContaining({ eventKey: 'owner:escalated' })]) });
+  });
+
+  it('reconciles the original outbox record on retry and leaves an ambiguous attempt for review', async () => {
+    const { row, read, headers } = await setup();
+    await worker.recoverWorkflows(new Date(Date.now() + 500));
+    await worker.recoverWorkflows(new Date(Date.now() + 3_000));
+    const waiting = await read();
+    expect((await app.inject({ method: 'POST', url: '/api/v1/workflows/' + row.id + '/decision', headers,
+      payload: { revision: waiting.revision, approve: true } })).statusCode).toBe(200);
+    await worker.recoverWorkflows(new Date());
+    const authorized = await read();
+    await prisma.whatsAppSend.update({ where: { id: authorized.sendId! }, data: {
+      state: 'REVIEW_REQUIRED', attempts: 1, nextAttemptAt: null, reason: 'PROVIDER_TRANSPORT_AMBIGUOUS',
+    } });
+    await worker.recoverWorkflows(new Date(Date.now() + 3_000));
+    const held = await read();
+    expect(held).toMatchObject({ state: 'REVIEW_REQUIRED', reason: 'OUTBOUND_REQUIRES_REVIEW' });
+    expect((await app.inject({ method: 'POST', url: '/api/v1/workflows/' + row.id + '/retry', headers,
+      payload: { revision: held.revision } })).statusCode).toBe(200);
+    await worker.recoverWorkflows(new Date());
+    expect(await read()).toMatchObject({ state: 'REVIEW_REQUIRED', sendId: authorized.sendId, recoveryCount: 1 });
+    expect(await prisma.whatsAppSend.count({ where: { businessId: row.businessId } })).toBe(1);
+    expect(await prisma.whatsAppSend.findUnique({ where: { id: authorized.sendId! } })).toMatchObject({ attempts: 1 });
+  });
+
   it('fences an authorized outbound reply when the inbound phone changes owners', async () => {
     const { row, read, headers } = await setup();
     const phone = 'fixture-' + randomUUID();
