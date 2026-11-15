@@ -45,11 +45,11 @@ export function usePayments(attested?: boolean, hasScreenshot?: boolean): UseQue
   });
 }
 
-export function useCreatePayment(): UseMutationResult<Payment, Error, CreatePaymentInput> {
+export function useCreatePayment(): UseMutationResult<Payment, Error, { data: CreatePaymentInput; key: string }> {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: CreatePaymentInput) =>
-      apiFetch<Payment>('/payments', { method: 'POST', body: data }),
+    mutationFn: ({ data, key }: { data: CreatePaymentInput; key: string }) =>
+      apiFetch<Payment>('/payments', { method: 'POST', body: data, idempotencyKey: key }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['payments'] });
       qc.invalidateQueries({ queryKey: ['orders'] });

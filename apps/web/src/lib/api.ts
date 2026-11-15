@@ -149,11 +149,13 @@ export interface RequestOptions {
   anonymous?: boolean;
   signal?: AbortSignal;
   cache?: RequestCache;
+  idempotencyKey?: string;
 }
 
 async function send(path: string, options: RequestOptions, token: string | null): Promise<Response> {
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
   if (token && !options.anonymous) headers.Authorization = `Bearer ${token}`;
 
   const init: RequestInit = {

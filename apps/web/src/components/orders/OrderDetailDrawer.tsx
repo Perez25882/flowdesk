@@ -3,7 +3,6 @@ import { useState } from 'react';
 import type { OrderStatus } from '@/types/order';
 import { useOrderDetail, useUpdateOrderStatus, useAssignOrder } from '@/hooks/useOrders';
 import {
-  useCreatePayment,
   useCreatePaymentLink,
   usePaymentLinks,
   usePayoutStatus,
@@ -29,6 +28,9 @@ import {
 } from '@/components/ui/Dialog';
 import { TextAreaField } from '@/components/ui/Field';
 import { OrderStatusBadge } from '@/components/ui/Badge';
+import ManualPaymentForm from '@/components/orders/ManualPaymentForm';
+import { decodeToken } from '@/lib/api';
+import { manualPaymentSlot } from '@/lib/manual-payment';
 import DispatchPanel from '@/components/orders/DispatchPanel';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { formatCurrency, formatPhone, timeAgo, cn } from '@/lib/utils';
@@ -64,15 +66,6 @@ const NEXT_ACTION: Record<OrderStatus, { label: string; next: OrderStatus } | nu
   FULFILLED: null,
   CANCELLED: null,
 };
-
-const PAYMENT_METHODS = [
-  { value: 'MOMO_MTN', label: 'MTN MoMo' },
-  { value: 'MOMO_VODAFONE', label: 'Telecel Cash' },
-  { value: 'MOMO_AIRTELTIGO', label: 'AirtelTigo Money' },
-  { value: 'CASH', label: 'Cash' },
-  { value: 'BANK_TRANSFER', label: 'Bank transfer' },
-  { value: 'OTHER', label: 'Other' },
-];
 
 /** A labelled section separated by a rule, not a nested bordered card. */
 function Section({
@@ -134,7 +127,6 @@ export default function OrderDetailDrawer({
   const { data: order, isLoading } = useOrderDetail(orderId);
   const updateStatus = useUpdateOrderStatus();
   const assignOrder = useAssignOrder();
-  const createPayment = useCreatePayment();
   const createLink = useCreatePaymentLink();
   const { data: payoutStatus } = usePayoutStatus();
   const { data: openLinks = [] } = usePaymentLinks(
@@ -146,10 +138,9 @@ export default function OrderDetailDrawer({
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('MOMO_MTN');
-  const [paymentRef, setPaymentRef] = useState('');
 
+  const paymentActor = decodeToken();
+  const paymentSlot = order && paymentActor ? manualPaymentSlot(paymentActor.businessId, paymentActor.staffId, order.id) : null;
   const action = order ? NEXT_ACTION[order.status] : null;
   const totalAmount = order?.totalAmount;
   const amountPaid = order?.amountPaid;
@@ -203,28 +194,6 @@ export default function OrderDetailDrawer({
     assignOrder.mutate(
       { orderId: order.id, data: { staffId: assignStaffId } },
       { onSuccess: () => setAssignStaffId('') },
-    );
-  }
-
-  function handleLogPayment(): void {
-    if (!order) return;
-    const amount = Number.parseFloat(paymentAmount);
-    if (!Number.isFinite(amount) || amount <= 0) return;
-
-    createPayment.mutate(
-      {
-        customerId: order.customer.id,
-        orderId: order.id,
-        amount,
-        method: paymentMethod,
-        ...(paymentRef ? { reference: paymentRef } : {}),
-      },
-      {
-        onSuccess: () => {
-          setPaymentAmount('');
-          setPaymentRef('');
-        },
-      },
     );
   }
 
@@ -453,63 +422,9 @@ export default function OrderDetailDrawer({
                 </Section>
               )}
 
-              {remaining > 0 && (
-                <Section title="Or record one you already took">
-                  <div className="flex flex-col gap-2">
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <input
-                        type="number"
-                        inputMode="decimal"
-                        min={0.01}
-                        step={0.01}
-                        max={remaining}
-                        value={paymentAmount}
-                        onChange={(e) => setPaymentAmount(e.target.value)}
-                        aria-label={`Amount received, up to ${formatCurrency(remaining)}`}
-                        placeholder={formatCurrency(remaining)}
-                        className="fd-input fd-input-compact h-11 w-full py-0 sm:h-10 sm:flex-1"
-                      />
-                      <select
-                        aria-label="How they paid"
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value)}
-                        className="fd-input fd-select fd-input-compact h-11 w-full py-0 sm:h-10 sm:w-[150px]"
-                      >
-                        {PAYMENT_METHODS.map((method) => (
-                          <option key={method.value} value={method.value}>
-                            {method.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <input
-                      type="text"
-                      value={paymentRef}
-                      onChange={(e) => setPaymentRef(e.target.value)}
-                      aria-label="Transaction reference"
-                      placeholder="Transaction ID, if you have one"
-                      className="fd-input fd-input-compact h-11 py-0 sm:h-10"
-                    />
-
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="h-10"
-                      onClick={handleLogPayment}
-                      disabled={!paymentAmount || (Number.parseFloat(paymentAmount) || 0) <= 0}
-                      isLoading={createPayment.isPending}
-                    >
-                      Record {paymentAmount ? formatCurrency(Number.parseFloat(paymentAmount) || 0) : 'payment'}
-                    </Button>
-
-                    {createPayment.isError && (
-                      <p role="alert" className="text-xs font-medium text-danger">
-                        {(createPayment.error as Error).message}
-                      </p>
-                    )}
-                  </div>
-                </Section>
+              {paymentSlot && (
+                <ManualPaymentForm key={paymentSlot} slot={paymentSlot} orderId={order.id}
+                  customerId={order.customer.id} remaining={remaining} />
               )}
 
               {/* Where it is going, then what carried it. Both sit below the
