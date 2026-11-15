@@ -11,7 +11,7 @@ type Quote = { id: string; state: string; total: string; specification?: string;
   lines: { productId: string; itemName: string; quantity: number }[] };
 type Case = { id: string; kind: string; state: string; revision: number;
   customer?: { name: string | null }; order?: { referenceNumber: string; status: string } };
-type CaseDetail = Case & { customerConfirmationId: string | null };
+type CaseDetail = Case & { customerConfirmationId: string | null; canReceiveReturn: boolean; history: { resolution: string | null }[] };
 
 function PolicyForm({ policy }: { policy: Policy | null }) {
   const client = useQueryClient();
@@ -80,8 +80,11 @@ export default function CommercePanel(): React.JSX.Element {
   const decision = useMutation({ mutationFn: ({ id, choice }: { id: string; choice: 'OFFER' | 'DECLINE' }) =>
     apiFetch('/commerce/quotes/' + id + '/decision', { method: 'POST', body: { decision: choice } }),
   onSettled: () => { void client.invalidateQueries({ queryKey: ['commerce', 'quotes'] }); } });
-  const caseAction = useMutation({ mutationFn: (state: 'WAITING' | 'ESCALATED' | 'RESOLVED') => {
+  const caseAction = useMutation({ mutationFn: (state: 'WAITING' | 'ESCALATED' | 'RESOLVED' | 'RECEIVED') => {
     const current = detail.data!;
+    if (state === 'RECEIVED') return apiFetch('/commerce/cases/' + current.id + '/receive-return', {
+      method: 'POST', body: { revision: current.revision },
+    });
     const cancelled = selected?.kind === 'CANCELLATION' && selected.order?.status === 'CANCELLED';
     return apiFetch('/commerce/cases/' + current.id, { method: 'PATCH', body: {
       state, revision: current.revision, staffId: null,
@@ -132,9 +135,12 @@ export default function CommercePanel(): React.JSX.Element {
           {selected && detail.data && <section className="border-t px-4 py-3 text-sm" aria-label="Customer case">
             <p className="font-medium">{caseNames[detail.data.kind]} · {states[detail.data.state]}</p>
             {detail.data.customerConfirmationId && <p>Customer confirmed the resolution.</p>}
+            {detail.data.history.some((event) => event.resolution === 'RETURN_RECEIVED_TO_STOCK') && <p>Returned goods were received into stock.</p>}
             {detail.data.state !== 'RESOLVED' && <div className="mt-2 flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" disabled={caseAction.isPending} onClick={() => caseAction.mutate('WAITING')}>Wait for customer</Button>
               <Button size="sm" variant="secondary" disabled={caseAction.isPending} onClick={() => caseAction.mutate('ESCALATED')}>Move to review</Button>
+              {detail.data.canReceiveReturn &&
+                <Button size="sm" variant="secondary" disabled={caseAction.isPending} onClick={() => caseAction.mutate('RECEIVED')}>Record full return received</Button>}
               {(detail.data.customerConfirmationId || (selected.kind === 'CANCELLATION' && selected.order?.status === 'CANCELLED')) &&
                 <Button size="sm" disabled={caseAction.isPending} onClick={() => caseAction.mutate('RESOLVED')}>Resolve case</Button>}
             </div>}

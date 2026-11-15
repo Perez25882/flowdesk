@@ -2,6 +2,9 @@ import type { CommerceCase, Prisma } from '@prisma/client';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { requireStaffMembership, type OrderActor } from '../orders/orders.authorization.js';
 import { requirePaymentActor } from '../payments/payment-relationships.js';
+import { claimStockMovement } from '../orders/orders.repository.js';
+import { restoreStockForOrderItems } from '../products/products.repository.js';
+import { lockCommerceProducts } from './commerce.stock.js';
 import type { caseInput } from './commerce.contract.js';
 import type { z } from 'zod';
 import { loadCommerceSource } from './commerce.quotes.js';
@@ -39,5 +42,41 @@ export async function updateCommerceCase(
     state: input.state, assignedStaffId: input.staffId, resolution, revision,
     history: { create: { revision, state: input.state, staffId: actor.staffId, resolution,
       evidenceMessageId: input.evidenceMessageId ?? null } },
+  } });
+}
+
+export async function receiveCommerceReturn(tx: Prisma.TransactionClient, actor: OrderActor, id: string, expectedRevision: number): Promise<CommerceCase> {
+  if (actor.staffId !== null || actor.role !== undefined) throw new ForbiddenError('Only the owner can receive a stock return');
+  const { businessId } = actor;
+  const [locked] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM commerce_cases WHERE id = ${id} AND "businessId" = ${businessId} FOR UPDATE
+  `;
+  if (!locked) throw new NotFoundError('Return case not found');
+  const item = await tx.commerceCase.findUniqueOrThrow({ where: { id } });
+  if (item.kind !== 'RETURN' || !item.orderId) throw new ConflictError('This case has no eligible return order');
+  const restocked = await tx.commerceCaseEvent.findFirst({ where: { caseId: id, businessId, resolution: 'RETURN_RECEIVED_TO_STOCK' }, select: { revision: true } });
+  if (restocked) return item;
+  if (item.revision !== expectedRevision || item.state === 'RESOLVED') throw new ConflictError('Return case status changed');
+  const [owned] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM orders WHERE id = ${item.orderId} AND "businessId" = ${businessId}
+      AND "customerId" = ${item.customerId} AND "deletedAt" IS NULL FOR UPDATE
+  `;
+  if (!owned) throw new NotFoundError('Return order not found');
+  const order = await tx.order.findFirst({ where: { id: owned.id, businessId, status: 'FULFILLED', stockDeducted: true },
+    include: { items: true, commerceQuote: { include: { lines: true } } } });
+  if (!order?.commerceQuote?.lines.length || order.commerceQuote.lines.some((line) => line.productMode !== 'TRACKED')) {
+    throw new ConflictError('Stock return requires a fulfilled order containing only tracked goods');
+  }
+  const productIds = order.commerceQuote.lines.map((line) => line.productId);
+  await lockCommerceProducts(tx, businessId, productIds);
+  const tracked = await tx.product.count({ where: { businessId, id: { in: productIds }, commerceMode: 'TRACKED' } });
+  if (tracked !== new Set(productIds).size) throw new ConflictError('A returned item is no longer tracked');
+  if (!await claimStockMovement(order.id, businessId, true, tx)) throw new ConflictError('The order stock has already been restored');
+  await restoreStockForOrderItems(order.id, businessId, null, order.items, tx, 'Commerce return received');
+  const revision = item.revision + 1;
+  return tx.commerceCase.update({ where: { id }, data: { state: 'WAITING', revision,
+    resolution: 'RETURN_RECEIVED_TO_STOCK', history: { create: {
+      state: 'WAITING', revision, resolution: 'RETURN_RECEIVED_TO_STOCK',
+    } },
   } });
 }

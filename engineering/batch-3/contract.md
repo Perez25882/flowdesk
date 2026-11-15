@@ -25,7 +25,7 @@ A supported signed request uses `QUOTE RICE-BLUE*2, BAG*1 PICKUP` or `QUOTE RICE
 
 A custom quote starts as a draft until the owner approves the terms. A normal offer holds stock until its configured expiry. A terminal rejection or expired draft leaves no reservation. The scheduler persists expiry, and stock checks stop counting expired offers by timestamp even before that pass runs. The customer accepts using `ACCEPT <quote UUID>` or rejects using `DECLINE <quote UUID>`. Acceptance requires the same tenant and customer, current signed inbound phone ownership, original offered terms, current catalogue eligibility, an open reservation and unchanged policy. A changed price requires a new quote. Before acceptance, changing terms is done by replacing the declined or expired quote. Accepted order terms are fixed.
 
-The acceptance transaction marks the quote, records the existing order and its exact lines, consumes held stock through the existing movement service, records confirmation, issues the invoice and links the customer message. Replays return the accepted order. A failed transaction rolls back all those changes. Before dispatch, authorized cancellation restores stock once and cancels pending links. Returns after dispatch go to human review for custody, stock disposition and any provider reconciliation.
+The acceptance transaction marks the quote, records the existing order and its exact lines, consumes held stock through the existing movement service, records confirmation, issues the invoice and links the customer message. Replays return the accepted order. A failed transaction rolls back all those changes. Before dispatch, authorized cancellation restores stock once and cancels pending links. An owner can confirm full physical return of a fulfilled order that contains only tracked goods. Stock restoration and return history commit together, and the case stays waiting for any remaining customer or financial outcome.
 
 ## Payments and invoices
 
@@ -49,6 +49,18 @@ Cases can be open, assigned, waiting, escalated or resolved. Staff writes requir
 
 The owner may authorize one service follow-up per fulfilled order. This requires business enablement, a current conversation window, explicit customer consent and no block. `START ORDER FOLLOWUPS` opts in. `STOP ORDER FOLLOWUPS` clears consent at signed receipt admission. The worker verifies consent again before claiming the send. This sends a service check about an existing order.
 
+## Access and abuse controls
+
+| Attempt | Authority |
+| --- | --- |
+| Supply an arbitrary foreign quote, order, product or case identifier | Scoped service lookups, composite foreign keys and signed message scope enforce tenant and customer identity. |
+| Claim a discount, available stock, bank transfer or fulfillment in a message | Catalogue and stock locks, the G1 ledger and verified settlement, and physical order evidence each govern their own transition. |
+| Use a saved staff token after permission or assignment changes | Staff capabilities are re-read on relevant writes, and existing G1 shipment actions retain assignment checks under transaction locks. |
+| Replay an accepted quote, provider callback, shipped order update or physical return | The quote, receipt, ledger entry, preparation, case history and stock claim have durable identities at their respective mutation boundaries. |
+| Send a follow-up after consent changes | Signed opt-out takes effect at admission. The worker checks current consent, business enablement and delivery eligibility at claim. |
+
+Preserve G1 authenticated media access and redaction. The commerce case keeps references to its evidence. Do not paste customer contact information or message text into a recovery ticket. Use workflow, receipt and record IDs for investigation.
+
 ## API and owner controls
 
 The dashboard Commerce section provides settings, custom quote decisions and customer cases. The existing Products form saves SKU and variant information. The order drawer presents the invoice, remaining balance, checkout request, preparation and eligible follow-up. Orders and shipment actions continue using their existing controls.
@@ -60,10 +72,17 @@ The dashboard Commerce section provides settings, custom quote decisions and cus
 - `POST /api/v1/commerce/invoices/:id/checkout` accepts `{"send":true}` and calculates the payable charge server-side.
 - `PATCH /api/v1/commerce/orders/:id/preparation` accepts `{"state":"READY","assignedStaffId":null}` for eligible work.
 - `GET /api/v1/commerce/cases`, `GET /api/v1/commerce/cases/:id` and `PATCH /api/v1/commerce/cases/:id` serve the scoped case and its revisioned decision.
+- `POST /api/v1/commerce/cases/:id/receive-return` accepts `{"revision":0}` from the owner who verified receipt of the full tracked order. It retains the original ledger transaction history.
 - `POST /api/v1/commerce/orders/:id/followup` authorizes the single eligible service check.
 
 ## Recovery and deployment boundary
 
 Correlate the receipt and workflow source with quote ID, accepted order, invoice, G1 request and settlement, prep record, and send identifiers. Use existing receipt, settlement and outbound history to distinguish waiting and ambiguity. The engine only releases physical work from committed financial evidence. Retry an ambiguous checkout through the G1 reconciliation process before issuing a different link. Run the supported order or case action rather than editing raw workflow state.
+
+1. If an offer expires, inspect the quote timestamp, confirm stock held by unexpired offers, and issue a replacement quote if the customer still wants the items.
+2. If a customer reports a payment while the invoice is waiting, reconcile the existing provider reference and ledger entry. Revisit preparation eligibility only after durable authoritative evidence appears.
+3. If preparation or dispatch is blocked, check current order status, assigned staff, verified threshold and physical readiness. Record the facts in the existing order or case before resuming.
+4. If the shipment completed but its notification remains waiting, use G1 outbound evidence and recovery. Leave the physical fulfillment record in place.
+5. If full tracked goods were returned, the owner may record actual custody once. Keep the case waiting when a financial or customer outcome still needs evidence. Use the existing authorized ledger adjustment path for a refund that was actually performed.
 
 The migration adds commerce tables, references, policy checks and customer/product flags. Deploy schema before binaries. The application rollback uses the approved Batch 2 binary with the additive database in place and the ingress and workers quiesced. Preserve accepted quotes, invoices, consent and cases during reversal. Any schema rollback that would discard these records requires a separate data migration and approval.

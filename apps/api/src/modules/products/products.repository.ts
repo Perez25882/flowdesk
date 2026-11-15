@@ -477,6 +477,7 @@ export async function restoreStockForOrderItems(
   cancelledBy: string | null,
   items: Array<{ productId: string | null; quantity: number | Prisma.Decimal; matched: boolean }>,
   tx?: Prisma.TransactionClient,
+  note = 'Order cancelled',
 ): Promise<void> {
   const db = tx ?? prisma;
 
@@ -507,7 +508,7 @@ export async function restoreStockForOrderItems(
         balanceAfter: newQty,
         orderId,
         staffId: cancelledBy,
-        note: 'Order cancelled',
+        note,
       },
     });
   }

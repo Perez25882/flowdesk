@@ -13,7 +13,7 @@ fixtureOnly('Batch 3 commerce on PostgreSQL and BullMQ', () => {
   let prisma: PrismaClient;
   let app: FastifyInstance;
   let sign: typeof import('../src/services/auth/tokens.js').signAccessToken;
-  let closeRedis: () => Promise<void>;
+  let disconnectRedis: (() => void) | undefined;
   const pending = new Map<string, { amount: number; subaccount: string; metadata: Record<string, string> }>();
   const charged = new Map<string, string>();
 
@@ -54,15 +54,23 @@ fixtureOnly('Batch 3 commerce on PostgreSQL and BullMQ', () => {
     });
     ({ prisma } = await import('../src/config/database.js'));
     ({ signAccessToken: sign } = await import('../src/services/auth/tokens.js'));
-    closeRedis = (await import('../src/config/redis.js')).disconnectRedis;
+    const clients = await import('../src/config/redis.js');
+    disconnectRedis = () => {
+      for (const client of [clients.redis, clients.redisSubscriber, clients.sseSubscriber, clients.rateLimitRedis]) {
+        client.disconnect();
+      }
+    };
     app = await (await import('../src/app.js')).createApp();
   }, 60_000);
 
   afterAll(async () => {
-    await app?.close();
-    await prisma?.$disconnect();
-    await closeRedis?.();
-    vi.unstubAllGlobals();
+    try {
+      await app?.close();
+      await prisma?.$disconnect();
+    } finally {
+      disconnectRedis?.();
+      vi.unstubAllGlobals();
+    }
   });
 
   async function shop(patch: { depositPercent?: number; releaseOnDeposit?: boolean; allowFollowup?: boolean } = {}) {
@@ -365,6 +373,24 @@ fixtureOnly('Batch 3 commerce on PostgreSQL and BullMQ', () => {
       const staleAcceptance = await inbound('ACCEPT ' + staleQuote.id);
       await expect.poll(async () => (await workflowFor(staleAcceptance))?.state, { timeout: 25_000 }).toBe('REVIEW_REQUIRED');
       expect((await prisma.commerceQuote.findUniqueOrThrow({ where: { id: staleQuote.id } })).orderId).toBeNull();
+
+      const returnSource = await inbound('Return order ' + order.referenceNumber);
+      await expect.poll(async () => (await workflowFor(returnSource))?.reason, { timeout: 25_000 }).toBe('CUSTOMER_CASE_OPEN');
+      const returned = await prisma.commerceCase.findFirstOrThrow({ where: { ...scope, sourceId: returnSource } });
+      expect(returned).toMatchObject({ state: 'OPEN', orderId, kind: 'RETURN' });
+      const returnPath = '/commerce/cases/' + returned.id;
+      expect((await foreign.api('POST', returnPath + '/receive-return', { revision: 0 })).statusCode).toBe(404);
+      expect((await api('GET', returnPath)).json().data.canReceiveReturn).toBe(true);
+      const receive = () => api('POST', returnPath + '/receive-return', { revision: 0 });
+      for (const result of await Promise.all([receive(), receive()])) expect(result.statusCode, result.body).toBe(200);
+      expect((await prisma.product.findUniqueOrThrow({ where: { id: blue.json().data.id } })).stockQuantity.toString()).toBe('4');
+      expect(await prisma.stockMovement.count({ where: { businessId: scope.businessId, orderId } })).toBe(4);
+      expect(await prisma.stockMovement.count({ where: { businessId: scope.businessId, orderId, type: 'RETURN', note: 'Commerce return received' } })).toBe(2);
+      expect(await prisma.payment.count({ where: { orderId, businessId: scope.businessId } })).toBe(2);
+      expect(await prisma.commerceCase.findUnique({ where: { id: returned.id } })).toMatchObject({
+        state: 'WAITING', revision: 1, resolution: 'RETURN_RECEIVED_TO_STOCK',
+      });
+      expect((await api('GET', returnPath)).json().data.canReceiveReturn).toBe(false);
     } finally {
       await Promise.all(stops.map((stop) => stop()));
       await Promise.all(workers.map((worker) => worker.close()));

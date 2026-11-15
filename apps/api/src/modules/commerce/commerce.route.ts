@@ -12,7 +12,7 @@ import { caseInput, invoiceCheckoutInput, policyInput, preparationInput, quoteDe
 import { activeCommercePolicy, createCommerceQuote, decideCommerceQuote } from './commerce.quotes.js';
 import { invoiceView } from './commerce.invoices.js';
 import { updatePreparation } from './commerce.fulfillment.js';
-import { updateCommerceCase } from './commerce.cases.js';
+import { receiveCommerceReturn, updateCommerceCase } from './commerce.cases.js';
 
 const idParams = z.object({ id: z.string().min(1).max(100) });
 
@@ -128,13 +128,24 @@ export default async function commerceRoutes(app: FastifyInstance): Promise<void
       body: { equals: 'RESOLVED ' + item.id, mode: 'insensitive' }, direction: 'INBOUND',
       createdAt: { gte: new Date(+item.createdAt - 1000) }, textReceipt: { status: 'COMPLETED', businessId: actor.businessId, kind: 'TEXT' } },
       select: { id: true }, orderBy: { createdAt: 'desc' } });
-    return success(reply, { ...item, customerConfirmationId: evidence?.id ?? null });
+    const canReceiveReturn = actor.staffId === null && item.kind === 'RETURN' && item.state !== 'RESOLVED' && item.orderId &&
+      Boolean(await prisma.order.findFirst({ where: { id: item.orderId, businessId: actor.businessId, customerId: item.customerId,
+        status: 'FULFILLED', stockDeducted: true, deletedAt: null,
+        commerceQuote: { lines: { some: { productMode: 'TRACKED' }, every: { productMode: 'TRACKED', product: { commerceMode: 'TRACKED' } } } },
+      }, select: { id: true } }));
+    return success(reply, { ...item, customerConfirmationId: evidence?.id ?? null, canReceiveReturn: Boolean(canReceiveReturn) });
   });
 
   app.patch('/commerce/cases/:id', resolve, async (request, reply) => {
     const { id } = idParams.parse(request.params);
     const input = caseInput.parse(request.body);
     return success(reply, await prisma.$transaction((tx) => updateCommerceCase(tx, orderActor(request), id, input)));
+  });
+
+  app.post('/commerce/cases/:id/receive-return', owner, async (request, reply) => {
+    const { id } = idParams.parse(request.params);
+    const { revision } = z.object({ revision: z.number().int().min(0) }).strict().parse(request.body);
+    return success(reply, await prisma.$transaction((tx) => receiveCommerceReturn(tx, orderActor(request), id, revision)));
   });
 
   app.post('/commerce/orders/:id/followup', owner, async (request, reply) => {
