@@ -17,6 +17,7 @@ import {
 } from '../services/notifications/customer-notifications.js';
 import type { TemplateKey } from '../services/templates/template-engine.js';
 import { createOrderFromMessage } from '../modules/orders/orders.service.js';
+import { supportRequest } from '../modules/workflows/workflow.support.js';
 import { findOrderByReference } from '../modules/orders/orders.repository.js';
 import { findActiveCatalogProducts } from '../modules/products/products.repository.js';
 import {
@@ -349,6 +350,11 @@ async function applyClassificationEffects(
     await handleOrderIntent(message);
     return;
   }
+
+  if (supportRequest(body, result.intent === IntentType.STATUS_CHECK) && await prisma.workflow.findUnique({
+    where: { businessId_sourceId: { businessId: message.businessId, sourceId: message.id } },
+    select: { id: true },
+  })) return;
 
   if (result.intent === IntentType.STATUS_CHECK && result.source === ClassificationSource.RULE_ENGINE && !hasPolicyOverride(body)) {
     await handleStatusCheckIntent(message);

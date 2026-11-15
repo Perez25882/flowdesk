@@ -12,6 +12,7 @@ import {
   lockDueTextReceipt,
   TEXT_RECEIPT_RETENTION_MS,
 } from '../modules/webhook/text-receipts.js';
+import { admitWorkflow } from '../modules/workflows/workflow.store.js';
 import {
   createIntentClassificationQueue,
   CLASSIFICATION_EFFECT_WAITING,
@@ -231,6 +232,10 @@ export async function materializeTextMessage(id: string, now: Date): Promise<boo
       where: { id },
       data: { messageId: message.id },
     });
+    if (receipt.kind === 'TEXT' && !existing) {
+      await admitWorkflow(tx, { businessId, customerId: customer.id, messageId: message.id, receiptId: receipt.id,
+        phoneNumberId: receipt.phoneNumberId, body: receipt.body, replyTo: receipt.replyToWaId }, now);
+    }
     if (echo) {
       await completeTextReceipt(tx, receipt, now);
       return false;

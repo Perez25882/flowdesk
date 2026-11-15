@@ -222,6 +222,8 @@ model Business {
   staff              Staff[]
   staffActivities    StaffActivity[]
   stockMovements     StockMovement[]
+  workflowSettings   WorkflowSettings?
+  workflows          Workflow[]
 
   @@index([phone])
   @@index([plan])
@@ -314,6 +316,7 @@ model Customer {
   paymentRequests    PaymentRequest[]
   payments           Payment[]
   appointments       Appointment[]
+  workflows          Workflow[]
 
   @@unique([businessId, waNumber])
   @@unique([id, businessId])
@@ -1543,4 +1546,111 @@ model EmailOtp {
   @@index([businessId, purpose, createdAt(sort: Desc)])
   @@index([expiresAt])
   @@map("email_otps")
+}
+
+enum WorkflowState {
+  CREATED
+  READY
+  RUNNING
+  WAITING_CUSTOMER
+  WAITING_OWNER_APPROVAL
+  WAITING_STAFF
+  WAITING_PROVIDER
+  RETRY_SCHEDULED
+  REVIEW_REQUIRED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum WorkflowOperator {
+  SALES
+  BOOKINGS
+  PAYMENTS
+  FULFILLMENT
+  CARE
+}
+
+model WorkflowSettings {
+  businessId String @id
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  profile String
+  enabled Boolean @default(false)
+  supportMode String @default("OWNER_REVIEW")
+  revision Int @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@map("workflow_settings")
+}
+
+model Workflow {
+  id String @id @default(uuid())
+  businessId String
+  business Business @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  customerId String
+  customer Customer @relation(fields: [customerId, businessId], references: [id, businessId], onDelete: Restrict)
+  sourceId String
+  actionSourceId String?
+  correlationKey String
+  definition String
+  version Int
+  policyRevision Int
+  state WorkflowState @default(CREATED)
+  operator WorkflowOperator @default(CARE)
+  reason String
+  dueAt DateTime?
+  deadlineAt DateTime
+  revision Int @default(0)
+  recoveryCount Int @default(0)
+  orderId String?
+  appointmentId String?
+  sendId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  evidence WorkflowEvidence[]
+  approval WorkflowApproval?
+
+  @@unique([businessId, sourceId])
+  @@unique([businessId, actionSourceId])
+  @@unique([businessId, correlationKey])
+  @@unique([id, businessId])
+  @@index([dueAt])
+  @@index([businessId, createdAt, id])
+  @@map("workflows")
+}
+
+model WorkflowEvidence {
+  id BigInt @id @default(autoincrement())
+  workflowId String
+  businessId String
+  workflow Workflow @relation(fields: [workflowId, businessId], references: [id, businessId], onDelete: Restrict)
+  eventKey String
+  eventType String
+  state WorkflowState
+  operator WorkflowOperator
+  reason String
+  facts Json
+  createdAt DateTime @default(now())
+
+  @@unique([workflowId, eventKey])
+  @@index([workflowId, id])
+  @@map("workflow_evidence")
+}
+
+model WorkflowApproval {
+  workflowId String @id
+  businessId String
+  workflow Workflow @relation(fields: [workflowId, businessId], references: [id, businessId], onDelete: Restrict)
+  action String
+  resourceId String
+  evidenceKey String
+  definitionVersion Int
+  policyRevision Int
+  expiresAt DateTime
+  decision String?
+  decidedAt DateTime?
+  executedAt DateTime?
+
+  @@unique([workflowId, businessId])
+  @@map("workflow_approvals")
 }

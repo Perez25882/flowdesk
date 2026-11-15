@@ -2,6 +2,7 @@ import { Worker, UnrecoverableError } from 'bullmq';
 import { MessageDirection, MessageType, type Prisma, type WhatsAppSendState } from '@prisma/client';
 import { hasCapability } from '@flowdesk/shared';
 import { prisma } from '../config/database.js';
+import { verifyWorkflowSend } from '../modules/workflows/workflow.support.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
 import {
@@ -205,6 +206,10 @@ export async function processDurableOutbound(id: string): Promise<void> {
       where: { id: data.relatedOrderId, businessId: candidate.businessId, customerId: data.customerId ?? '', deletedAt: null },
       select: { id: true },
     })) reason = 'ORDER_TARGET_INVALID';
+    if (!reason && data.workflowAuthorization && !await verifyWorkflowSend(tx, {
+      workflowAuthorization: data.workflowAuthorization, id, businessId: candidate.businessId,
+      customerId: data.customerId, orderId: data.relatedOrderId, body: data.body,
+    })) reason = 'WORKFLOW_AUTHORIZATION_STALE';
     if (!reason && data.sentByStaffId) {
       const [staff] = await tx.$queryRaw<Array<{ role: 'MANAGER' | 'OPERATIONS' | 'DELIVERY' }>>`
         SELECT role::text FROM staff WHERE id = ${data.sentByStaffId} AND "businessId" = ${candidate.businessId} AND active FOR SHARE

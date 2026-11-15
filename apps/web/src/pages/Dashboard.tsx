@@ -15,6 +15,8 @@ import { SkeletonMetric, SkeletonRows } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import EmptyState from '@/components/shared/EmptyState';
 import { formatCurrency, timeAgo, customerLabel } from '@/lib/utils';
+import { isOwner } from '@/hooks/useAuth';
+import WorkCenter from '@/components/shared/WorkCenter';
 
 /**
  * The morning screen.
@@ -81,6 +83,7 @@ export default function DashboardPage(): React.JSX.Element {
 
       {/* Above everything, and gone the moment setup is finished. */}
       <SetupChecklist />
+      {isOwner() && <WorkCenter />}
 
       {/* What yesterday MEANT. The figures below say what happened. */}
       <DailyInsight />

@@ -67,3 +67,7 @@ The founder authorized G1-00 and G1-07 through G1-10 as one integration branch. 
 ### Final G1 local acceptance
 
 **Recommendation — PASS.** The authorized stabilization at `84c92ac0c5c70bad0b6c9d28e7ea15688ef33d4d` passed 411 full regression cases, 84 fresh repeat cases, 994 default tests and 53 smoke checks. The local PostgreSQL rollback and restore rehearsal passed. See the [final stabilization report](g1/final-stabilization-report.md) for the corrected races, historical uncertainty and production-assurance limits. Founder review and live-provider and hosted validation remain pending.
+
+### Batch 2 shared execution platform
+
+**Status** Implementation candidate. The integrated [Batch 2 report](batch-2/report.md) records acceptance status, tested source and remaining gates. See the [contract](batch-2/contract.md), [ADR](adr/0008-shared-workflow-execution.md) and [progress register](batch-2/progress.md).

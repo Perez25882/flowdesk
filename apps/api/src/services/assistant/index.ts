@@ -290,6 +290,8 @@ async function persistOutcome(input: RunAssistantInput, route: RouteResult, mode
     aiPolicy: {
       version: 1, mode, state, effect: route.effect, reasons: route.validationFailures,
       evidence: route.groundedOn, ...(result && !result.ok ? { providerFailure: result.reason } : {}),
+      ...(result?.ok ? { usage: { model: result.usage.model, inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens } } : {}),
       ...(failure ? { failure } : {}),
       ...(draftText && decision?.answer.fact ? { fact: { ...decision.answer.fact }, offer: decision.priceOffer } : {}),
     },

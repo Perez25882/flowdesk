@@ -276,6 +276,7 @@ export async function createApp(): Promise<FastifyInstance> {
       await protectedApp.register((await import('./modules/settings/settings.route.js')).default);
       await protectedApp.register((await import('./modules/staff/staff.route.js')).default);
       await protectedApp.register((await import('./modules/dashboard/dashboard.route.js')).default);
+      await protectedApp.register((await import('./modules/workflows/workflow.route.js')).default);
       await protectedApp.register((await import('./modules/settings/insights.route.js')).default);
       await protectedApp.register((await import('./modules/billing/billingCheckout.route.js')).default);
     });

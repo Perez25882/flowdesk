@@ -28,6 +28,9 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 1 execution contracts](g1/batch-1-contract.md) | Commercial identities, outbound lifecycle, fulfillment and release |
 | [Batch 1 engineering report](g1/batch-1-report.md) | Acceptance evidence, reproduction and release blockers |
 | [G1 final stabilization](g1/final-stabilization-report.md) | Final source, retail, inventory, payment retries and acceptance |
+| [Batch 2 platform contract](batch-2/contract.md) | Engine, operator handoffs, owner controls and recovery |
+| [Batch 2 progress](batch-2/progress.md) | Implementation checkpoints and exact remaining gates |
+| [Batch 2 acceptance report](batch-2/report.md) | Verification evidence and release decision |
 
 ## Engineering conventions
 

@@ -112,6 +112,7 @@ const envSchema = z.object({
   // WhatsApp onboarding; account signup itself uses email + password.
   META_CONFIG_ID: optionalString,
   WHATSAPP_TEXT_DISPATCH_ENABLED: booleanFromString.default(true),
+  WORKFLOW_DEFINITION_VERSION: z.enum(['1', '2']).default('1'),
 
   // ── AI / Intent classification ──────────────────────────────────────────
   // Absent = rule engine only. The rule engine handles ~80% of traffic, so the

@@ -14,6 +14,7 @@ import { scheduleDailyInsights } from './queues/insights.queue.js';
 import { startTextReceiptWorker } from './workers/text-receipt.worker.js';
 import { startPaystackSettlementWorker } from './workers/paystack-settlement.worker.js';
 import { startFulfillmentRecovery } from './workers/fulfillment-recovery.js';
+import { startWorkflowRecovery } from './modules/workflows/workflow.worker.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -40,6 +41,10 @@ async function startServer(): Promise<void> {
       AND finished_at IS NOT NULL AND rolled_back_at IS NULL) AS applied
   `;
   if (!schema?.applied) throw new Error('G1 schema is missing the durable stock alert migration');
+  await prisma.$queryRaw`SELECT "actionSourceId" FROM workflows LIMIT 0`;
+  await prisma.$queryRaw`SELECT 1 FROM workflow_settings LIMIT 0`;
+  await prisma.$queryRaw`SELECT 1 FROM workflow_evidence LIMIT 0`;
+  await prisma.$queryRaw`SELECT 1 FROM workflow_approvals LIMIT 0`;
   const workers = [outboundWorker, insightsWorker, intentClassifierWorker, ...(env.NODE_ENV === 'test'
     ? [] : [messageProcessorWorker, deadLetterWorker])];
   for (const worker of workers) {
@@ -65,6 +70,7 @@ async function startServer(): Promise<void> {
   const stopPaystack = startPaystackSettlementWorker();
   const stopOutbound = startDurableOutboundRecovery();
   const stopFulfillment = startFulfillmentRecovery();
+  const stopWorkflows = startWorkflowRecovery();
   let isShuttingDown = false;
 
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -86,6 +92,7 @@ async function startServer(): Promise<void> {
       await stopPaystack();
       await stopOutbound();
       await stopFulfillment();
+      await stopWorkflows();
       await drainQueues();
       await stopSSEFanout();
       await disconnectRedis();

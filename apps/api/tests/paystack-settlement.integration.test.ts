@@ -245,13 +245,14 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     expect(await prisma.paystackSettlement.findUnique({ where: { transactionId: maxId } })).toMatchObject({ notificationState: 'SUPPRESSED' });
   });
 
-  it('takes three signed retail journeys through the running workers, hosted settlement and signed delivery', async () => {
+  it('takes three G1 retail journeys and a Batch 2 operator journey through the running workers', async () => {
     const { createApp } = await import('../src/app.js');
     const { signAccessToken } = await import('../src/services/auth/tokens.js');
     const { intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
     const outbound = await import('../src/workers/outbound.worker.js');
     const { dispatchTextReceipts, openTextReceiptQueue, recoverClassificationHandoffs } = await import('../src/workers/text-receipt.worker.js');
     const { startFulfillmentRecovery } = await import('../src/workers/fulfillment-recovery.js');
+    const { startWorkflowRecovery } = await import('../src/modules/workflows/workflow.worker.js');
     const api = await createApp();
     const producer = openTextReceiptQueue();
     const workers = [intentClassifierWorker, outbound.outboundWorker];
@@ -260,6 +261,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     const running = workers.map((worker) => worker.run().catch((error: Error) => { workerErrors.push(error.name); }));
     const stopOutbound = outbound.startDurableOutboundRecovery();
     const stopFulfillment = startFulfillmentRecovery();
+    const stopWorkflow = startWorkflowRecovery();
 
     const foreign = await shop(true);
     function owner(businessId: string) {
@@ -268,7 +270,7 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
 
     await producer.ready();
     try {
-      for (let run = 0; run < 3; run++) {
+      for (let run = 0; run < 4; run++) {
         const fixture = await shop(true);
         const phone = randomUUID();
         await prisma.business.update({ where: { id: fixture.tenant.id }, data: {
@@ -282,6 +284,11 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
           businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10,
         } });
         const account = owner(fixture.tenant.id);
+        if (run === 3) {
+          const enabled = await api.inject({ method: 'PUT', url: '/api/v1/workflow-settings', headers: account,
+            payload: { profile: 'ONLINE_RETAIL', enabled: true, supportMode: 'VERIFIED_STATUS', revision: 0 } });
+          expect(enabled.statusCode, enabled.body).toBe(200);
+        }
         async function signedMeta(value: Record<string, unknown>) {
           const payload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages',
             value: { metadata: { phone_number_id: phone }, ...value },
@@ -293,10 +300,11 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
           expect(response.statusCode, response.body).toBe(200);
         }
 
-        async function admitText(body: string) {
+        async function admitText(body: string, replyTo?: string, sender = fixture.customer.waNumber) {
           const providerId = 'wamid.' + randomUUID();
-          const value = { messages: [{ id: providerId, from: fixture.customer.waNumber,
-            type: 'text', text: { body }, timestamp: String(Math.floor(Date.now() / 1000)) }] };
+          const value = { messages: [{ id: providerId, from: sender,
+            type: 'text', text: { body }, timestamp: String(Math.floor(Date.now() / 1000)),
+            ...(replyTo ? { context: { id: replyTo } } : {}) }] };
           await signedMeta(value);
           await signedMeta(value);
           const where = { phoneNumberId_waMessageId: { phoneNumberId: phone, waMessageId: providerId } };
@@ -331,9 +339,13 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
           return { state: send.state, reason: send.reason, providerMessageId: send.providerMessageId };
         }, { timeout: 40_000 }).toMatchObject({ state: 'PROVIDER_ACCEPTED', reason: null, providerMessageId: expect.stringMatching(/^wamid\./) });
         expect(metaCalls.get(quote.id)).toBeDefined();
+        if (run === 3) {
+          await expect.poll(async () => (await prisma.workflow.findFirst({ where: { sourceId: inquiry.id } }))?.state,
+            { timeout: 20_000 }).toBe('WAITING_CUSTOMER');
+        }
 
         await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF' } });
-        const source = await admitText('I want to buy 1 bag of Rice');
+        const source = await admitText('I want to buy 1 bag of Rice', run === 3 ? metaCalls.get(quote.id) : undefined);
         const order = await prisma.order.findUniqueOrThrow({ where: { inboundSourceMessageId: source.id } });
         expect(source).toMatchObject({ relatedOrderId: order.id, customerId: fixture.customer.id, businessId: fixture.tenant.id });
         expect(Number(order.totalAmount)).toBe(25);
@@ -342,11 +354,31 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
         });
         expect((await setStatus('CONFIRMED')).statusCode).toBe(200);
 
-        const checkout = await api.inject({ method: 'POST', url: '/api/v1/payments/links', headers: account,
-          payload: { customerId: fixture.customer.id, orderId: order.id, amount: 25, send: false },
-        });
-        expect(checkout.statusCode, checkout.body).toBe(201);
-        const request = await prisma.paymentRequest.findUniqueOrThrow({ where: { reference: checkout.json().data.reference } });
+        let checkoutSourceId: string | undefined;
+        if (run === 3) {
+          await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'AUTONOMOUS', autonomyAcceptedAt: new Date() } });
+          assistant.generate.mockResolvedValue({ ok: true, generation: { model: 'synthetic', inputTokens: 1, outputTokens: 1, text: JSON.stringify({
+            intent: IntentType.PAYMENT, confidence: 0.99, language: 'gh_en', sentiment: 'neutral',
+            entities: { products: [], orderReferences: [], deliveryArea: null }, answer: { canAnswer: false, text: null, groundedOn: [], fact: null },
+            clarification: { needed: false, missing: [] }, order: { isOrder: false, complete: false },
+            escalate: { needed: false, reason: null }, priceOffer: null, booking: null,
+          }) } });
+          const ask = await admitText('Send me a payment link');
+          expect(ask.aiPolicy).toMatchObject({ state: 'HANDED_OFF', effect: 'checkout' });
+          checkoutSourceId = ask.id;
+        } else {
+          const checkout = await api.inject({ method: 'POST', url: '/api/v1/payments/links', headers: account,
+            payload: { customerId: fixture.customer.id, orderId: order.id, amount: 25, send: false },
+          });
+          expect(checkout.statusCode, checkout.body).toBe(201);
+        }
+        const requests = await prisma.paymentRequest.findMany({ where: { businessId: fixture.tenant.id, orderId: order.id } });
+        expect(requests).toHaveLength(1);
+        const request = requests[0]!;
+        if (run === 3) {
+          await expect.poll(async () => (await prisma.workflow.findFirst({ where: { actionSourceId: source.id } }))?.reason,
+            { timeout: 20_000 }).toBe('AWAITING_VERIFIED_PAYMENT');
+        }
         const sale = { ...fixture, order, request };
         verify(sale);
         await Promise.all([accept(sale), accept(sale)]);
@@ -380,17 +412,115 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
         await signedMeta(status);
         await expect.poll(() => prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }), { timeout: 15_000 })
           .toMatchObject({ state: 'DELIVERED', attempts: 1, deliveredAt: expect.any(Date) });
+        if (run === 3) {
+          const trigger = { businessId_sourceId: { businessId: fixture.tenant.id, sourceId: inquiry.id } };
+          await expect.poll(async () => (await prisma.workflow.findUnique({ where: trigger }))?.state,
+            { timeout: 30_000 }).toBe('COMPLETED');
+          const execution = await prisma.workflow.findUniqueOrThrow({ where: trigger,
+            include: { evidence: { orderBy: { id: 'asc' } } } });
+          expect(execution).toMatchObject({ orderId: order.id, actionSourceId: source.id, operator: 'CARE', version: 1 });
+          expect(execution.evidence.map((entry) => entry.eventType)).toEqual(expect.arrayContaining([
+            'WHATSAPP_INBOUND', 'PROCESSING', 'SALES_QUOTE', 'ORDER_LINKED', 'PAYMENT_REQUEST', 'PAYMENT_SETTLED', 'DELIVERY_DISPATCHED',
+            'DELIVERY_COMPLETED', 'OUTBOUND_CONFIRMED',
+          ]));
+          expect((await api.inject({ url: '/api/v1/workflows/' + execution.id, headers: owner(foreign.tenant.id) })).statusCode).toBe(404);
+
+          const getWork = (sourceId: string) => prisma.workflow.findUniqueOrThrow({ where: {
+            businessId_sourceId: { businessId: fixture.tenant.id, sourceId },
+          } });
+          async function confirmSend(sendId: string) {
+            await expect.poll(async () => (await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } })).state,
+              { timeout: 25_000 }).toBe('PROVIDER_ACCEPTED');
+            const send = await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: sendId } });
+            await signedMeta({ statuses: [{ id: send.providerMessageId, status: 'delivered', recipient_id: fixture.customer.waNumber,
+              timestamp: String(Math.floor(Date.now() / 1000)), biz_opaque_callback_data: sendId }] });
+          }
+          await expect.poll(async () => (await getWork(checkoutSourceId!)).sendId, { timeout: 20_000 }).toEqual(expect.any(String));
+          await confirmSend((await getWork(checkoutSourceId!)).sendId!);
+          await expect.poll(async () => (await getWork(checkoutSourceId!)).state, { timeout: 20_000 }).toBe('COMPLETED');
+          const question = await admitText('What is the payment status for ' + order.referenceNumber + '?');
+          await expect.poll(async () => (await getWork(question.id)).sendId, { timeout: 20_000 }).toEqual(expect.any(String));
+          await confirmSend((await getWork(question.id)).sendId!);
+          await expect.poll(async () => (await getWork(question.id)).state, { timeout: 20_000 }).toBe('COMPLETED');
+          const unknown = await admitText('What is the payment status for FD-UNKNOWN?');
+          await expect.poll(async () => (await getWork(unknown.id)).reason, { timeout: 20_000 }).toBe('SUPPORT_EVIDENCE_UNAVAILABLE');
+
+          expect((await api.inject({ method: 'PUT', url: '/api/v1/workflow-settings', headers: account,
+            payload: { profile: 'ONLINE_RETAIL', enabled: true, supportMode: 'OWNER_REVIEW', revision: 1 } })).statusCode).toBe(200);
+          const held = await admitText('Where is my order ' + order.referenceNumber + '?');
+          await expect.poll(async () => (await getWork(held.id)).state, { timeout: 20_000 }).toBe('WAITING_OWNER_APPROVAL');
+          const waiting = await getWork(held.id);
+          const { env } = await import('../src/config/env.js');
+          const versionBefore = env.WORKFLOW_DEFINITION_VERSION;
+          env.WORKFLOW_DEFINITION_VERSION = '2';
+          const decide = (headers: ReturnType<typeof owner>) => api.inject({ method: 'POST',
+            url: '/api/v1/workflows/' + waiting.id + '/decision', headers, payload: { revision: waiting.revision, approve: true } });
+          expect((await decide(owner(foreign.tenant.id))).statusCode).toBe(404);
+          const decisions = await Promise.all([decide(account), decide(account)]);
+          expect(decisions.map((decision) => decision.statusCode).sort()).toEqual([200, 409]);
+          await expect.poll(async () => (await getWork(held.id)).sendId, { timeout: 20_000 }).toEqual(expect.any(String));
+          await confirmSend((await getWork(held.id)).sendId!);
+          await expect.poll(async () => (await getWork(held.id)).state, { timeout: 20_000 }).toBe('COMPLETED');
+          expect((await getWork(held.id)).version).toBe(1);
+
+          const toCancel = await admitText('Where is my package, ' + order.referenceNumber + '?');
+          await expect.poll(async () => (await getWork(toCancel.id)).state, { timeout: 20_000 }).toBe('WAITING_OWNER_APPROVAL');
+          const open = await getWork(toCancel.id);
+          expect(open.version).toBe(2);
+          env.WORKFLOW_DEFINITION_VERSION = versionBefore;
+          expect((await api.inject({ method: 'POST', url: '/api/v1/workflows/' + open.id + '/cancel', headers: account,
+            payload: { revision: open.revision } })).statusCode).toBe(200);
+          expect((await api.inject({ method: 'POST', url: '/api/v1/workflows/' + open.id + '/decision', headers: account,
+            payload: { revision: open.revision, approve: true } })).statusCode).toBe(409);
+          expect(await getWork(toCancel.id)).toMatchObject({ state: 'CANCELLED', sendId: null, dueAt: null });
+
+          expect((await api.inject({ method: 'PUT', url: '/api/v1/workflow-settings', headers: account,
+            payload: { profile: 'APPOINTMENT', enabled: true, supportMode: 'OWNER_REVIEW', revision: 2 } })).statusCode).toBe(200);
+          await prisma.business.update({ where: { id: fixture.tenant.id }, data: {
+            aiAssistMode: 'GROUNDED_AUTO', bookingsEnabled: true,
+            businessProfile: { openingHours: { opensAt: '08:00', closesAt: '17:00',
+              days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] } },
+          } });
+          const service = await prisma.service.create({ data: { businessId: fixture.tenant.id, name: 'Consultation', durationMinutes: 30 } });
+          const { findSlots } = await import('../src/modules/bookings/bookings.service.js');
+          const { slots } = await findSlots(fixture.tenant.id, { serviceId: service.id, from: new Date(Date.now() + 2 * 60 * 60_000), days: 14, limit: 8 });
+          expect(slots.length).toBeGreaterThan(0);
+          assistant.generate.mockResolvedValue({ ok: true, generation: { model: 'synthetic', inputTokens: 1, outputTokens: 1, text: JSON.stringify({
+            intent: IntentType.INQUIRY, confidence: 0.99, language: 'gh_en', sentiment: 'neutral',
+            entities: { products: [], orderReferences: [], deliveryArea: null }, answer: { canAnswer: true, text: null, groundedOn: [], fact: null },
+            clarification: { needed: false, missing: [] }, order: { isOrder: false, complete: false },
+            escalate: { needed: false, reason: null }, priceOffer: null, booking: { serviceId: service.id, startsAt: slots[0]!.startsAt.toISOString() },
+          }) } });
+          const booking = await admitText('Book Consultation ' + slots[0]!.startsAt.toISOString());
+          await expect.poll(async () => (await getWork(booking.id)).sendId, { timeout: 20_000 }).toEqual(expect.any(String));
+          await confirmSend((await getWork(booking.id)).sendId!);
+          await expect.poll(async () => (await getWork(booking.id)).state, { timeout: 20_000 }).toBe('COMPLETED');
+          const appointment = await prisma.appointment.findUniqueOrThrow({ where: { assistantMessageId: booking.id } });
+          const duplicateSlot = await admitText(booking.body!, undefined, '233209999999');
+          await expect.poll(async () => (await getWork(duplicateSlot.id)).state, { timeout: 20_000 }).toBe('REVIEW_REQUIRED');
+          expect(await prisma.appointment.count({ where: { businessId: fixture.tenant.id } })).toBe(1);
+          const rider = await prisma.staff.create({ data: { businessId: fixture.tenant.id, name: 'Synthetic rider',
+            phone: '233202334455', role: 'DELIVERY', inviteAcceptedAt: new Date() } });
+          const cancelAppointment = (headers: ReturnType<typeof owner>) => api.inject({ method: 'PATCH',
+            url: '/api/v1/appointments/' + appointment.id, headers, payload: { status: 'CANCELLED' } });
+          const riderAccount = { authorization: 'Bearer ' + signAccessToken({ businessId: fixture.tenant.id,
+            staffId: rider.id, role: 'DELIVERY', plan: 'BUSINESS' }, '15m') };
+          expect((await cancelAppointment(riderAccount)).statusCode).toBe(403);
+          expect((await api.inject({ url: '/api/v1/workflows', headers: riderAccount })).statusCode).toBe(403);
+          expect((await cancelAppointment(account)).statusCode).toBe(200);
+          expect(await prisma.appointment.findUnique({ where: { id: appointment.id } })).toMatchObject({ status: 'CANCELLED' });
+        }
         await recoverClassificationHandoffs(producer.enqueue, new Date(Date.now() + 40_000));
       }
       expect(workerErrors).toEqual([]);
     } finally {
-      await Promise.all([stopOutbound(), stopFulfillment()]);
+      await Promise.all([stopOutbound(), stopFulfillment(), stopWorkflow()]);
       await Promise.all(workers.map((worker) => worker.close()));
       await Promise.all(running);
       await producer.close();
       await api.close();
     }
-  }, 180_000);
+  }, 240_000);
 
   it('rejects an invalid signature and ignores unsupported events without financial effects', async () => {
     const fixture = await shop();

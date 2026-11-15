@@ -29,6 +29,7 @@ export interface OutboundTemplate {
 
 export interface OutboundJobData {
   businessId: string;
+  workflowAuthorization?: { id: string; evidenceKey: string; payment: boolean };
   /** Customer this message belongs to, so the sent copy can be recorded. */
   customerId: string | null;
   ownerLowStock?: true;
