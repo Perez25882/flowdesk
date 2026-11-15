@@ -10,5 +10,6 @@
 | [0006 Durable WhatsApp media and business-app echoes](0006-whatsapp-media-echo.md) | Implemented for G1-06 | 2026-11-14 |
 | [0007 Batch 1 execution recovery](0007-batch-1-execution-recovery.md) | Integration candidate | 2026-11-14 |
 | [0008 Shared workflow execution](0008-shared-workflow-execution.md) | Integration candidate | 2026-11-15 |
+| [0009 Commerce records and authority](0009-commerce-authority.md) | Integration candidate | 2026-11-15 |
 
 Each record captures the context, decision, alternatives and consequences. Preserve previous records when a decision changes and link its replacement.

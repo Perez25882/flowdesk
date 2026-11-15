@@ -37,7 +37,7 @@ The supported invoice is an operational GHS invoice. It does not add jurisdictio
 
 ## Fulfillment
 
-The workflow creates one prep or production task after verified ledger evidence reaches the configured release threshold. The default is payment in full. Release on a verified deposit requires explicit enablement and a configured deposit. The invoice continues to show its actual outstanding amount.
+The workflow creates one prep or production task after verified ledger evidence reaches the configured release threshold. Release locks the same order row as cancellation and rechecks the current status. The default is payment in full. Release on a verified deposit requires explicit enablement and a configured deposit. The invoice continues to show its actual outstanding amount.
 
 The existing order surface starts preparation. A permitted owner or staff member records that packing or production is ready. Delivery staff retain assignment-scoped shipment permissions. Dispatch requires acknowledged readiness, eligible payment and a delivery order. Pickup requires staff collection confirmation. Cancellation before handoff terminates preparation. Delivery and pickup evidence are separate from customer notification, whose verified completion depends on signed outbound status.
 

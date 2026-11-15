@@ -12,6 +12,10 @@ async function preparationForOrder(tx: Tx, businessId: string, orderId: string) 
 }
 
 export async function releasePreparation(tx: Tx, businessId: string, orderId: string): Promise<string | null> {
+  const [order] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id FROM orders WHERE id = ${orderId} AND "businessId" = ${businessId} AND "deletedAt" IS NULL FOR UPDATE
+  `;
+  if (!order) return null;
   const invoice = await preparationForOrder(tx, businessId, orderId);
   if (!invoice || invoice.order.status === 'CANCELLED' || !invoice.order.commerceQuote) return null;
   if (!(await invoiceAmounts(tx, invoice)).verified.gte(invoice.releaseThreshold)) return null;

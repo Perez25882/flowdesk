@@ -35,6 +35,11 @@ const steps: Record<string, string> = {
   APPROVAL_REJECTED: 'Owner declined the update',
   CANCELLED: 'Work cancelled',
   RETRY_REQUESTED: 'Owner requested a recovery check',
+  COMMERCE_QUOTE: 'Recorded the itemized quote',
+  COMMERCE_INVOICE: 'Issued the invoice',
+  COMMERCE_CASE: 'Recorded the customer case',
+  COMMERCE_RESOLVED: 'Recorded verified completion',
+  PICKUP_COMPLETED: 'Staff confirmed collection',
 };
 const reasons: Record<string, string> = {
   OWNER_STATUS_APPROVAL: 'Approve sending the customer a verified update about their order.',
@@ -45,6 +50,10 @@ const reasons: Record<string, string> = {
   APPROVAL_EXPIRED: 'The approval window closed.',
   APPROVAL_STALE: 'Business records changed after this approval was requested.',
   BUSINESS_POLICY_CHANGED: 'Business settings changed while this was in progress.',
+  CUSTOM_QUOTE_REVIEW: 'Review the customer’s specifications and quoted price.',
+  QUOTE_AWAITS_ACCEPTANCE: 'The itemized quote is waiting for the customer’s decision.',
+  AWAITING_INVOICE_BALANCE: 'A payment was verified. The remaining invoice balance is due.',
+  COMMERCE_EVIDENCE_CHANGED: 'The current catalogue, stock, or quote terms require review.',
   ESCALATED_BY_OWNER: 'You moved this work to review.',
 };
 const profiles = {

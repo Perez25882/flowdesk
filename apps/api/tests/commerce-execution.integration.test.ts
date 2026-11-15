@@ -316,16 +316,26 @@ fixtureOnly('Batch 3 commerce on PostgreSQL and BullMQ', () => {
         { timeout: 25_000 }).toEqual(expect.any(String));
       const cancelOrderId = (await prisma.commerceQuote.findUniqueOrThrow({ where: { id: cancelQuote.id } })).orderId!;
       const cancelOrder = await prisma.order.findUniqueOrThrow({ where: { id: cancelOrderId } });
+      const cancelledInvoice = await prisma.commerceInvoice.findUniqueOrThrow({ where: { orderId: cancelOrderId } });
+      const cancelDeposit = await api('POST', '/commerce/invoices/' + cancelledInvoice.id + '/checkout', { send: false });
+      expect(cancelDeposit.statusCode, cancelDeposit.body).toBe(200);
+      await settle(cancelDeposit.json().data.reference, '840005');
+      const cancelBalance = await api('POST', '/commerce/invoices/' + cancelledInvoice.id + '/checkout', { send: false });
+      expect(cancelBalance.statusCode, cancelBalance.body).toBe(200);
+      await settle(cancelBalance.json().data.reference, '840006');
       const cancellation = await inbound('Cancel order ' + cancelOrder.referenceNumber);
       await expect.poll(async () => (await workflowFor(cancellation))?.reason, { timeout: 25_000 }).toBe('CUSTOMER_CASE_OPEN');
       const cancellationCase = await prisma.commerceCase.findFirstOrThrow({ where: { ...scope, sourceId: cancellation } });
       expect(cancellationCase).toMatchObject({ state: 'OPEN', orderId: cancelOrderId, kind: 'CANCELLATION' });
       const cancel = () => api('PATCH', '/orders/' + cancelOrderId + '/status', { status: 'CANCELLED', note: 'Customer requested cancellation' });
-      expect((await cancel()).statusCode).toBe(200);
+      const { releasePreparation } = await import('../src/modules/commerce/commerce.fulfillment.js');
+      const [cancelled] = await Promise.all([cancel(), prisma.$transaction((tx) => releasePreparation(tx, scope.businessId, cancelOrderId))]);
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
       expect((await cancel()).statusCode).toBe(200);
       expect((await prisma.product.findUniqueOrThrow({ where: { id: bag.json().data.id } })).stockQuantity.toString()).toBe('2');
       expect(await prisma.stockMovement.count({ where: { businessId: scope.businessId, orderId: cancelOrderId } })).toBe(2);
-      const cancelledInvoice = await prisma.commerceInvoice.findUniqueOrThrow({ where: { orderId: cancelOrderId } });
+      expect(await prisma.commercePreparation.count({ where: { invoiceId: cancelledInvoice.id, state: { not: 'CANCELLED' } } })).toBe(0);
+      expect(await prisma.payment.count({ where: { businessId: scope.businessId, orderId: cancelOrderId } })).toBe(2);
       expect((await api('POST', '/commerce/invoices/' + cancelledInvoice.id + '/checkout', { send: false })).statusCode).toBe(409);
       expect((await api('PATCH', '/commerce/cases/' + cancellationCase.id, {
         state: 'RESOLVED', revision: 0, staffId: null, resolution: 'CANCELLATION_CONFIRMED',

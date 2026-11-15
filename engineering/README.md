@@ -31,6 +31,9 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 2 platform contract](batch-2/contract.md) | Engine, operator handoffs, owner controls and recovery |
 | [Batch 2 progress](batch-2/progress.md) | Implementation checkpoints and exact remaining gates |
 | [Batch 2 acceptance report](batch-2/report.md) | Verification evidence and release decision |
+| [Batch 3 commerce contract](batch-3/contract.md) | Quote, stock, invoice, fulfillment and care boundaries |
+| [Batch 3 implementation register](batch-3/progress.md) | Approved source, feature disposition and checkpoints |
+| [Batch 3 acceptance report](batch-3/report.md) | Commerce workflow evidence and release decision |
 
 ## Engineering conventions
 
