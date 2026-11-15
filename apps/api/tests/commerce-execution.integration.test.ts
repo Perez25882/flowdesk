@@ -219,7 +219,24 @@ fixtureOnly('Batch 3 commerce on PostgreSQL and BullMQ', () => {
       const quote = await prisma.commerceQuote.findFirstOrThrow({ where: { ...scope, sourceId } });
       expect(quote.total.toFixed(2)).toBe('60.00');
       await delivery('commerce-quote-' + quote.id);
-      await inbound('ACCEPT ' + quote.id);
+      await prisma.$executeRawUnsafe('CREATE SEQUENCE commerce_test_invoice_failure_seq');
+      await prisma.$executeRawUnsafe(`CREATE FUNCTION commerce_test_invoice_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM nextval('commerce_test_invoice_failure_seq'); RAISE EXCEPTION 'synthetic invoice write failure'; END $$`);
+      await prisma.$executeRawUnsafe(`CREATE TRIGGER commerce_test_invoice_failure BEFORE INSERT ON commerce_invoices
+        FOR EACH ROW EXECUTE FUNCTION commerce_test_invoice_failure()`);
+      try {
+        await inbound('ACCEPT ' + quote.id);
+        await expect.poll(async () => (await prisma.$queryRaw<{ is_called: boolean }[]>`
+          SELECT is_called FROM commerce_test_invoice_failure_seq
+        `)[0]?.is_called, { timeout: 25_000 }).toBe(true);
+        expect(await prisma.commerceQuote.findUnique({ where: { id: quote.id } })).toMatchObject({ state: 'OFFERED', orderId: null });
+        expect(await prisma.order.count({ where: scope })).toBe(0);
+        expect((await prisma.product.findUniqueOrThrow({ where: { id: blue.json().data.id } })).stockQuantity.toString()).toBe('4');
+      } finally {
+        await prisma.$executeRawUnsafe('DROP TRIGGER commerce_test_invoice_failure ON commerce_invoices');
+        await prisma.$executeRawUnsafe('DROP FUNCTION commerce_test_invoice_failure()');
+        await prisma.$executeRawUnsafe('DROP SEQUENCE commerce_test_invoice_failure_seq');
+      }
       await expect.poll(async () => (await prisma.commerceQuote.findUnique({ where: { id: quote.id } }))?.orderId,
         { timeout: 30_000 }).toEqual(expect.any(String));
       const accepted = await prisma.commerceQuote.findUniqueOrThrow({ where: { id: quote.id } });
