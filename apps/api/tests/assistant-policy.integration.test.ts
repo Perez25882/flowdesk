@@ -13,7 +13,8 @@ vi.mock('../src/services/intent/assistant-providers/nvidia.js', () => ({
 }));
 vi.mock('../src/services/assistant/pending-order.js', async (original) => {
   const actual = await original<typeof import('../src/services/assistant/pending-order.js')>();
-  return { ...actual, findOpenPendingOrder: vi.fn(actual.findOpenPendingOrder) };
+  return { ...actual, findOpenPendingOrder: vi.fn(actual.findOpenPendingOrder),
+    withConversationLock: vi.fn(actual.withConversationLock) };
 });
 vi.mock('../src/services/whatsapp/client.js', async (original) => ({
   ...await original<object>(), loadTenantCredentials: vi.fn(async () => ({ phoneNumberId: 'synthetic' })),
@@ -245,6 +246,38 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     const replay = await orders.createOrderFromAssistant(fixture.business.id, fixture.customer.id,
       [{ productId: fixture.product.id, quantity: 2, unitPrice: 80, description: 'Rice' }], input.body, { messageId: input.messageId });
     expect(replay.id).toBe(rows[0]?.id);
+  });
+
+  it('lets the conversation lock winner claim the same inbound purchase after a losing worker defers', async () => {
+    const fixture = await shop();
+    const input = await inbound(fixture, 'I want 2 Rice');
+    model.generate.mockResolvedValue(output(decision({ intent: IntentType.ORDER, order: { isOrder: true, complete: true },
+      entities: { products: [{ productId: fixture.product.id, mention: 'Rice', quantity: 2 }], orderReferences: [], deliveryArea: null },
+    })));
+    const moduleId = '../src/services/assistant/pending-order.js';
+    const actual = await vi.importActual<typeof import('../src/services/assistant/pending-order.js')>(moduleId);
+    const mocked = await import('../src/services/assistant/pending-order.js');
+    let resume!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => { entered = resolve; });
+    const release = new Promise<void>((resolve) => { resume = resolve; });
+    vi.mocked(mocked.withConversationLock).mockImplementationOnce((businessId, customerId, work) =>
+      actual.withConversationLock(businessId, customerId, async () => {
+        entered();
+        await release;
+        return work();
+      }));
+    const winner = assistant.runAssistant(input);
+    try {
+      await Promise.race([held, winner.then(() => { throw new Error('Winner did not retain the Redis lock'); })]);
+      expect(await assistant.runAssistant(input)).toMatchObject({ escalated: true });
+      expect(await read(input.messageId)).toMatchObject({ aiPolicy: null, requiresReview: true });
+    } finally {
+      resume();
+      await winner;
+    }
+    expect(await prisma.order.count({ where: { inboundSourceMessageId: input.messageId } })).toBe(1);
+    expect(model.generate).toHaveBeenCalledTimes(1);
   });
 
   it('holds a conditional purchase and a model quantity that contradicts the inbound message', async () => {

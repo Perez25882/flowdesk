@@ -70,9 +70,11 @@ export async function runAssistant(input: RunAssistantInput): Promise<RunAssista
   if (source.business.aiAssistMode === 'OFF') return NOT_RUN;
   const result = await withConversationLock(input.businessId, input.customerId, () => runAssistantLocked(input, source.business));
   if (result) return result;
+  logger.warn({ businessId: input.businessId, messageId: input.messageId, phase: 'conversation_lock' }, 'Assistant turn deferred to review');
   await prisma.message.updateMany({ where: { ...scope(input), aiPolicy: { equals: Prisma.DbNull } }, data: {
-    requiresReview: true, aiPolicy: { version: 1, state: 'REVIEW', mode: source.business.aiAssistMode,
-      effect: 'handoff', reasons: ['conversation_lock_unavailable'] },
+    // A concurrent winner may hold the Redis lock and still be about to
+    // claim this message. Leave its durable policy claim available.
+    requiresReview: true,
   } });
   return { ...NOT_RUN, action: 'draft', escalated: true, policyHandled: true };
 }
