@@ -507,8 +507,17 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
             url: '/api/v1/appointments/' + appointment.id, headers, payload: { status: 'CANCELLED' } });
           const riderAccount = { authorization: 'Bearer ' + signAccessToken({ businessId: fixture.tenant.id,
             staffId: rider.id, role: 'DELIVERY', plan: 'BUSINESS' }, '15m') };
+          expect((await api.inject({ url: '/api/v1/appointments', headers: riderAccount })).statusCode).toBe(403);
           expect((await cancelAppointment(riderAccount)).statusCode).toBe(403);
           expect((await api.inject({ url: '/api/v1/workflows', headers: riderAccount })).statusCode).toBe(403);
+          expect((await cancelAppointment(owner(foreign.tenant.id))).statusCode).toBe(404);
+          const manager = await prisma.staff.create({ data: { businessId: fixture.tenant.id, name: 'Synthetic manager',
+            phone: '233202334466', role: 'MANAGER', inviteAcceptedAt: new Date() } });
+          const managerAccount = { authorization: 'Bearer ' + signAccessToken({ businessId: fixture.tenant.id,
+            staffId: manager.id, role: 'MANAGER', plan: 'BUSINESS' }, '15m') };
+          expect((await api.inject({ url: '/api/v1/appointments', headers: managerAccount })).statusCode).toBe(200);
+          expect((await api.inject({ method: 'PATCH', url: '/api/v1/appointments/' + appointment.id, headers: managerAccount,
+            payload: { status: 'CONFIRMED' } })).statusCode).toBe(200);
           expect((await cancelAppointment(account)).statusCode).toBe(200);
           expect(await prisma.appointment.findUnique({ where: { id: appointment.id } })).toMatchObject({ status: 'CANCELLED' });
         }

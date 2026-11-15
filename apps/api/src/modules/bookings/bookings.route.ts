@@ -25,12 +25,12 @@ import {
 export default async function bookingRoutes(app: FastifyInstance): Promise<void> {
   const canReadCatalogue = { preHandler: requireCapability('products.read') };
   const canWriteCatalogue = { preHandler: requireCapability('products.write') };
-  const canReadOrders = { preHandler: requireCapability('orders.read') };
-  // `orders.create` rather than a booking-specific capability: taking an
-  // appointment is creating the thing this kind of business sells, and anyone
-  // trusted to raise an order is trusted to write one into the diary.
-  const canWriteOrders = { preHandler: requireCapability('orders.create') };
-  const canTransitionOrders = { preHandler: requireCapability('orders.transition') };
+  // The diary has tenant-wide access. Staff who can take orders may operate it.
+  // The riders' assignment-scoped read and transition grants apply to shipments.
+  const canAccessDiary = requireCapability('orders.create');
+  const canReadOrders = { preHandler: [canAccessDiary, requireCapability('orders.read')] };
+  const canWriteOrders = { preHandler: canAccessDiary };
+  const canTransitionOrders = { preHandler: [canAccessDiary, requireCapability('orders.transition')] };
 
   app.get('/services', canReadCatalogue, async (request: FastifyRequest, reply: FastifyReply) => {
     return success(reply, await service.listServices(request.business!.id));
