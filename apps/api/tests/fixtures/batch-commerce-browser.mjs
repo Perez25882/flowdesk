@@ -35,9 +35,11 @@ const scope = { businessId: business.id, customerId: customer.id };
 await prisma.workflowSettings.create({ data: { businessId: business.id, profile: 'ONLINE_RETAIL', enabled: true } });
 await prisma.commercePolicy.create({ data: { businessId: business.id, enabled: true, allowDelivery: true } });
 const product = await prisma.product.create({ data: { businessId: business.id, name: 'Fixture item', sku: 'FIXTURE', unit: 'piece', price: 24 } });
+const source = await prisma.message.create({ data: { ...scope, waMessageId: randomUUID(), direction: 'INBOUND', type: 'TEXT',
+  processed: true, body: 'Synthetic accepted order evidence' } });
 const order = await prisma.order.create({ data: {
   ...scope, referenceNumber: 'FD-QBROWSER', rawMessage: 'Synthetic accepted order', status: 'CONFIRMED', totalAmount: 24, amountPaid: 24,
-  stockDeducted: true, deliveryAddress: 'Synthetic address',
+  stockDeducted: true, deliveryAddress: 'Synthetic address', inboundSourceMessageId: source.id,
 } });
 await prisma.commerceQuote.create({ data: {
   ...scope, orderId: order.id, requestKey: randomUUID(), requestHash: randomUUID(), state: 'ACCEPTED', deliveryMode: 'DELIVERY',
@@ -62,6 +64,14 @@ const receipt = await prisma.paystackReceipt.create({ data: {
 await prisma.paystackSettlement.create({ data: { transactionId: randomUUID(), requestId: request.id,
   paymentId: payment.id, receiptId: receipt.id, notificationState: 'SUPPRESSED' } });
 if (!await prisma.$transaction((tx) => releasePreparation(tx, business.id, order.id))) throw new Error('Verified prep fixture did not release');
+await prisma.workflow.create({ data: {
+  ...scope, sourceId: source.id, correlationKey: 'browser:' + randomUUID(), definition: 'whatsapp-business', version: 3,
+  policyRevision: 1, operator: 'FULFILLMENT', state: 'WAITING_STAFF', reason: 'READY_FOR_FULFILLMENT', orderId: order.id,
+  deadlineAt: new Date(Date.now() + 3_600_000), evidence: { create: {
+    eventKey: 'browser:verified-payment', eventType: 'PAYMENT_SETTLED', operator: 'FULFILLMENT', state: 'WAITING_STAFF',
+    reason: 'READY_FOR_FULFILLMENT', facts: { orderId: order.id, invoiceId: invoice.id, paymentId: payment.id },
+  } },
+} });
 
 const initial = await prisma.message.create({ data: { ...scope, waMessageId: randomUUID(),
   direction: 'INBOUND', type: 'TEXT', processed: true, body: 'Wrong item FD-QBROWSER' } });
@@ -110,6 +120,7 @@ try {
   await invoicePanel.getByText('Packing · Ready', { exact: true }).waitFor();
 
   await page.goto(base + '/dashboard');
+  await page.getByText(/Fulfillment & Operations · Needs staff action/).waitFor();
   await page.getByRole('button', { name: 'Customer cases', exact: true }).click();
   await page.getByRole('button', { name: 'View case', exact: true }).click();
   await page.getByText('Customer confirmed the resolution.', { exact: true }).waitFor();
