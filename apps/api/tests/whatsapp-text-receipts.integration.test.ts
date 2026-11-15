@@ -126,10 +126,19 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       });
     }
 
-    function tenant(waPhoneNumberId: string, active = true) {
-      return prisma.business.create({
+    async function tenant(waPhoneNumberId: string, active = true) {
+      const business = await prisma.business.create({
         data: { waPhoneNumberId, active, name: 'G1 Fixture', ownerName: 'Fixture' },
       });
+      // Most fixture numbers represent existing connections. Scope historical
+      // ownership to first bindings and retain real boundaries on reassignment.
+      await prisma.$executeRaw`
+        UPDATE whatsapp_phone_ownership AS current SET "startedAt" = ${new Date(Date.now() - 60_000)}
+        WHERE current."phoneNumberId" = ${waPhoneNumberId} AND current."businessId" = ${business.id} AND current."endedAt" IS NULL
+          AND NOT EXISTS (SELECT 1 FROM whatsapp_phone_ownership AS prior
+            WHERE prior."phoneNumberId" = current."phoneNumberId" AND prior."endedAt" IS NOT NULL)
+      `;
+      return business;
     }
 
     it('recreates an evicted classifier job until PostgreSQL records classification', async () => {
@@ -589,10 +598,6 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       const phone = newId();
       const business = await tenant(phone, false);
       const id = newId();
-      // This scenario starts with historical ownership. Pin the fixture this
-      // way independently of the JS and PostgreSQL clocks' second boundary.
-      await prisma.$executeRaw`UPDATE whatsapp_phone_ownership SET "startedAt" = ${new Date(Date.now() - 60_000)}
-        WHERE "phoneNumberId" = ${phone} AND "businessId" = ${business.id} AND "endedAt" IS NULL`;
       expect((await signed([change(phone, text(id))])).statusCode).toBe(200);
       const pending = await receipt(phone, id);
       expect(pending).toMatchObject({ businessId: business.id, status: 'PENDING' });

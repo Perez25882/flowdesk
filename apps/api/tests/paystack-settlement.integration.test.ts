@@ -274,6 +274,10 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
         await prisma.business.update({ where: { id: fixture.tenant.id }, data: {
           aiAssistMode: 'GROUNDED_AUTO', waPhoneNumberId: phone, waAccessToken: 'synthetic-batch-token',
         } });
+        await prisma.$executeRaw`
+          UPDATE whatsapp_phone_ownership SET "startedAt" = ${new Date(Date.now() - 60_000)}
+          WHERE "phoneNumberId" = ${phone} AND "businessId" = ${fixture.tenant.id} AND "endedAt" IS NULL
+        `;
         const product = await prisma.product.create({ data: {
           businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10,
         } });
