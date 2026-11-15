@@ -9,8 +9,8 @@ Integration branch `codex/batch-2-execution-platform` starts at `fe411b5541127d1
 | A and B | Implemented. PostgreSQL workflow tables, admission, pinned versions, history and bounded due-row scheduler. |
 | C and F | Implemented for signed text, grounded quote and order, hosted checkout and settlement, appointment, shipment and customer notification. |
 | D and E | Implemented profile presets, owner control and a verified status approval with execution-time validation. |
-| G and H | Implemented owner reads and commands and the dashboard work center. Running the final verification campaign. |
+| G and H | Implemented owner reads and commands and the dashboard work center. Verified the final release gates and the independent repeat. |
 
 ## Verification
 
-See the [acceptance report](report.md). Finish the full fresh G1 regression, fresh Batch 2 repeat, compiled smoke, browser check and migrated backup and rollback rehearsal. Record exact test counts and any blockers before requesting founder review.
+The final source is `c4d702666902229327c2db25651db80b803efe82`. Build, typecheck, lint, 994 default tests, 417 full regression tests and 43 fresh repeat tests passed. Both compiled smoke runs passed 53 checks, including the approved G1 binary against the migrated schema. Chromium approval, backup and restore also passed. The [acceptance report](report.md) records exact commands and initial failures. Batch 2 is ready for founder review of its verified local scope.

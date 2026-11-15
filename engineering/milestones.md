@@ -70,4 +70,4 @@ The founder authorized G1-00 and G1-07 through G1-10 as one integration branch. 
 
 ### Batch 2 shared execution platform
 
-**Status** Implementation candidate. The integrated [Batch 2 report](batch-2/report.md) records acceptance status, tested source and remaining gates. See the [contract](batch-2/contract.md), [ADR](adr/0008-shared-workflow-execution.md) and [progress register](batch-2/progress.md).
+**Status** PASS recommended for the verified local scope. Founder review is pending. The final candidate passed 417 PostgreSQL and BullMQ regression tests, 43 fresh repeat tests, 994 default tests, compiled smoke, browser approval, migration, backup and restore, and the G1 binary rollback rehearsal. The integrated [Batch 2 report](batch-2/report.md) records acceptance status, tested source and remaining limits. See the [contract](batch-2/contract.md), [ADR](adr/0008-shared-workflow-execution.md) and [progress register](batch-2/progress.md).
