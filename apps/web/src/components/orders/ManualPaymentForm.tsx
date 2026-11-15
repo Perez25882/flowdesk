@@ -1,8 +1,7 @@
 import { useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { useCreatePayment } from '@/hooks/usePayments';
-import { ApiError } from '@/lib/api';
-import { clearManualPayment, loadManualPayment, prepareManualPayment } from '@/lib/manual-payment';
+import { clearManualPayment, isRejectedFirstPaymentSubmission, loadManualPayment, prepareManualPayment } from '@/lib/manual-payment';
 import { formatCurrency } from '@/lib/utils';
 
 const METHODS = [
@@ -50,7 +49,7 @@ export default function ManualPaymentForm({ slot, orderId, customerId, remaining
       try {
         await creating.mutateAsync(request);
       } catch (failure) {
-        if (!hadUnconfirmedSubmission && failure instanceof ApiError && [400, 422].includes(failure.status)) {
+        if (isRejectedFirstPaymentSubmission(failure, hadUnconfirmedSubmission)) {
           clearManualPayment(sessionStorage, slot, request.key);
           setPending(null);
         }

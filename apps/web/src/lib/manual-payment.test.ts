@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { clearManualPayment, loadManualPayment, manualPaymentSlot, prepareManualPayment } from './manual-payment';
-import { apiFetch } from './api';
+import { clearManualPayment, isRejectedFirstPaymentSubmission, loadManualPayment, manualPaymentSlot, prepareManualPayment } from './manual-payment';
+import { ApiError, apiFetch } from './api';
 
 function browserStorage(): Storage {
   const entries = new Map<string, string>();
@@ -46,5 +46,12 @@ describe('dashboard manual payment requests', () => {
       manualPaymentSlot('shop', 'staff', 'another')]) expect(loadManualPayment(storage, other)).toBeNull();
     clearManualPayment(storage, slot, 'different-key');
     expect(loadManualPayment(storage, slot)).toEqual(order);
+  });
+
+  it('does not discard an ambiguous request on a later rejected replay', () => {
+    const invalid = new ApiError('Synthetic invalid request', 400, 'VALIDATION_ERROR');
+    expect(isRejectedFirstPaymentSubmission(invalid, false)).toBe(true);
+    expect(isRejectedFirstPaymentSubmission(invalid, true)).toBe(false);
+    expect(isRejectedFirstPaymentSubmission(new Error('Response lost'), false)).toBe(false);
   });
 });

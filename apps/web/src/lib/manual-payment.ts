@@ -1,4 +1,5 @@
 import type { CreatePaymentInput } from '@/hooks/usePayments';
+import { ApiError } from './api';
 
 export interface PendingManualPayment {
   key: string;
@@ -30,4 +31,8 @@ export function prepareManualPayment(storage: Storage, slot: string, data: Creat
 
 export function clearManualPayment(storage: Storage, slot: string, key: string): void {
   if (loadManualPayment(storage, slot)?.key === key) storage.removeItem(slot);
+}
+
+export function isRejectedFirstPaymentSubmission(error: unknown, hadUnconfirmedSubmission: boolean): boolean {
+  return !hadUnconfirmedSubmission && error instanceof ApiError && [400, 422].includes(error.status);
 }
