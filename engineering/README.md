@@ -27,6 +27,7 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 1 progress](g1/batch-1-progress.md) | Commit baseline, workstream checkpoints and verification status |
 | [Batch 1 execution contracts](g1/batch-1-contract.md) | Commercial identities, outbound lifecycle, fulfillment and release |
 | [Batch 1 engineering report](g1/batch-1-report.md) | Acceptance evidence, reproduction and release blockers |
+| [G1 final stabilization](g1/final-stabilization-report.md) | Final source, retail, inventory, payment retries and acceptance |
 
 ## Engineering conventions
 

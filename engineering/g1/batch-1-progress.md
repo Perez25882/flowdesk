@@ -1,5 +1,7 @@
 # Batch 1 progress register
 
+The [G1 final stabilization report](final-stabilization-report.md) tracks the authorized continuation and the renewed acceptance gates. This record preserves the Batch 1 checkpoints.
+
 The dedicated branch is `codex/g1-batch-1`, based on founder-approved G1-06 record `e4a4021b977a3c843b1e76f5a140827e05eaf593`. The checkout was clean and matched its remote. The tested G1-06 source is `c88c4ddbb66a3a112390e90df49f74d2fb4021c0`. G1-01 through G1-05 are in its ancestry. The separate `launch` checkout remains checked out at `541b7b8`.
 
 | Assignment | Status | Next checkpoint |

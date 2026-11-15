@@ -63,3 +63,7 @@ Deliver a reviewable code and documentation diff with the real Postgres/BullMQ a
 ### Batch 1 status
 
 The founder authorized G1-00 and G1-07 through G1-10 as one integration branch. **Full Batch 1 sign-off is BLOCKED** by an unexplained retail inquiry that entered durable review in one fresh repeat. The subsequent focused run passed. The [Batch 1 engineering report](g1/batch-1-report.md) records the passing local checks and remaining release gaps. The [progress register](g1/batch-1-progress.md) identifies the tested source and exact next verification step.
+
+### Final G1 local acceptance
+
+**Recommendation — PASS.** The authorized stabilization at `84c92ac0c5c70bad0b6c9d28e7ea15688ef33d4d` passed 411 full regression cases, 84 fresh repeat cases, 994 default tests and 53 smoke checks. The local PostgreSQL rollback and restore rehearsal passed. See the [final stabilization report](g1/final-stabilization-report.md) for the corrected races, historical uncertainty and production-assurance limits. Founder review and live-provider and hosted validation remain pending.

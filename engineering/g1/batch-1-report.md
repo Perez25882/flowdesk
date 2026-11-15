@@ -1,5 +1,7 @@
 # FlowDesk Batch 1 engineering verification
 
+This report records the earlier Batch 1 snapshot. The [G1 final stabilization assessment](final-stabilization-report.md) covers the subsequent runtime and fixture changes.
+
 **Recommendation: BLOCKED for full Batch 1 sign-off.** The clean verification foundation, full regression and local release rehearsal passed. One fresh repeat routed the synthetic retail inquiry to review before committing a quote. The subsequent focused run passed, and the original triggering error remains unverified. Keep the automatic retail path under review until a repeatable cause and disposition are established.
 
 ## Source and scope
