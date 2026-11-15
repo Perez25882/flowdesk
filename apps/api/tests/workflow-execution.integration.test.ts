@@ -79,17 +79,20 @@ fixtureOnly('Batch 2 workflow recovery and permissions with PostgreSQL', () => {
       child.kill();
       await exited;
     }
-    await expect.poll(async () => {
-      await Promise.all(Array.from({ length: 4 }, () => worker.recoverWorkflows(new Date())));
-      return (await read()).state;
-    }).toBe('RUNNING');
+    // Process exit and PostgreSQL releasing its transaction are separate
+    // observations. Prove the row can be locked before racing the schedulers.
+    await expect.poll(async () => (await prisma.$queryRaw<{ id: string }[]>`
+      SELECT id FROM workflows WHERE id = ${row.id} FOR UPDATE SKIP LOCKED
+    `).length, { timeout: 12_000, interval: 100 }).toBe(1);
+    const pass = new Date();
+    await Promise.all(Array.from({ length: 4 }, () => worker.recoverWorkflows(pass)));
     const result = await read();
     expect(result.state).toBe('RUNNING');
     expect(result.evidence.filter((event) => event.eventType === 'PROCESSING')).toHaveLength(1);
     expect(result.evidence.map((event) => event.eventKey)).not.toContain('crashed-attempt');
     await worker.recoverWorkflows(new Date(Date.now() + 3_000));
     expect((await read()).state).toBe('WAITING_OWNER_APPROVAL');
-  }, 30_000);
+  }, 45_000);
 
   it('rejects stale approval evidence after verified order facts change', async () => {
     const { row, order, read, headers } = await setup();
