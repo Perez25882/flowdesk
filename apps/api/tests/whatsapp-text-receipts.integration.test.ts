@@ -144,7 +144,15 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       expect(job).toBeDefined();
       await job!.remove();
       const checkAt = handedOff.classificationCheckAt!;
-      await Promise.all([recoverClassification(producer.enqueue, checkAt), recoverClassification(producer.enqueue, checkAt)]);
+      // Other receipt cases may have older due work in this database. Exercise
+      // competing pollers while draining the same bounded due set.
+      for (let poll = 0; poll < 8 && !await queue.getJob(`intent-${providerId}`); poll++) {
+        const counts = await Promise.all([
+          recoverClassification(producer.enqueue, checkAt), recoverClassification(producer.enqueue, checkAt),
+        ]);
+        expect(Math.max(...counts)).toBeLessThanOrEqual(20);
+        if (!counts.some(Boolean)) break;
+      }
       expect((await queue.getJob(`intent-${providerId}`))?.data).toMatchObject({ businessId: business.id, messageId: handedOff.messageId });
       await prisma.message.update({ where: { id: handedOff.messageId! }, data: { processed: true } });
       const rescheduled = await receipt(phone, providerId);
