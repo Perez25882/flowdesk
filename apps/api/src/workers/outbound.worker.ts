@@ -177,13 +177,16 @@ export async function processDurableOutbound(id: string): Promise<void> {
         AND (state <> 'RETRY_PENDING' OR "nextAttemptAt" <= timezone('UTC', now())) FOR UPDATE SKIP LOCKED
     `;
     if (!locked) return false;
-    const [business] = await tx.$queryRaw<Array<{ waPhoneNumberId: string | null }>>`
-      SELECT "waPhoneNumberId" FROM businesses WHERE id = ${candidate.businessId}
+    const [business] = await tx.$queryRaw<Array<{ waPhoneNumberId: string | null; phone: string | null; notifyOnLowStock: boolean }>>`
+      SELECT "waPhoneNumberId", phone, "notifyOnLowStock" FROM businesses WHERE id = ${candidate.businessId}
         AND active AND "deletedAt" IS NULL AND "deactivatedAt" IS NULL FOR SHARE
     `;
     let reason = !business || data.businessId !== candidate.businessId ? 'TENANT_UNAVAILABLE' : null;
     if (!reason && (!credentials || business?.waPhoneNumberId !== credentials.phoneNumberId ||
         (candidate.phoneNumberId && candidate.phoneNumberId !== credentials.phoneNumberId))) reason = 'CONNECTION_CHANGED';
+    if (!reason && data.ownerLowStock &&
+        (!business?.notifyOnLowStock || !business.phone || data.customerId !== null ||
+          normalizeGhanaPhone(business.phone) !== normalizeGhanaPhone(data.to))) reason = 'OWNER_ALERT_NOT_AUTHORIZED';
     if (!reason && data.customerId) {
       const [recipient] = await tx.$queryRaw<Array<{ waNumber: string; lastInboundAt: Date | null }>>`
         SELECT "waNumber", "lastInboundAt" FROM customers WHERE id = ${data.customerId}

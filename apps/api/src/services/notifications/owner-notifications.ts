@@ -241,6 +241,7 @@ async function reserveAlertSlot(
 async function evaluateDelivery(
   context: OwnerContext,
   kind: OwnerNotificationKind,
+  durableCrossing = false,
 ): Promise<OwnerDeliveryDecision> {
   // 1. Owner switched this notification off in Settings.
   if (!context.preferences[kind]) {
@@ -261,6 +262,7 @@ async function evaluateDelivery(
   }
 
   // 4. Cooldown, last, because it consumes a slot.
+  if (durableCrossing) return { allowed: true, coalesced: 0 };
   const slot = await reserveAlertSlot(context.businessId, kind);
   if (!slot.allowed) {
     return { allowed: false, reason: 'cooling_down', coalesced: 0 };
@@ -308,8 +310,9 @@ async function deliver(
   context: OwnerContext,
   kind: OwnerNotificationKind,
   variables: AlertVariables,
+  eventKey?: string,
 ): Promise<OwnerDeliveryDecision> {
-  const decision = await evaluateDelivery(context, kind);
+  const decision = await evaluateDelivery(context, kind, eventKey !== undefined);
 
   if (!decision.allowed) {
     const reason = decision.reason!;
@@ -340,6 +343,7 @@ async function deliver(
     // customer never received into their history.
     customerId: null,
     to,
+    ...(kind === 'low_stock' && eventKey ? { ownerLowStock: true } : {}),
     // Set on both paths. It is what the conversation log shows, and outside
     // the window it is the readable form of what the template will render.
     body: renderBody(template.body, values),
@@ -352,7 +356,7 @@ async function deliver(
             parameters: values,
           },
         }),
-  });
+  }, eventKey ? { idempotencyKey: eventKey } : {});
 
   logger.info(
     {
@@ -427,31 +431,28 @@ export async function notifyOwnerNewOrder(orderId: string): Promise<void> {
  * the dashboard alert are triggered by the same condition rather than by two
  * thresholds that can drift apart.
  */
-export async function notifyOwnerLowStock(productId: string): Promise<void> {
-  await attempt('low_stock', async () => {
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
-      select: {
-        businessId: true,
-        name: true,
-        unit: true,
-        stockQuantity: true,
-        reorderThreshold: true,
-      },
-    });
-
-    if (!product) return;
-
-    const context = await loadOwnerContext(product.businessId);
-    if (!context) return;
-
-    await deliver(context, 'low_stock', [
-      context.businessName,
-      product.name,
-      `${formatQuantity(product.stockQuantity)} ${product.unit}`,
-      `${formatQuantity(product.reorderThreshold)} ${product.unit}`,
-    ]);
+export async function notifyOwnerLowStock(businessId: string, movementId: string): Promise<string | null> {
+  const eventKey = `owner-low-stock-${movementId}`;
+  if (await prisma.whatsAppSend.findUnique({
+    where: { businessId_eventKey: { businessId, eventKey } }, select: { id: true },
+  })) return null;
+  const movement = await prisma.stockMovement.findFirst({
+    where: { id: movementId, businessId, product: { businessId, deletedAt: null, active: true } },
+    select: { product: { select: { name: true, unit: true, stockQuantity: true, reorderThreshold: true } } },
   });
+  const product = movement?.product;
+  if (!product || Number(product.reorderThreshold) <= 0 || Number(product.stockQuantity) > Number(product.reorderThreshold)) {
+    return 'NO_LONGER_LOW_STOCK';
+  }
+  const context = await loadOwnerContext(businessId);
+  if (!context) return 'OWNER_UNAVAILABLE';
+  const decision = await deliver(context, 'low_stock', [
+    context.businessName,
+    product.name,
+    `${formatQuantity(product.stockQuantity)} ${product.unit}`,
+    `${formatQuantity(product.reorderThreshold)} ${product.unit}`,
+  ], eventKey);
+  return decision.allowed ? null : decision.reason ?? 'OWNER_UNAVAILABLE';
 }
 
 /**

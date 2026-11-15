@@ -31,6 +31,7 @@ export interface OutboundJobData {
   businessId: string;
   /** Customer this message belongs to, so the sent copy can be recorded. */
   customerId: string | null;
+  ownerLowStock?: true;
   to: string;
   /**
    * The message as a person reads it.

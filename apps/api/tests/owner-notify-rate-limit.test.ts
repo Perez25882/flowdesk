@@ -31,7 +31,8 @@ vi.mock('../src/config/database.js', () => ({
     business: { findUnique: mocks.businessFindUnique },
     customer: { findFirst: mocks.customerFindFirst },
     order: { findUnique: mocks.orderFindUnique },
-    product: { findUnique: mocks.productFindUnique },
+    stockMovement: { findFirst: async () => ({ product: await mocks.productFindUnique() }) },
+    whatsAppSend: { findUnique: async () => null },
     payment: { findUnique: mocks.paymentFindUnique },
   },
 }));
@@ -137,9 +138,9 @@ describe('cooldown per notification kind', () => {
     expect(queuedBody(2)).toContain('That makes 1 new order since your last alert.');
   });
 
-  it('keeps each kind on its own cooldown', async () => {
+  it('hands off a low-stock crossing independently of the new-order cooldown', async () => {
     await notifyOwnerNewOrder('order_1');
-    await notifyOwnerLowStock('prod_1');
+    await notifyOwnerLowStock(BUSINESS_ID, 'movement_1');
 
     expect(mocks.enqueueOutboundMessage).toHaveBeenCalledTimes(2);
     expect(queuedBody(0)).toContain('That makes 1 new order since your last alert.');
@@ -169,15 +170,12 @@ describe('cooldown per notification kind', () => {
     expect(mocks.enqueueOutboundMessage).toHaveBeenCalledTimes(2);
   });
 
-  it('pluralises the coalesced count correctly for stock alerts', async () => {
-    await notifyOwnerLowStock('prod_1');
-    await notifyOwnerLowStock('prod_2');
-    await notifyOwnerLowStock('prod_3');
+  it('uses different outbound identities for separate threshold crossings', async () => {
+    await notifyOwnerLowStock(BUSINESS_ID, 'movement_1');
+    await notifyOwnerLowStock(BUSINESS_ID, 'movement_2');
 
-    redis.expireCooldowns();
-    await notifyOwnerLowStock('prod_4');
-
-    expect(queuedBody(1)).toContain('That makes 3 stock alerts since your last alert.');
+    expect(mocks.enqueueOutboundMessage).toHaveBeenNthCalledWith(1, expect.any(Object), { idempotencyKey: 'owner-low-stock-movement_1' });
+    expect(mocks.enqueueOutboundMessage).toHaveBeenNthCalledWith(2, expect.any(Object), { idempotencyKey: 'owner-low-stock-movement_2' });
   });
 });
 

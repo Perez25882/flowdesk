@@ -2,6 +2,7 @@ import { OrderStatus } from '@prisma/client';
 import { prisma } from '../config/database.js';
 import { logger } from '../config/logger.js';
 import { notifyOrderStatus } from '../services/notifications/customer-notifications.js';
+import { notifyOwnerLowStock } from '../services/notifications/owner-notifications.js';
 import { deleteProofObject } from '../services/s3/media.js';
 import { isOrderProofKey } from '../modules/shipments/shipments.service.js';
 
@@ -25,11 +26,14 @@ export async function recoverFulfillment(now = new Date()): Promise<void> {
     let reason: string | null = null;
     let suppressed = false;
     try {
-      if (task.kind === 'DELETE_PROOF') {
+      if (task.kind === 'OWNER_LOW_STOCK' && task.id === task.subject && task.orderId === null) {
+        reason = await notifyOwnerLowStock(task.businessId, task.subject);
+        suppressed = reason !== null;
+      } else if (task.kind === 'DELETE_PROOF' && task.orderId) {
         if (!isOrderProofKey(task.subject, task.businessId, task.orderId)) throw new Error('Invalid proof identity');
         const live = await prisma.shipment.findFirst({ where: { proofKey: task.subject }, select: { id: true } });
         if (!live) await deleteProofObject(task.subject);
-      } else if (task.kind === 'NOTIFY' && Object.hasOwn(OrderStatus, task.subject)) {
+      } else if (task.kind === 'NOTIFY' && task.orderId && Object.hasOwn(OrderStatus, task.subject)) {
         const decision = await notifyOrderStatus(task.orderId, task.subject as OrderStatus, {
           businessId: task.businessId, key: `order-status-${task.orderId}-${task.subject}`,
         });

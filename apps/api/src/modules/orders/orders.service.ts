@@ -4,7 +4,7 @@ import { prisma } from '../../config/database.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { extractItemsFromText } from '../../utils/item-extractor.js';
 import { recordOrder } from '../../services/plan/plan.service.js';
-import { notifyOwnerLowStock, notifyOwnerNewOrder } from '../../services/notifications/owner-notifications.js';
+import { notifyOwnerNewOrder } from '../../services/notifications/owner-notifications.js';
 import { emitOrderCreated, emitOrderUpdated, emitStockAlert } from '../../services/sse/sse.events.js';
 import {
   createOrder,
@@ -450,7 +450,6 @@ async function transitionOrder(
   if (result.previous !== next) emitOrderUpdated(businessId, { orderId, status: next, previousStatus: result.previous });
   for (const alert of result.alerts) {
     emitStockAlert(businessId, alert);
-    await notifyOwnerLowStock(alert.productId);
   }
   return result.order;
 }

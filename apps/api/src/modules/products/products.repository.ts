@@ -172,8 +172,9 @@ export async function adjustStock(
   staffId: string | null,
 ): Promise<ProductWithStock> {
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM products WHERE id = ${id} AND "businessId" = ${businessId} AND "deletedAt" IS NULL FOR UPDATE`;
     const current = await tx.product.findFirst({
-      where: { id, businessId },
+      where: { id, businessId, deletedAt: null },
       select: { stockQuantity: true },
     });
     if (!current) throw new Error('Product not found');
@@ -190,7 +191,7 @@ export async function adjustStock(
       data: { stockQuantity: newQuantity },
     });
 
-    await tx.stockMovement.create({
+    const movement = await tx.stockMovement.create({
       data: {
         businessId,
         productId: id,
@@ -202,6 +203,7 @@ export async function adjustStock(
       },
     });
 
+    await recordLowStockCrossing(tx, movement.id, businessId, current.stockQuantity, newQuantity, product.reorderThreshold);
     return product as ProductWithStock;
   });
 }
@@ -336,15 +338,24 @@ export interface StockDeductionAlert {
   threshold: number;
 }
 
+async function recordLowStockCrossing(
+  tx: Prisma.TransactionClient, movementId: string, businessId: string,
+  previous: Prisma.Decimal, current: Prisma.Decimal, threshold: Prisma.Decimal,
+): Promise<void> {
+  if (threshold.lte(0) || previous.lte(threshold) || current.gt(threshold)) return;
+  await tx.fulfillmentTask.create({
+    data: { id: movementId, businessId, kind: 'OWNER_LOW_STOCK', subject: movementId },
+  });
+}
+
 export async function deductStockForOrderItems(
   orderId: string,
   businessId: string,
   /** Staff id, or null when the owner confirmed it. `StockMovement.staffId` is nullable. */
   confirmedBy: string | null,
   items: Array<{ productId: string | null; quantity: number | Prisma.Decimal; matched: boolean }>,
-  tx?: Prisma.TransactionClient,
+  db: Prisma.TransactionClient,
 ): Promise<StockDeductionAlert[]> {
-  const db = tx ?? prisma;
   const alerts: StockDeductionAlert[] = [];
 
   for (const item of items) {
@@ -366,7 +377,7 @@ export async function deductStockForOrderItems(
       data: { stockQuantity: newQty },
     });
 
-    await db.stockMovement.create({
+    const movement = await db.stockMovement.create({
       data: {
         businessId,
         productId: product.id,
@@ -377,6 +388,7 @@ export async function deductStockForOrderItems(
         staffId: confirmedBy,
       },
     });
+    await recordLowStockCrossing(db, movement.id, businessId, product.stockQuantity, newQty, product.reorderThreshold);
 
     const threshold = Number(product.reorderThreshold);
     if (threshold > 0 && Number(newQty) <= threshold) {

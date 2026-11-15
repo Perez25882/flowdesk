@@ -35,7 +35,8 @@ vi.mock('../src/config/database.js', () => ({
     business: { findUnique: mocks.businessFindUnique },
     customer: { findFirst: mocks.customerFindFirst },
     order: { findUnique: mocks.orderFindUnique },
-    product: { findUnique: mocks.productFindUnique },
+    stockMovement: { findFirst: async () => ({ product: await mocks.productFindUnique() }) },
+    whatsAppSend: { findUnique: async () => null },
     payment: { findUnique: mocks.paymentFindUnique },
   },
 }));
@@ -156,7 +157,7 @@ describe('owner preference gating', () => {
       reorderThreshold: 5,
     });
 
-    await notifyOwnerLowStock('prod_1');
+    expect(await notifyOwnerLowStock(BUSINESS_ID, 'movement_1')).toBe('preference_off');
 
     expect(mocks.enqueueOutboundMessage).not.toHaveBeenCalled();
   });
@@ -323,7 +324,7 @@ describe('per-kind message contents', () => {
       reorderThreshold: 5.5,
     });
 
-    await notifyOwnerLowStock('prod_1');
+    expect(await notifyOwnerLowStock(BUSINESS_ID, 'movement_1')).toBeNull();
 
     expect(templateParameters()).toEqual([
       'Ama Provisions',

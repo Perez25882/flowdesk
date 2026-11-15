@@ -1495,7 +1495,7 @@ model FulfillmentTask {
   id String @id @default(uuid())
   businessId String
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  orderId String
+  orderId String?
   kind String
   subject String
   attempts Int @default(0)
