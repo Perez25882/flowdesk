@@ -1,6 +1,9 @@
 import { Queue, type QueueOptions } from 'bullmq';
 
 export const INTENT_CLASSIFICATION_QUEUE_NAME = 'intent-classification';
+export const CLASSIFICATION_EFFECT_WAITING = 'CLASSIFICATION_EFFECT_WAITING';
+export const CLASSIFICATION_EFFECT_INTERRUPTED = 'CLASSIFICATION_EFFECT_INTERRUPTED';
+export const CLASSIFICATION_EFFECT_LEASE_MS = 120_000;
 
 export interface IntentClassificationJobData {
   businessId: string;

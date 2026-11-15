@@ -1,5 +1,6 @@
 import type { AssistantAction, AssistantDecision, IntentType } from '@flowdesk/shared';
 import { Prisma } from '@prisma/client';
+import { setTimeout as delay } from 'node:timers/promises';
 import { prisma } from '../../config/database.js';
 import { logger } from '../../config/logger.js';
 import { createOrderFromAssistant, type AssistantOrderItem } from '../../modules/orders/orders.service.js';
@@ -38,6 +39,26 @@ const NOT_RUN: RunAssistantResult = {
   action: 'template_reply', escalated: false, intent: null, confidence: null, holdingText: null,
 };
 
+function dependencyFailure(error: unknown): string {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) return error.code;
+  if (error instanceof Prisma.PrismaClientInitializationError) return error.errorCode ?? 'DATABASE_UNAVAILABLE';
+  return error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name) ? 'TIMEOUT' : 'UNAVAILABLE';
+}
+
+async function readTurnDependency<T>(
+  phase: string, identity: Pick<RunAssistantInput, 'businessId' | 'messageId'>, read: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    const code = dependencyFailure(error);
+    if (!['P2024', 'P2034', 'P1001', 'P1002', 'P1017'].includes(code)) throw error;
+    logger.warn({ businessId: identity.businessId, messageId: identity.messageId, phase, code }, 'Retrying assistant evidence read');
+    await delay(100);
+    return read();
+  }
+}
+
 export async function runAssistant(input: RunAssistantInput): Promise<RunAssistantResult> {
   const source = await prisma.message.findFirst({
     where: { id: input.messageId, businessId: input.businessId, customerId: input.customerId,
@@ -49,7 +70,10 @@ export async function runAssistant(input: RunAssistantInput): Promise<RunAssista
   if (source.business.aiAssistMode === 'OFF') return NOT_RUN;
   const result = await withConversationLock(input.businessId, input.customerId, () => runAssistantLocked(input, source.business));
   if (result) return result;
-  await prisma.message.updateMany({ where: { ...scope(input), aiPolicy: { equals: Prisma.DbNull } }, data: { requiresReview: true } });
+  await prisma.message.updateMany({ where: { ...scope(input), aiPolicy: { equals: Prisma.DbNull } }, data: {
+    requiresReview: true, aiPolicy: { version: 1, state: 'REVIEW', mode: source.business.aiAssistMode,
+      effect: 'handoff', reasons: ['conversation_lock_unavailable'] },
+  } });
   return { ...NOT_RUN, action: 'draft', escalated: true, policyHandled: true };
 }
 
@@ -77,6 +101,7 @@ async function runAssistantLocked(
   let result: AssistantResult | null = null;
   let route = policyHandoff();
   let effectCommitted = false;
+  let phase = 'policy';
   const mode = settings.aiAssistMode;
 
   try {
@@ -85,16 +110,25 @@ async function runAssistantLocked(
       await persistOutcome(input, route, mode, 'REVIEW');
       return toResult(route, null);
     }
-    const pending = await findOpenPendingOrder(businessId, customerId);
+    phase = 'pending_order';
+    const pending = await readTurnDependency(phase, input, () => findOpenPendingOrder(businessId, customerId));
     const contextInput = { businessId, customerId, messageId, message: body, awaitingClarification: pending?.lastQuestion ?? null };
-    const context = await loadAssistantContext(contextInput);
-    const notification = await loadNotificationContext(businessId, customerId);
-    if (!context || !notification) throw new Error('Assistant context unavailable');
-    if (context.business.aiAssistMode !== mode) throw new Error('Assistant mode changed');
+    phase = 'catalogue_context';
+    const context = await readTurnDependency(phase, input, () => loadAssistantContext(contextInput));
+    if (!context || context.business.aiAssistMode !== mode) {
+      route = policyHandoff('stale_evidence');
+      await persistOutcome(input, route, mode, 'REVIEW');
+      return toResult(route, null);
+    }
+    phase = 'notification_context';
+    const notification = await readTurnDependency(phase, input, () => loadNotificationContext(businessId, customerId));
+    if (!notification) throw new Error('Assistant recipient unavailable');
 
+    phase = 'delivery_policy';
     const delivery = await evaluateDelivery(notification);
     if (delivery.allowed && (mode === 'AUTONOMOUS' || mode === 'GROUNDED_AUTO') &&
         !/\b(?:order status|delivered|payment|refund|appointment|book)\b/i.test(body)) {
+      phase = 'delivery_capture';
       const turn = await handleDeliveryReply({ businessId, customerId, body, notification, profile: context.profile, autonomous: mode === 'AUTONOMOUS' });
       if (turn.kind !== 'idle') {
         route = { ...route, action: turn.kind === 'abandoned' ? 'draft' : 'clarify', holdingText: null };
@@ -104,6 +138,7 @@ async function runAssistantLocked(
     }
 
     const ordinary = ordinaryReply(body, null);
+    phase = 'model_and_parsing';
     result = ordinary ? null : await requestAssistantDecision({ systemPrompt: context.systemPrompt, userPrompt: context.userPrompt, evidence: context.evidence });
     decision = result?.ok ? result.decision : null;
     const decide = (loaded: LoadedContext, canDeliver: boolean): RouteResult => routeDecision({
@@ -122,7 +157,8 @@ async function runAssistantLocked(
     }
 
     if (decision && (route.effect === 'reply' || route.effect === 'booking' || route.effect === 'order' || route.effect === 'clarification')) {
-      const fresh = await loadAssistantContext({ ...contextInput, includeUntrustedContext: false });
+      phase = 'fresh_evidence';
+      const fresh = await readTurnDependency(phase, input, () => loadAssistantContext({ ...contextInput, includeUntrustedContext: false }));
       const current = fresh && fresh.business.aiAssistMode === mode ? decide(fresh, delivery.allowed) : null;
       if (!current || current.effect !== route.effect || current.text !== route.text || current.appendLink !== route.appendLink ||
           current.photoImageId !== route.photoImageId || current.action !== route.action ||
@@ -136,6 +172,7 @@ async function runAssistantLocked(
       return toResult(route, decision);
     }
 
+    phase = 'commit_effect';
     await persistOutcome(input, route, mode, 'PROCESSING', result, decision);
 
     if (route.effect === 'order') {
@@ -175,6 +212,7 @@ async function runAssistantLocked(
       if (!recorded) throw new Error('Assistant clarification could not be saved');
     }
 
+    phase = 'authorize_outbound';
     const disclosure = await autonomyDisclosureFor(mode, businessId, customerId);
     const outbound = [route.text, route.appendLink, disclosure].filter(Boolean).join('\n');
     if (!outbound) throw new Error('No authorized customer reply');
@@ -184,11 +222,13 @@ async function runAssistantLocked(
     if (!currentActor) throw new Error('Assistant send permission changed');
     const currentNotification = await loadNotificationContext(businessId, customerId);
     if (!currentNotification) throw new Error('Assistant recipient unavailable');
+    phase = 'durable_send';
     const sent = await deliverText(currentNotification, outbound, {
       idempotencyKey: `assistant-reply-${messageId}`, requireQueueHandoff: true,
       ...(route.photoImageId ? { productImageId: route.photoImageId } : {}),
     });
     if (!sent.allowed) throw new Error('Assistant reply blocked by outbound policy');
+    phase = 'record_handoff';
     await persistOutcome(input, route, mode, route.effect === 'clarification' ? 'WAITING_CUSTOMER' : 'HANDED_OFF', result, decision);
 
     if (route.effect === 'order') {
@@ -197,10 +237,11 @@ async function runAssistantLocked(
     }
     return toResult(route, decision);
   } catch (error: unknown) {
-    logger.warn({ messageId, businessId, effect: route.effect, errorType: error instanceof Error ? error.name : 'Unknown' }, 'Assistant turn requires recovery');
+    const failure = { phase, code: dependencyFailure(error) };
+    logger.warn({ messageId, businessId, effect: route.effect, ...failure }, 'Assistant turn requires recovery');
     const failed = { ...policyHandoff(effectCommitted ? 'handoff_failed' : 'effect_unavailable'), effect: route.effect, groundedOn: route.groundedOn,
       ...(effectCommitted ? { holdingText: null } : {}) };
-    await persistOutcome(input, failed, mode, effectCommitted ? 'WAITING_HANDOFF' : 'REVIEW', result, decision);
+    await persistOutcome(input, failed, mode, effectCommitted ? 'WAITING_HANDOFF' : 'REVIEW', result, decision, failure);
     return toResult(failed, decision);
   }
 }
@@ -239,7 +280,7 @@ export async function settleBooking(
 }
 
 async function persistOutcome(input: RunAssistantInput, route: RouteResult, mode: RouteInput['mode'], state: string,
-  result?: AssistantResult | null, decision?: AssistantDecision | null): Promise<void> {
+  result?: AssistantResult | null, decision?: AssistantDecision | null, failure?: { phase: string; code: string }): Promise<void> {
   const reviewed = state === 'REVIEW' || state === 'WAITING_HANDOFF';
   const draftText = route.text && route.effect === 'reply' ? route.text : null;
   const sent = state === 'HANDED_OFF' || state === 'WAITING_CUSTOMER';
@@ -247,6 +288,7 @@ async function persistOutcome(input: RunAssistantInput, route: RouteResult, mode
     aiPolicy: {
       version: 1, mode, state, effect: route.effect, reasons: route.validationFailures,
       evidence: route.groundedOn, ...(result && !result.ok ? { providerFailure: result.reason } : {}),
+      ...(failure ? { failure } : {}),
       ...(draftText && decision?.answer.fact ? { fact: { ...decision.answer.fact }, offer: decision.priceOffer } : {}),
     },
     aiReplyText: sent ? route.text : reviewed ? draftText : null,

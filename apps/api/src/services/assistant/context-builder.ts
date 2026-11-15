@@ -643,16 +643,18 @@ export async function loadAssistantContext(
   input: LoadContextInput,
 ): Promise<LoadedContext | null> {
   const includeUntrusted = input.includeUntrustedContext !== false;
-  const [business, catalog, history, openOrders, voiceExamples, replyingTo] = await Promise.all([
+  const [business, catalog, openOrders] = await Promise.all([
     loadAssistantBusiness(input.businessId),
     findCatalogProductsWithStock(input.businessId),
-    includeUntrusted ? loadConversationHistory(input.businessId, input.customerId, input.messageId) : [],
     loadOpenOrders(input.businessId, input.customerId),
+  ]);
+  if (!business) return null;
+
+  const [history, voiceExamples, replyingTo] = await Promise.all([
+    includeUntrusted ? loadConversationHistory(input.businessId, input.customerId, input.messageId) : [],
     includeUntrusted ? loadOwnerVoice(input.businessId, input.customerId) : [],
     includeUntrusted ? loadRepliedToMessage(input.businessId, input.customerId, input.messageId) : null,
   ]);
-
-  if (!business) return null;
 
   // Loaded after the business, not alongside it, because most shops have no
   // diary and running the slot arithmetic for them would be work done to

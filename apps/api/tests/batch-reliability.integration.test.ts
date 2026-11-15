@@ -106,6 +106,76 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
     expect((await prisma.customer.findUniqueOrThrow({ where: { id: customer.id } })).totalSpend.toNumber()).toBe(20);
   });
 
+  it('returns the same manual payment after an ignored response and fences actor, tenant and input changes', async () => {
+    const { business, customer } = await shop();
+    const other = await shop();
+    const manager = await prisma.staff.create({ data: { businessId: business.id, name: 'Fixture manager',
+      phone: '233200000300', role: 'MANAGER' } });
+    const { createApp } = await import('../src/app.js');
+    const { signAccessToken } = await import('../src/services/auth/tokens.js');
+    const api = await createApp();
+    try {
+      const key = randomUUID();
+      const pay = (businessId: string, body: object, staffId?: string, requestKey = key) => api.inject({
+        method: 'POST', url: '/api/v1/payments', payload: body, headers: {
+          'idempotency-key': requestKey,
+          authorization: 'Bearer ' + signAccessToken({ businessId, plan: 'BUSINESS',
+            ...(staffId ? { staffId, role: 'MANAGER' as const } : {}) }, '15m'),
+        },
+      });
+      const body = { customerId: customer.id, amount: 12, method: 'CASH' };
+      await pay(business.id, body); // The browser may not receive this response.
+      const duplicate = await Promise.all([pay(business.id, body), pay(business.id, body)]);
+      for (const response of duplicate) expect(response.statusCode, response.body).toBe(201);
+      expect(duplicate[0]!.json().data.id).toBe(duplicate[1]!.json().data.id);
+      expect((await pay(business.id, { ...body, amount: 13 })).statusCode).toBe(409);
+      expect((await pay(business.id, body, manager.id)).statusCode).toBe(409);
+      expect((await pay(other.business.id, body)).statusCode).toBe(404);
+      expect((await pay(business.id, body, undefined, randomUUID())).statusCode).toBe(201);
+      expect(await prisma.payment.count({ where: { customerId: customer.id } })).toBe(2);
+      expect(await prisma.payment.count({ where: { businessId: other.business.id } })).toBe(0);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('commits one recoverable owner alert for concurrent stock reductions and suppresses disabled or foreign alerts', async () => {
+    const { business } = await shop();
+    const other = await shop();
+    const product = await prisma.product.findFirstOrThrow({ where: { businessId: business.id } });
+    await prisma.business.update({ where: { id: business.id }, data: { phone: '233200000004', notifyOnLowStock: true } });
+    await prisma.product.update({ where: { id: product.id }, data: { stockQuantity: 6, reorderThreshold: 5 } });
+    const { adjustStock } = await import('../src/modules/products/products.service.js');
+    const { recoverFulfillment } = await import('../src/workers/fulfillment-recovery.js');
+    const { notifyOwnerLowStock } = await import('../src/services/notifications/owner-notifications.js');
+    const reduce = () => adjustStock(product.id, business.id, { quantity: -1, type: 'ADJUSTMENT' }, null);
+    await Promise.all([reduce(), reduce()]);
+    expect(Number((await prisma.product.findUniqueOrThrow({ where: { id: product.id } })).stockQuantity)).toBe(4);
+    const tasks = await prisma.fulfillmentTask.findMany({ where: { businessId: business.id, kind: 'OWNER_LOW_STOCK' } });
+    expect(tasks).toHaveLength(1);
+    const task = tasks[0]!;
+    expect(task).toMatchObject({ state: 'PENDING', id: task.subject });
+    const key = 'owner-low-stock-' + task.subject;
+    expect(await notifyOwnerLowStock(other.business.id, task.subject)).toBe('NO_LONGER_LOW_STOCK');
+    await Promise.all([recoverFulfillment(), recoverFulfillment()]);
+    const send = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: { businessId: business.id, eventKey: key } } });
+    expect(send.payload).toMatchObject({ to: '233200000004', customerId: null, ownerLowStock: true });
+    await notifyOwnerLowStock(business.id, task.subject);
+    expect(await prisma.whatsAppSend.count({ where: { eventKey: key } })).toBe(1);
+
+    await prisma.business.update({ where: { id: business.id }, data: { notifyOnLowStock: false } });
+    fetchMock.mockClear();
+    await outbound.processDurableOutbound(send.id);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: send.id } }))
+      .toMatchObject({ state: 'FAILED', reason: 'OWNER_ALERT_NOT_AUTHORIZED' });
+    await adjustStock(product.id, business.id, { quantity: 2, type: 'RESTOCK' }, null);
+    await reduce();
+    await recoverFulfillment();
+    expect(await prisma.fulfillmentTask.findFirst({ where: { businessId: business.id, kind: 'OWNER_LOW_STOCK', id: { not: task.id } } }))
+      .toMatchObject({ state: 'SUPPRESSED', reason: 'preference_off' });
+  });
+
   it('replays one authorized booking, refuses a competing slot, then reopens capacity after cancellation', async () => {
     const { business, customer } = await shop();
     const other = await prisma.customer.create({ data: { businessId: business.id, waNumber: '233201234568' } });

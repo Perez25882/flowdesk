@@ -243,107 +243,143 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     expect(await prisma.paystackSettlement.findUnique({ where: { transactionId: maxId } })).toMatchObject({ notificationState: 'SUPPRESSED' });
   });
 
-  it('takes a priced inbound order through hosted settlement, authorized delivery and a durable customer notification', async () => {
-    const fixture = await shop(true);
-    const phone = randomUUID();
-    await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'GROUNDED_AUTO', waPhoneNumberId: phone,
-      waAccessToken: 'synthetic-batch-token' } });
-    const product = await prisma.product.create({ data: { businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10 } });
-    const body = 'I want to buy 1 bag of Rice';
-    const providerEventId = `wamid.${randomUUID()}`;
-    const whatsapp = Fastify();
-    await whatsapp.register(import('fastify-raw-body'), { field: 'rawBody', global: false, encoding: false, runFirst: true });
-    await whatsapp.register((await import('../src/modules/webhook/webhook.route.js')).default);
-    const { processIntentClassification, intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
-    const outboundWorker = await import('../src/workers/outbound.worker.js');
-    const { dispatchTextReceipts } = await import('../src/workers/text-receipt.worker.js');
-    const { logger } = await import('../src/config/logger.js');
-    const warnings = vi.spyOn(logger, 'warn');
-    await intentClassifierWorker.close(true);
-    async function admitText(text: string, id: string) {
-      const data = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
-        metadata: { phone_number_id: phone }, messages: [{ id, from: fixture.customer.waNumber,
-          type: 'text', text: { body: text }, timestamp: String(Math.floor(Date.now() / 1000)) }],
-      } }] }] });
-      const reply = await whatsapp.inject({ method: 'POST', url: '/webhook', payload: data, headers: {
-        'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + createHmac('sha256', metaSecret).update(data).digest('hex'),
-      } });
-      expect(reply.statusCode, reply.body).toBe(200);
-      const jobs: Array<Parameters<typeof processIntentClassification>[0]> = [];
-      await dispatchTextReceipts(async (job) => { jobs.push(job); }, new Date(), fixture.tenant.id);
-      expect(jobs).toHaveLength(1);
-      await processIntentClassification(jobs[0]!);
-      return jobs[0]!.messageId;
-    }
-    try {
-      assistant.generate.mockResolvedValue({ ok: true, generation: {
-        model: 'synthetic', inputTokens: 1, outputTokens: 1, text: JSON.stringify({
-          intent: IntentType.INQUIRY, confidence: 0.99, language: 'gh_en', sentiment: 'neutral',
-          entities: { products: [], orderReferences: [], deliveryArea: null },
-          answer: { canAnswer: true, text: null, groundedOn: [], fact: { kind: 'product_quote', target: product.id, quantity: null } },
-          clarification: { needed: false, missing: [] }, order: { isOrder: false, complete: false },
-          escalate: { needed: false, reason: null }, priceOffer: null, booking: null,
-        }),
-      } });
-      const inquiry = await admitText('How much is Rice?', `wamid.${randomUUID()}`);
-      const quote = await prisma.whatsAppSend.findUnique({ where: { businessId_eventKey: {
-        businessId: fixture.tenant.id, eventKey: `assistant-reply-${inquiry}`,
-      } } });
-      if (!quote) {
-        const audit = await prisma.message.findUniqueOrThrow({ where: { id: inquiry }, select: { aiPolicy: true } });
-        const causes = warnings.mock.calls.flatMap(([details, message]) => message === 'Assistant turn requires recovery' &&
-          details && typeof details === 'object' && 'errorType' in details ? [details.errorType] : []);
-        throw new Error(`Expected price response to commit. Synthetic audit ${JSON.stringify({ policy: audit.aiPolicy, causes })}`);
-      }
-      expect(quote.payload).toMatchObject({ body: expect.stringContaining('GHS 25.00'), customerId: fixture.customer.id });
-      await outboundWorker.processDurableOutbound(quote.id);
-      expect(metaCalls.get(quote.id)).toBeDefined();
-      await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF' } });
-      await admitText(body, providerEventId);
-    } finally {
-      warnings.mockRestore();
-      await whatsapp.close();
-      await outboundWorker.outboundWorker.close();
-    }
-    const source = await prisma.message.findUniqueOrThrow({ where: { waMessageId: providerEventId } });
-    expect(source).toMatchObject({ businessId: fixture.tenant.id, customerId: fixture.customer.id, processed: true });
-    const inbound = await prisma.whatsAppTextReceipt.findUniqueOrThrow({ where: {
-      phoneNumberId_waMessageId: { phoneNumberId: phone, waMessageId: providerEventId },
-    } });
-    expect(inbound).toMatchObject({ status: 'COMPLETED', messageId: source.id });
-    const orders = await import('../src/modules/orders/orders.service.js');
-    const order = await prisma.order.findUniqueOrThrow({ where: { inboundSourceMessageId: source.id } });
-    expect(Number(order.totalAmount)).toBe(25);
-    await orders.confirmOrder(order.id, fixture.tenant.id, null);
-    const hosted = await links.createPaymentLink(fixture.tenant.id, { customerId: fixture.customer.id,
-      orderId: order.id, amount: 25, send: false }, null);
-    const request = await prisma.paymentRequest.findUniqueOrThrow({ where: { reference: hosted.reference } });
-    const sale = { ...fixture, order, request };
-    verify(sale);
-    await accept(sale);
-    await drain(fixture.tenant.id);
-    const payment = await prisma.payment.findFirstOrThrow({ where: { businessId: fixture.tenant.id, orderId: order.id } });
-    expect(payment).toMatchObject({ confidence: 'GATEWAY_CONFIRMED', customerId: fixture.customer.id });
-    expect(Number(payment.amount)).toBe(25);
-    await orders.markProcessing(order.id, fixture.tenant.id, null);
-    const actor = { businessId: fixture.tenant.id, staffId: null } as const;
-    const { dispatchOrder, markShipmentDelivered } = await import('../src/modules/shipments/shipments.service.js');
-    await dispatchOrder(order.id, actor, { courier: 'Synthetic carrier' });
-    expect((await markShipmentDelivered(order.id, actor)).deliveredAt).toBeInstanceOf(Date);
+  it('takes three signed retail journeys through the running workers, hosted settlement and signed delivery', async () => {
+    const { createApp } = await import('../src/app.js');
+    const { signAccessToken } = await import('../src/services/auth/tokens.js');
+    const { intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
+    const outbound = await import('../src/workers/outbound.worker.js');
+    const { dispatchTextReceipts, openTextReceiptQueue, recoverClassificationHandoffs } = await import('../src/workers/text-receipt.worker.js');
     const { recoverFulfillment } = await import('../src/workers/fulfillment-recovery.js');
-    for (let round = 0; round < 5; round++) {
-      await recoverFulfillment();
-      if (await prisma.whatsAppSend.findFirst({ where: { businessId: fixture.tenant.id, eventKey: `order-status-${order.id}-FULFILLED` } })) break;
+    const api = await createApp();
+    const producer = openTextReceiptQueue();
+    const workers = [intentClassifierWorker, outbound.outboundWorker];
+    const running = workers.map((worker) => worker.run());
+    const workerErrors: string[] = [];
+    for (const worker of workers) worker.on('error', (error) => workerErrors.push(error.name));
+
+    const foreign = await shop(true);
+    function owner(businessId: string) {
+      return { authorization: 'Bearer ' + signAccessToken({ businessId, plan: 'BUSINESS' }, '15m') };
     }
-    const notification = await prisma.whatsAppSend.findFirstOrThrow({ where: {
-      businessId: fixture.tenant.id, eventKey: `order-status-${order.id}-FULFILLED`,
-    } });
-    expect(notification).toMatchObject({ payload: expect.objectContaining({ customerId: fixture.customer.id, relatedOrderId: order.id }) });
-    await outboundWorker.processDurableOutbound(notification.id);
-    expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }))
-      .toMatchObject({ state: 'PROVIDER_ACCEPTED', providerMessageId: metaCalls.get(notification.id) });
-    expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ status: 'FULFILLED', customerId: fixture.customer.id });
-  }, 90_000);
+
+    await producer.ready();
+    try {
+      for (let run = 0; run < 3; run++) {
+        const fixture = await shop(true);
+        const phone = randomUUID();
+        await prisma.business.update({ where: { id: fixture.tenant.id }, data: {
+          aiAssistMode: 'GROUNDED_AUTO', waPhoneNumberId: phone, waAccessToken: 'synthetic-batch-token',
+        } });
+        const product = await prisma.product.create({ data: {
+          businessId: fixture.tenant.id, name: 'Rice', unit: 'bag', price: 25, stockQuantity: 10,
+        } });
+        const account = owner(fixture.tenant.id);
+        async function signedMeta(value: Record<string, unknown>) {
+          const payload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages',
+            value: { metadata: { phone_number_id: phone }, ...value },
+          }] }] });
+          const response = await api.inject({ method: 'POST', url: '/api/v1/webhook', payload, headers: {
+            'content-type': 'application/json',
+            'x-hub-signature-256': 'sha256=' + createHmac('sha256', metaSecret).update(payload).digest('hex'),
+          } });
+          expect(response.statusCode, response.body).toBe(200);
+        }
+
+        async function admitText(body: string) {
+          const providerId = 'wamid.' + randomUUID();
+          const value = { messages: [{ id: providerId, from: fixture.customer.waNumber,
+            type: 'text', text: { body }, timestamp: String(Math.floor(Date.now() / 1000)) }] };
+          await signedMeta(value);
+          await signedMeta(value);
+          const where = { phoneNumberId_waMessageId: { phoneNumberId: phone, waMessageId: providerId } };
+          expect(await prisma.whatsAppTextReceipt.findUniqueOrThrow({ where })).toMatchObject({ businessId: fixture.tenant.id, status: 'PENDING' });
+          await dispatchTextReceipts(producer.enqueue, new Date(), fixture.tenant.id);
+          const receipt = await prisma.whatsAppTextReceipt.findUniqueOrThrow({ where });
+          expect(receipt).toMatchObject({ status: 'COMPLETED', messageId: expect.any(String) });
+          await expect.poll(async () => {
+            const row = await prisma.message.findUniqueOrThrow({ where: { id: receipt.messageId! } });
+            return { processed: row.processed, processingError: row.processingError };
+          }, { timeout: 25_000 }).toEqual({ processed: true, processingError: null });
+          return prisma.message.findUniqueOrThrow({ where: { id: receipt.messageId! } });
+        }
+
+        assistant.generate.mockResolvedValue({ ok: true, generation: {
+          model: 'synthetic', inputTokens: 1, outputTokens: 1, text: JSON.stringify({
+            intent: IntentType.INQUIRY, confidence: 0.99, language: 'gh_en', sentiment: 'neutral',
+            entities: { products: [], orderReferences: [], deliveryArea: null },
+            answer: { canAnswer: true, text: null, groundedOn: [], fact: { kind: 'product_quote', target: product.id, quantity: null } },
+            clarification: { needed: false, missing: [] }, order: { isOrder: false, complete: false },
+            escalate: { needed: false, reason: null }, priceOffer: null, booking: null,
+          }),
+        } });
+        const inquiry = await admitText('How much is Rice?');
+        expect(inquiry.aiPolicy).toMatchObject({ state: 'HANDED_OFF', evidence: ['product:' + product.id] });
+        const quote = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: {
+          businessId: fixture.tenant.id, eventKey: 'assistant-reply-' + inquiry.id,
+        } } });
+        expect(quote.payload).toMatchObject({ body: expect.stringContaining('GHS 25.00'), customerId: fixture.customer.id });
+        await expect.poll(() => metaCalls.get(quote.id), { timeout: 20_000 }).toMatch(/^wamid\./);
+
+        await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF' } });
+        const source = await admitText('I want to buy 1 bag of Rice');
+        const order = await prisma.order.findUniqueOrThrow({ where: { inboundSourceMessageId: source.id } });
+        expect(source).toMatchObject({ relatedOrderId: order.id, customerId: fixture.customer.id, businessId: fixture.tenant.id });
+        expect(Number(order.totalAmount)).toBe(25);
+        const setStatus = (status: string) => api.inject({ method: 'PATCH', url: '/api/v1/orders/' + order.id + '/status',
+          headers: account, payload: { status },
+        });
+        expect((await setStatus('CONFIRMED')).statusCode).toBe(200);
+
+        const checkout = await api.inject({ method: 'POST', url: '/api/v1/payments/links', headers: account,
+          payload: { customerId: fixture.customer.id, orderId: order.id, amount: 25, send: false },
+        });
+        expect(checkout.statusCode, checkout.body).toBe(201);
+        const request = await prisma.paymentRequest.findUniqueOrThrow({ where: { reference: checkout.json().data.reference } });
+        const sale = { ...fixture, order, request };
+        verify(sale);
+        await Promise.all([accept(sale), accept(sale)]);
+        await drain(fixture.tenant.id);
+        const payment = await prisma.payment.findFirstOrThrow({ where: { businessId: fixture.tenant.id, orderId: order.id } });
+        expect(payment).toMatchObject({ confidence: 'GATEWAY_CONFIRMED', customerId: fixture.customer.id });
+        expect(Number(payment.amount)).toBe(25);
+        expect(await prisma.paystackSettlement.count({ where: { requestId: request.id } })).toBe(1);
+        expect(await prisma.payment.count({ where: { orderId: order.id } })).toBe(1);
+
+        expect((await setStatus('PROCESSING')).statusCode).toBe(200);
+        const dispatchUrl = '/api/v1/orders/' + order.id + '/dispatch';
+        expect((await api.inject({ method: 'POST', url: dispatchUrl, headers: owner(foreign.tenant.id), payload: {} })).statusCode).toBe(404);
+        expect((await api.inject({ method: 'POST', url: dispatchUrl, headers: account, payload: { courier: 'Synthetic carrier' } })).statusCode).toBe(200);
+        for (let repeat = 0; repeat < 2; repeat++) {
+          expect((await api.inject({ method: 'POST', url: dispatchUrl + '/delivered', headers: account })).statusCode).toBe(200);
+        }
+        expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id, toStatus: 'FULFILLED' } })).toBe(1);
+        expect(await prisma.order.count({ where: { businessId: fixture.tenant.id } })).toBe(1);
+        const noticeKey = { businessId: fixture.tenant.id, eventKey: 'order-status-' + order.id + '-FULFILLED' };
+        await expect.poll(async () => {
+          await recoverFulfillment();
+          return (await prisma.whatsAppSend.findUnique({ where: { businessId_eventKey: noticeKey } }))?.state;
+        }, { timeout: 25_000, interval: 300 }).toBe('PROVIDER_ACCEPTED');
+        const notification = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: noticeKey } });
+        expect(notification.payload).toMatchObject({ customerId: fixture.customer.id, relatedOrderId: order.id });
+        const status = { statuses: [{ id: notification.providerMessageId, status: 'delivered',
+          recipient_id: fixture.customer.waNumber, timestamp: String(Math.floor(Date.now() / 1000)),
+          biz_opaque_callback_data: notification.id,
+        }] };
+        await signedMeta(status);
+        await signedMeta(status);
+        await outbound.recoverDurableOutbound();
+        expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }))
+          .toMatchObject({ state: 'DELIVERED', attempts: 1, deliveredAt: expect.any(Date) });
+        await recoverClassificationHandoffs(producer.enqueue, new Date(Date.now() + 40_000));
+      }
+      expect(workerErrors).toEqual([]);
+    } finally {
+      await Promise.all(workers.map((worker) => worker.close()));
+      await Promise.all(running);
+      await producer.close();
+      await api.close();
+    }
+  }, 180_000);
 
   it('rejects an invalid signature and ignores unsupported events without financial effects', async () => {
     const fixture = await shop();

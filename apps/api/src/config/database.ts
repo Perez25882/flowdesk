@@ -39,11 +39,11 @@ function createPrismaClient(): PrismaClient {
   });
 
   client.$on('error', (event: Prisma.LogEvent) => {
-    logger.error({ target: event.target, message: event.message }, 'Prisma error');
+    logger.error({ target: event.target }, 'Prisma error');
   });
 
   client.$on('warn', (event: Prisma.LogEvent) => {
-    logger.warn({ target: event.target, message: event.message }, 'Prisma warning');
+    logger.warn({ target: event.target }, 'Prisma warning');
   });
 
   return client;

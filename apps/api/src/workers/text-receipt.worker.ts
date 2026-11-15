@@ -14,6 +14,9 @@ import {
 } from '../modules/webhook/text-receipts.js';
 import {
   createIntentClassificationQueue,
+  CLASSIFICATION_EFFECT_WAITING,
+  CLASSIFICATION_EFFECT_INTERRUPTED,
+  CLASSIFICATION_EFFECT_LEASE_MS,
   type IntentClassificationJobData,
 } from '../queues/intent.queue.js';
 
@@ -62,8 +65,14 @@ export function openTextReceiptQueue(): { enqueue: EnqueueIntent; ready: () => P
         connection.once('ready', finish);
       });
     },
-    enqueue: (job: IntentClassificationJobData, jobId: string) =>
-      queue.add('classify-message-intent', job, { jobId, removeOnComplete: { age: 3_600 } }),
+    enqueue: async (job: IntentClassificationJobData, jobId: string) => {
+      const prior = await queue.getJob(jobId);
+      if (prior && await prior.isFailed()) {
+        await prior.retry('failed');
+        return prior;
+      }
+      return queue.add('classify-message-intent', job, { jobId, removeOnComplete: { age: 3_600 } });
+    },
     close: async () => {
       try {
         await queue.close();
@@ -241,7 +250,7 @@ async function handOffTextMessage(id: string, enqueue: EnqueueIntent, now: Date)
       ? await tx.message.findUnique({
           where: { id: receipt.messageId, businessId, waMessageId: receipt.waMessageId, direction: 'INBOUND',
             type: receipt.messageType, customer: { businessId, waNumber: receipt.sender ?? '' } },
-          select: { id: true, processed: true },
+          select: { id: true, processed: true, processingError: true },
         })
       : null;
     if (!message) {
@@ -270,6 +279,8 @@ async function handOffTextMessage(id: string, enqueue: EnqueueIntent, now: Date)
         await delayTextReceipt(tx, receipt, now, 'QUEUE_UNAVAILABLE');
         return;
       }
+    }
+    if (!message.processed || message.processingError === CLASSIFICATION_EFFECT_WAITING || message.processingError === 'ORDER_EFFECT_WAITING') {
       await tx.whatsAppTextReceipt.update({
         where: { id: receipt.id },
         data: { classificationCheckAt: new Date(now.getTime() + CLASSIFICATION_CHECK_INTERVAL_MS) },
@@ -282,7 +293,7 @@ async function handOffTextMessage(id: string, enqueue: EnqueueIntent, now: Date)
 export async function recoverClassificationHandoffs(enqueue: EnqueueIntent, now = new Date()): Promise<number> {
   const due = await prisma.whatsAppTextReceipt.findMany({
     where: { classificationCheckAt: { lte: now } },
-    orderBy: { classificationCheckAt: 'asc' },
+    orderBy: [{ classificationCheckAt: 'asc' }, { id: 'asc' }],
     select: { id: true },
     take: BATCH_SIZE,
   });
@@ -297,8 +308,21 @@ export async function recoverClassificationHandoffs(enqueue: EnqueueIntent, now 
       const message = receipt.messageId && receipt.businessId ? await tx.message.findFirst({
         where: { id: receipt.messageId, businessId: receipt.businessId, direction: 'INBOUND',
           waMessageId: receipt.waMessageId, customer: { businessId: receipt.businessId } },
-        select: { id: true, businessId: true, processed: true, processingError: true },
+        select: { id: true, businessId: true, processed: true, processingError: true, processedAt: true },
       }) : null;
+      if (message?.processingError === CLASSIFICATION_EFFECT_WAITING) {
+        const deadline = (message.processedAt?.getTime() ?? 0) + CLASSIFICATION_EFFECT_LEASE_MS;
+        if (deadline <= now.getTime()) {
+          await tx.message.updateMany({
+            where: { id: message.id, businessId: message.businessId, processingError: CLASSIFICATION_EFFECT_WAITING },
+            data: { requiresReview: true, processingError: CLASSIFICATION_EFFECT_INTERRUPTED },
+          });
+        }
+        await tx.whatsAppTextReceipt.update({ where: { id }, data: {
+          classificationCheckAt: deadline <= now.getTime() ? null : new Date(deadline),
+        } });
+        return;
+      }
       if (!message || (message.processed && message.processingError !== 'ORDER_EFFECT_WAITING')) {
         await tx.whatsAppTextReceipt.update({ where: { id }, data: { classificationCheckAt: null } });
         return;

@@ -35,8 +35,8 @@ async function startServer(): Promise<void> {
   await connectRedis();
   await prisma.$queryRaw`SELECT 1 FROM fulfillment_tasks LIMIT 0`;
   await prisma.$queryRaw`SELECT 1 FROM whatsapp_sends LIMIT 0`;
-  const workers = [outboundWorker, insightsWorker, ...(env.NODE_ENV === 'test'
-    ? [] : [messageProcessorWorker, intentClassifierWorker, deadLetterWorker])];
+  const workers = [outboundWorker, insightsWorker, intentClassifierWorker, ...(env.NODE_ENV === 'test'
+    ? [] : [messageProcessorWorker, deadLetterWorker])];
   for (const worker of workers) {
     void worker.run().catch((error: Error) => logger.error({ name: error.name, queue: worker.name }, 'Queue worker stopped'));
   }

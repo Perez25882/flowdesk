@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { ASSISTANT_CONTRACT_VERSION, IntentType, type AssistantDecision } from '@flowdesk/shared';
 import type { AiAssistMode, PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
 
@@ -127,6 +128,29 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     const greeting = await inbound(fixture, 'Good morning');
     await assistant.runAssistant(greeting);
     expect((await job(greeting.messageId))?.data.body).toContain('Hello! How can we help?');
+  });
+
+  it('recovers one transient pool checkout failure before model execution and records persistent failures for review', async () => {
+    const fixture = await shop('GROUNDED_AUTO');
+    const input = await inbound(fixture, 'How much is Rice?');
+    const blocked = await inbound(fixture, 'How much is Rice today?');
+    const failure = new Prisma.PrismaClientKnownRequestError('synthetic checkout timeout', { code: 'P2024', clientVersion: 'fixture' });
+    model.generate.mockResolvedValue(output(quote(fixture.product.id)));
+    const readPending = vi.spyOn(prisma.pendingOrder, 'findFirst').mockRejectedValueOnce(failure);
+    try {
+      await assistant.runAssistant(input);
+      expect(await read(input.messageId)).toMatchObject({ aiPolicy: { state: 'HANDED_OFF' } });
+      expect(model.generate).toHaveBeenCalledTimes(1);
+      readPending.mockRejectedValue(failure);
+      await assistant.runAssistant(blocked);
+      expect(await read(blocked.messageId)).toMatchObject({ requiresReview: true, aiPolicy: {
+        state: 'REVIEW', reasons: ['effect_unavailable'], failure: { phase: 'pending_order', code: 'P2024' },
+      } });
+      expect(model.generate).toHaveBeenCalledTimes(1);
+      expect(await job(blocked.messageId)).toBeUndefined();
+    } finally {
+      readPending.mockRestore();
+    }
   });
 
   it('requires review for an out-of-stock quote, missing product and a catalogue change during generation', async () => {

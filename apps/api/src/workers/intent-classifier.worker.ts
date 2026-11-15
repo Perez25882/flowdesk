@@ -1,7 +1,6 @@
 import { Worker } from 'bullmq';
-import { IntentType, ClassificationSource, type AssistantAction } from '@flowdesk/shared';
+import { IntentType, ClassificationSource, type AssistantAction, type ClassificationResult } from '@flowdesk/shared';
 import { prisma } from '../config/database.js';
-import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { redisSubscriber } from '../config/redis.js';
 import { emitMessageFlagged } from '../services/sse/sse.events.js';
@@ -22,6 +21,8 @@ import { findOrderByReference } from '../modules/orders/orders.repository.js';
 import { findActiveCatalogProducts } from '../modules/products/products.repository.js';
 import {
   INTENT_CLASSIFICATION_QUEUE_NAME,
+  CLASSIFICATION_EFFECT_WAITING,
+  CLASSIFICATION_EFFECT_INTERRUPTED,
   type IntentClassificationJobData,
 } from '../queues/intent.queue.js';
 import { moveToDeadLetter } from './dead-letter.worker.js';
@@ -247,6 +248,7 @@ export async function processIntentClassification(jobData: IntentClassificationJ
       await handleOrderIntent(message);
       return;
     }
+    if ([CLASSIFICATION_EFFECT_WAITING, CLASSIFICATION_EFFECT_INTERRUPTED].includes(message.processingError ?? '')) return;
     await abandonRetryOfHandledMessage(message);
     return;
   }
@@ -296,12 +298,24 @@ export async function processIntentClassification(jobData: IntentClassificationJ
       classifiedBy: result.source as ClassificationSource,
       processed: true,
       processedAt: new Date(),
-      ...(ruleOrder ? { processingError: 'ORDER_EFFECT_WAITING' } : {}),
+      processingError: ruleOrder ? 'ORDER_EFFECT_WAITING' : CLASSIFICATION_EFFECT_WAITING,
       requiresReview: provisionalReview,
     },
   });
   if (!claimed.count) return;
 
+  await applyClassificationEffects(message, jobData, result, provisionalReview, Boolean(ruleOrder));
+  if (!ruleOrder) await prisma.message.updateMany({
+    where: { id: message.id, businessId: message.businessId, processingError: CLASSIFICATION_EFFECT_WAITING },
+    data: { processingError: null },
+  });
+}
+
+async function applyClassificationEffects(
+  message: ClassifiedMessage, jobData: IntentClassificationJobData, result: ClassificationResult,
+  provisionalReview: boolean, ruleOrder: boolean,
+): Promise<void> {
+  const body = message.body!;
   if (provisionalReview) {
     emitMessageFlagged(jobData.businessId, {
       messageId: jobData.messageId,
@@ -326,7 +340,7 @@ export async function processIntentClassification(jobData: IntentClassificationJ
     return;
   }
 
-  if (result.intent === IntentType.STATUS_CHECK && result.source === ClassificationSource.RULE_ENGINE && !hasPolicyOverride(message.body)) {
+  if (result.intent === IntentType.STATUS_CHECK && result.source === ClassificationSource.RULE_ENGINE && !hasPolicyOverride(body)) {
     await handleStatusCheckIntent(message);
     return;
   }
@@ -340,7 +354,7 @@ export async function processIntentClassification(jobData: IntentClassificationJ
           businessId: message.businessId,
           customerId: message.customerId,
           messageId: message.id,
-          body: message.body,
+          body,
           ruleIntent: result.intent,
           ruleConfidence: result.confidence,
         })
@@ -381,7 +395,7 @@ export async function processIntentClassification(jobData: IntentClassificationJ
   // record-driven path so an order is still created — degrading to "no order
   // was taken" would cost the owner a sale.
   if (assisted.action === 'template_reply' && result.intent === IntentType.ORDER &&
-      result.source === ClassificationSource.RULE_ENGINE && explicitOrderRequest(message.body) && !hasPolicyOverride(message.body)) {
+      result.source === ClassificationSource.RULE_ENGINE && explicitOrderRequest(body) && !hasPolicyOverride(body)) {
     await handleOrderIntent(message);
     return;
   }
@@ -467,7 +481,7 @@ export const intentClassifierWorker = new Worker<IntentClassificationJobData>(
     } catch (error: unknown) {
       logger.error(
         {
-          error,
+          errorType: error instanceof Error ? error.name : 'Unknown',
           jobId: job.id,
           messageId: job.data.messageId,
           businessId: job.data.businessId,
@@ -481,7 +495,7 @@ export const intentClassifierWorker = new Worker<IntentClassificationJobData>(
     // @ts-expect-error ioredis v5.11.0 vs BullMQ bundled v5.10.1 type mismatch
     connection: redisSubscriber,
     concurrency: WORKER_CONCURRENCY,
-    autorun: env.NODE_ENV === 'test',
+    autorun: false,
   },
 );
 
@@ -492,7 +506,7 @@ intentClassifierWorker.on('completed', (job) => {
 intentClassifierWorker.on('failed', async (job, error) => {
   logger.error(
     {
-      error,
+      errorType: error.name,
       jobId: job?.id,
       messageId: job?.data.messageId,
       attemptsMade: job?.attemptsMade,

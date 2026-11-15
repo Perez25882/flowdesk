@@ -10,6 +10,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createIntentClassificationQueue,
   INTENT_CLASSIFICATION_QUEUE_NAME,
+  CLASSIFICATION_EFFECT_WAITING,
+  CLASSIFICATION_EFFECT_INTERRUPTED,
+  CLASSIFICATION_EFFECT_LEASE_MS,
 } from '../src/queues/intent.queue.js';
 
 const databaseUrl = process.env.G1_TEST_DATABASE_URL;
@@ -151,6 +154,43 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       }
       expect((await receipt(phone, providerId)).classificationCheckAt).toBeNull();
     });
+
+    it('drains bounded checkpoints and records interruption after classification without replaying uncertain effects', async () => {
+      const phone = newId();
+      const business = await tenant(phone);
+      const providerIds = Array.from({ length: 21 }, newId);
+      expect((await signed([change(phone, ...providerIds.map((id) => text(id)))])).statusCode).toBe(200);
+      for (let pass = 0; pass < 5; pass++) {
+        if (!await dispatch(producer.enqueue, new Date(), business.id)) break;
+      }
+      const now = new Date();
+      const rows = await prisma.whatsAppTextReceipt.findMany({ where: {
+        businessId: business.id, waMessageId: { in: providerIds },
+      } });
+      expect(rows).toHaveLength(21);
+      for (const row of rows) {
+        expect(row.status).toBe('COMPLETED');
+        const queued = await queue.getJob(`intent-${row.waMessageId}`);
+        expect(queued).toBeDefined();
+        await queued!.remove();
+      }
+      const messages = rows.map((row) => row.messageId!);
+      await prisma.message.updateMany({ where: { id: { in: messages } }, data: {
+        processed: true, processedAt: now, processingError: CLASSIFICATION_EFFECT_WAITING,
+      } });
+      const deadline = new Date(now.getTime() + CLASSIFICATION_EFFECT_LEASE_MS);
+      expect(await recoverClassification(producer.enqueue, deadline)).toBeLessThanOrEqual(20);
+      for (let pass = 0; pass < 10; pass++) {
+        if (!await recoverClassification(producer.enqueue, deadline)) break;
+      }
+      expect(await prisma.message.count({ where: {
+        id: { in: messages }, processingError: CLASSIFICATION_EFFECT_INTERRUPTED, requiresReview: true,
+      } })).toBe(21);
+      expect(await prisma.whatsAppTextReceipt.count({ where: {
+        businessId: business.id, classificationCheckAt: { not: null },
+      } })).toBe(0);
+      expect(await prisma.whatsAppSend.count({ where: { businessId: business.id } })).toBe(0);
+    }, 60_000);
 
     function receipt(phoneNumberId: string, waMessageId: string) {
       return prisma.whatsAppTextReceipt.findUniqueOrThrow({
