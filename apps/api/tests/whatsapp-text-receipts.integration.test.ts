@@ -589,13 +589,18 @@ describe.skipIf(!databaseUrl || !redisUrl)(
       const phone = newId();
       const business = await tenant(phone, false);
       const id = newId();
-      await signed([change(phone, text(id))]);
+      // This scenario starts with historical ownership. Pin the fixture this
+      // way independently of the JS and PostgreSQL clocks' second boundary.
+      await prisma.$executeRaw`UPDATE whatsapp_phone_ownership SET "startedAt" = ${new Date(Date.now() - 60_000)}
+        WHERE "phoneNumberId" = ${phone} AND "businessId" = ${business.id} AND "endedAt" IS NULL`;
+      expect((await signed([change(phone, text(id))])).statusCode).toBe(200);
       const pending = await receipt(phone, id);
+      expect(pending).toMatchObject({ businessId: business.id, status: 'PENDING' });
       await prisma.whatsAppTextReceipt.update({
         where: { id: pending.id },
         data: { attempts: 11 },
       });
-      await dispatch(producer.enqueue);
+      await dispatch(producer.enqueue, new Date(), business.id);
       expect(await receipt(phone, id)).toMatchObject({
         status: 'FAILED',
         attempts: 12,

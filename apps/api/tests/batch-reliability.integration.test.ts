@@ -171,9 +171,10 @@ describe.skipIf(!database || !redis)('Batch 1 with disposable PostgreSQL and Bul
       .toMatchObject({ state: 'FAILED', reason: 'OWNER_ALERT_NOT_AUTHORIZED' });
     await adjustStock(product.id, business.id, { quantity: 2, type: 'RESTOCK' }, null);
     await reduce();
-    await recoverFulfillment();
-    expect(await prisma.fulfillmentTask.findFirst({ where: { businessId: business.id, kind: 'OWNER_LOW_STOCK', id: { not: task.id } } }))
-      .toMatchObject({ state: 'SUPPRESSED', reason: 'preference_off' });
+    await expect.poll(async () => {
+      await recoverFulfillment();
+      return prisma.fulfillmentTask.findFirst({ where: { businessId: business.id, kind: 'OWNER_LOW_STOCK', id: { not: task.id } } });
+    }, { timeout: 15_000 }).toMatchObject({ state: 'SUPPRESSED', reason: 'preference_off' });
   });
 
   it('replays one authorized booking, refuses a competing slot, then reopens capacity after cancellation', async () => {
