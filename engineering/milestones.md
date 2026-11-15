@@ -74,4 +74,4 @@ The founder authorized G1-00 and G1-07 through G1-10 as one integration branch. 
 
 ### Batch 3 commerce operators
 
-**Status** Batch 2 received founder approval for its verified local scope. The Batch 3 commerce integration is under verification. See the [acceptance report](batch-3/report.md), [commerce contract](batch-3/contract.md) and [implementation register](batch-3/progress.md).
+**Status** Batch 2 received founder approval for its verified local scope. Full Batch 3 acceptance is **BLOCKED**. Implementation `4081a34163be1e4e286aa11d70131a1445bba870` implements order-linked commerce for all four operators and passed 421 integration and regression tests, 994 default tests, both migration paths, Chromium owner verification, backup and restore, and the approved Batch 2 application rollback smoke. Standalone invoices and independently triggered payment reminders remain open, along with the targeted interruption and browser coverage in the [acceptance report](batch-3/report.md). See the [commerce contract](batch-3/contract.md) and [implementation register](batch-3/progress.md).

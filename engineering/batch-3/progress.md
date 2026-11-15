@@ -24,6 +24,8 @@ Parent `0f792ae67341bed49d655115aab0f0c378b875e0` matches the fetched Batch 2 br
 3. Fulfillment and care. Use scoped staff actions, physical evidence, support lifecycle, and consent.
 4. Owner commerce controls and signed end-to-end verification. Run the full prior regression and independent fresh fixtures before assigning a gate result.
 
-## Connected implementation checkpoint
+## Final implementation checkpoint
 
-The current branch has version 3 quote, invoice, fulfillment, support and consent paths. The focused synthetic retail and custom pickup run and last-unit stock contention passed. Cancellation, repricing, stale roles and seeded Batch 2 approval migration are in the final regression candidate. The browser fixture uses the actual production UI and Fastify API with synthetic settlement data. See the [acceptance report](report.md) for gates and source details.
+Implementation `4081a34163be1e4e286aa11d70131a1445bba870` has version 3 quotation, order-linked invoice, fulfillment, support, verified full tracked returns and consent. The fixed-snapshot integration fixture passed the signed retail and custom pickup lifecycle, stock contention, repricing, cancellation, return replay, stale roles and the seeded Batch 2 approval upgrade. The browser fixture uses the actual UI and Fastify API with synthetic settlement data.
+
+Full acceptance is **BLOCKED**. Standalone invoices, independently triggered payment reminders and the dedicated interruption and ambiguous-checkout browser scenarios are open. The [acceptance report](report.md) records exact commands, local results and remaining scope.
