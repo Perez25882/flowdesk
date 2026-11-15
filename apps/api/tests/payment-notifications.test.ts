@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../src/services/notifications/customer-notifications.js', () => ({
   notifyPaymentReceived: mocks.notifyPaymentReceived,
 }));
+vi.mock('../src/services/notifications/owner-notifications.js', () => ({
+  notifyOwnerPaymentRecorded: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('../src/services/sse/sse.events.js', () => ({
   emitPaymentConfirmed: mocks.emitPaymentConfirmed,

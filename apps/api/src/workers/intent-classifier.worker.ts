@@ -236,7 +236,7 @@ async function abandonRetryOfHandledMessage(message: ClassifiedMessage): Promise
   });
 }
 
-export async function processIntentClassification(jobData: IntentClassificationJobData): Promise<void> {
+export async function processIntentClassification(jobData: IntentClassificationJobData, retryAfterFailure = false): Promise<void> {
   const message = await fetchMessageWithCustomer(jobData.messageId);
   if (message.businessId !== jobData.businessId || message.waMessageId !== jobData.waMessageId || message.direction !== 'INBOUND' ||
       (message.customer && message.customer.businessId !== message.businessId)) return;
@@ -248,7 +248,17 @@ export async function processIntentClassification(jobData: IntentClassificationJ
       await handleOrderIntent(message);
       return;
     }
-    if ([CLASSIFICATION_EFFECT_WAITING, CLASSIFICATION_EFFECT_INTERRUPTED].includes(message.processingError ?? '')) return;
+    if (message.processingError === CLASSIFICATION_EFFECT_WAITING) {
+      if (retryAfterFailure) {
+        const change = await prisma.message.updateMany({
+          where: { id: message.id, businessId: message.businessId, processingError: CLASSIFICATION_EFFECT_WAITING },
+          data: { processingError: CLASSIFICATION_EFFECT_INTERRUPTED, requiresReview: true },
+        });
+        if (change.count) emitMessageFlagged(message.businessId, { messageId: message.id, intent: message.intent, requiresReview: true });
+      }
+      return;
+    }
+    if (message.processingError === CLASSIFICATION_EFFECT_INTERRUPTED) return;
     await abandonRetryOfHandledMessage(message);
     return;
   }
@@ -477,7 +487,7 @@ export const intentClassifierWorker = new Worker<IntentClassificationJobData>(
   INTENT_CLASSIFICATION_QUEUE_NAME,
   async (job) => {
     try {
-      await withTenantSlot(job.data.businessId, () => processIntentClassification(job.data));
+      await withTenantSlot(job.data.businessId, () => processIntentClassification(job.data, job.attemptsMade > 0));
     } catch (error: unknown) {
       logger.error(
         {

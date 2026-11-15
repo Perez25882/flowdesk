@@ -11,6 +11,10 @@ const model = vi.hoisted(() => ({ generate: vi.fn() }));
 vi.mock('../src/services/intent/assistant-providers/nvidia.js', () => ({
   NvidiaAssistantProvider: class { name = 'synthetic'; generate = model.generate; },
 }));
+vi.mock('../src/services/assistant/pending-order.js', async (original) => {
+  const actual = await original<typeof import('../src/services/assistant/pending-order.js')>();
+  return { ...actual, findOpenPendingOrder: vi.fn(actual.findOpenPendingOrder) };
+});
 vi.mock('../src/services/whatsapp/client.js', async (original) => ({
   ...await original<object>(), loadTenantCredentials: vi.fn(async () => ({ phoneNumberId: 'synthetic' })),
 }));
@@ -136,21 +140,18 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     const blocked = await inbound(fixture, 'How much is Rice today?');
     const failure = new Prisma.PrismaClientKnownRequestError('synthetic checkout timeout', { code: 'P2024', clientVersion: 'fixture' });
     model.generate.mockResolvedValue(output(quote(fixture.product.id)));
-    const readPending = vi.spyOn(prisma.pendingOrder, 'findFirst').mockRejectedValueOnce(failure);
-    try {
-      await assistant.runAssistant(input);
-      expect(await read(input.messageId)).toMatchObject({ aiPolicy: { state: 'HANDED_OFF' } });
-      expect(model.generate).toHaveBeenCalledTimes(1);
-      readPending.mockRejectedValue(failure);
-      await assistant.runAssistant(blocked);
-      expect(await read(blocked.messageId)).toMatchObject({ requiresReview: true, aiPolicy: {
-        state: 'REVIEW', reasons: ['effect_unavailable'], failure: { phase: 'pending_order', code: 'P2024' },
-      } });
-      expect(model.generate).toHaveBeenCalledTimes(1);
-      expect(await job(blocked.messageId)).toBeUndefined();
-    } finally {
-      readPending.mockRestore();
-    }
+    const pending = vi.mocked((await import('../src/services/assistant/pending-order.js')).findOpenPendingOrder);
+    pending.mockRejectedValueOnce(failure);
+    await assistant.runAssistant(input);
+    expect(await read(input.messageId)).toMatchObject({ aiPolicy: { state: 'HANDED_OFF' } });
+    expect(model.generate).toHaveBeenCalledTimes(1);
+    pending.mockRejectedValueOnce(failure).mockRejectedValueOnce(failure);
+    await assistant.runAssistant(blocked);
+    expect(await read(blocked.messageId)).toMatchObject({ requiresReview: true, aiPolicy: {
+      state: 'REVIEW', reasons: ['effect_unavailable'], failure: { phase: 'pending_order', code: 'P2024' },
+    } });
+    expect(model.generate).toHaveBeenCalledTimes(1);
+    expect(await job(blocked.messageId)).toBeUndefined();
   });
 
   it('requires review for an out-of-stock quote, missing product and a catalogue change during generation', async () => {
