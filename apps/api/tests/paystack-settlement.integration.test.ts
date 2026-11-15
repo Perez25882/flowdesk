@@ -251,13 +251,15 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
     const { intentClassifierWorker } = await import('../src/workers/intent-classifier.worker.js');
     const outbound = await import('../src/workers/outbound.worker.js');
     const { dispatchTextReceipts, openTextReceiptQueue, recoverClassificationHandoffs } = await import('../src/workers/text-receipt.worker.js');
-    const { recoverFulfillment } = await import('../src/workers/fulfillment-recovery.js');
+    const { startFulfillmentRecovery } = await import('../src/workers/fulfillment-recovery.js');
     const api = await createApp();
     const producer = openTextReceiptQueue();
     const workers = [intentClassifierWorker, outbound.outboundWorker];
     const workerErrors: string[] = [];
     for (const worker of workers) worker.on('error', (error) => workerErrors.push(error.name));
     const running = workers.map((worker) => worker.run().catch((error: Error) => { workerErrors.push(error.name); }));
+    const stopOutbound = outbound.startDurableOutboundRecovery();
+    const stopFulfillment = startFulfillmentRecovery();
 
     const foreign = await shop(true);
     function owner(businessId: string) {
@@ -320,7 +322,11 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
           businessId: fixture.tenant.id, eventKey: 'assistant-reply-' + inquiry.id,
         } } });
         expect(quote.payload).toMatchObject({ body: expect.stringContaining('GHS 25.00'), customerId: fixture.customer.id });
-        await expect.poll(() => metaCalls.get(quote.id), { timeout: 20_000 }).toMatch(/^wamid\./);
+        await expect.poll(async () => {
+          const send = await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: quote.id } });
+          return { state: send.state, reason: send.reason, providerMessageId: send.providerMessageId };
+        }, { timeout: 40_000 }).toMatchObject({ state: 'PROVIDER_ACCEPTED', reason: null, providerMessageId: expect.stringMatching(/^wamid\./) });
+        expect(metaCalls.get(quote.id)).toBeDefined();
 
         await prisma.business.update({ where: { id: fixture.tenant.id }, data: { aiAssistMode: 'OFF' } });
         const source = await admitText('I want to buy 1 bag of Rice');
@@ -357,10 +363,9 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
         expect(await prisma.orderStatusHistory.count({ where: { orderId: order.id, toStatus: 'FULFILLED' } })).toBe(1);
         expect(await prisma.order.count({ where: { businessId: fixture.tenant.id } })).toBe(1);
         const noticeKey = { businessId: fixture.tenant.id, eventKey: 'order-status-' + order.id + '-FULFILLED' };
-        await expect.poll(async () => {
-          await recoverFulfillment();
-          return (await prisma.whatsAppSend.findUnique({ where: { businessId_eventKey: noticeKey } }))?.state;
-        }, { timeout: 25_000, interval: 300 }).toBe('PROVIDER_ACCEPTED');
+        await expect.poll(async () =>
+          (await prisma.whatsAppSend.findUnique({ where: { businessId_eventKey: noticeKey } }))?.state,
+        { timeout: 40_000, interval: 300 }).toBe('PROVIDER_ACCEPTED');
         const notification = await prisma.whatsAppSend.findUniqueOrThrow({ where: { businessId_eventKey: noticeKey } });
         expect(notification.payload).toMatchObject({ customerId: fixture.customer.id, relatedOrderId: order.id });
         const status = { statuses: [{ id: notification.providerMessageId, status: 'delivered',
@@ -369,13 +374,13 @@ fixtureOnly('G1-03 durable Paystack settlement with PostgreSQL', () => {
         }] };
         await signedMeta(status);
         await signedMeta(status);
-        await outbound.recoverDurableOutbound();
-        expect(await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }))
+        await expect.poll(() => prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notification.id } }), { timeout: 15_000 })
           .toMatchObject({ state: 'DELIVERED', attempts: 1, deliveredAt: expect.any(Date) });
         await recoverClassificationHandoffs(producer.enqueue, new Date(Date.now() + 40_000));
       }
       expect(workerErrors).toEqual([]);
     } finally {
+      await Promise.all([stopOutbound(), stopFulfillment()]);
       await Promise.all(workers.map((worker) => worker.close()));
       await Promise.all(running);
       await producer.close();
