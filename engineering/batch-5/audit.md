@@ -18,3 +18,29 @@ Baseline `98f0022`. Code inspection records current controls and dependencies. E
 | Reports and export | Revenue capability | Tenant-scoped windows and CSV, existing totals can be distinguished from payment initiation. Service and workflow outcomes need coverage. | IMPROVE filters and verified definitions. Test scoped data and larger fixtures. |
 
 Implementation preserves the existing authenticated route names and domain services. Any unverified interaction remains open in the final acceptance matrix.
+
+## Implemented surface checks
+
+| Area | Control and source | Acceptance evidence to record |
+| --- | --- | --- |
+| Account and tenant | Owner and staff login, verification redirect, role navigation, direct route access, return destination, logout and team invitation. Auth refresh cookie and tenant middleware. | Browser tenant switch, role access and expired session. Invitation delivery still depends on the synthetic or configured transport. |
+| Setup | Profile selection, links to the existing business, catalogue, service, team, provider and assistant forms. Current database revisions and observable receipt state. | Reopen saved setup for retail and service in Chromium. Attempt stale or staff writes with Fastify on PostgreSQL. |
+| Overview and reporting | Current orders, cases, visit states, verified receipts, invoice balances, workflow decisions, report window and CSV download. | Query bounded synthetic volumes and verify scoped amounts. Check empty, denied, error and retry states. |
+| Work center | State filter, current workflow detail, order and visit links, approval, rejection, retry, escalation and cancel. | Run browser approval and G1/Batch 2 workflow suite including stale or changed evidence. |
+| Inbox | Search, needs-you filter, deep-linked thread, earlier history, current draft, secure download, context links and customer cases. | Scoped history pages, approved/dismissed draft race, signed acceptance and delivery evidence, case history, blocked recipients and role checks. |
+| Commerce | Product fields and variants, quote and policy form, manual order, detail, preparation, payment link, dispatch or pickup, return custody, case assignment and resolution. | Browser order and verified payment, replayed checkout, return restoration and verified support proof. PostgreSQL checks exact stock, assignment and tenant rules. |
+| Service operations | Business timezone and hours, closure and availability, staff resources, leads, calendar, slot selection, timed holds, checkout, lifecycle, attendance and notices. | Browser lead to held deposit, signed settlement, assigned completion and reloading a saved booking. PostgreSQL includes conflict, late payment and stale resource tests. |
+| Finance | Totals by evidence, ledger filters, record and verify, scoped invoice detail, standalone draft, issue, send, cancel, reminder and adjustment. | Browser standalone draft and checkout through signed partial and completed settlement. PostgreSQL verifies accounting, idempotency and tenant scope. |
+| Delivery | Assignment-scoped counts, order list and detail, permitted dispatch and shipment evidence UI. | Real PostgreSQL G1 authorization cases and denied financial route in browser. |
+
+## Defect register
+
+| Finding | Disposition |
+| --- | --- |
+| Settings and overview exposed confusing links or made queries the logged-in role could not use. | Shared route role presentation, owner-only settings controls and scoped aggregate reads. |
+| Queued automation could overlook a dashboard human send. | Durable human reply intent, worker suppression check before provider transport and transactional same-draft replacement. |
+| Standalone invoice, manual order and reservation recovery after a lost HTTP response was unclear. | Opaque tenant-scoped request keys and exact saved-record lookup. Checkout retains its existing provider-version guard. |
+| Independent checkout and adjustment components used the same React key after partial payment. | Separate React keys. The commerce browser checks that one payment control remains and the exact after-partial balance is collected. |
+| Legacy booking forms encoded a JSON string twice. | Hooks now pass the form object through the central API encoder. |
+| Case lists support assignees. Generic conversation assignment and a dedicated unread/read receipt remain open. | Explicit gap. Inbox still presents unhandled and case assignment states from durable records. |
+| No automated inventory covers every legacy modal, action and responsive state. | Track any uncovered cases in the acceptance report and continue the product-wide traversal. |

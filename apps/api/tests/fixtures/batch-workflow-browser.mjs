@@ -56,10 +56,13 @@ try {
   await page.locator('#email').fill(email);
   await page.locator('#password').fill(password);
   await page.getByRole('button', {name: 'Sign in', exact: true}).click();
+  await page.getByRole('tab', { name: 'Work center' }).click();
   await page.getByRole('heading', {name: 'Work center'}).waitFor();
   await page.getByText('Synthetic customer').first().waitFor();
   await page.getByRole('button', {name: 'View', exact: true}).click();
-  await page.getByRole('region', {name: 'Work details'}).getByText('Order FD-80808').waitFor();
+  const details = page.getByRole('region', { name: 'Work details' });
+  await details.getByRole('link', { name: 'FD-80808', exact: true }).waitFor();
+  await details.getByText('This action sends the customer a verified order status.', { exact: false }).waitFor();
   await page.getByRole('button', {name: 'Approve reply'}).click();
   await page.getByText('Owner approved the update').waitFor();
   const workflow = await prisma.workflow.findUniqueOrThrow({where: {businessId_sourceId: {businessId: business.id, sourceId: message.id}},

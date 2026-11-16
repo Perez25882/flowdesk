@@ -315,7 +315,8 @@ function manualOrderPrefix(businessId: string, key: string): string {
   return 'manual-' + createHash('sha256').update(businessId + ':' + key).digest('hex').slice(0, 32) + '-';
 }
 
-export async function findManualOrderRequest(businessId: string, key: string, tx: Prisma.TransactionClient = prisma) {
+export async function findManualOrderRequest(businessId: string, key: string, tx: Prisma.TransactionClient = prisma):
+  Promise<{ id: string; deletedAt: Date | null } | null> {
   return tx.order.findFirst({ where: { businessId, isManual: true, id: { startsWith: manualOrderPrefix(businessId, key) } },
     select: { id: true, deletedAt: true } });
 }
