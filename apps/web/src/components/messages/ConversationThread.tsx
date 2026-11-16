@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import type { Thread, ThreadMessage } from '@/hooks/useConversations';
-import { useSendReply } from '@/hooks/useMessages';
+import { useSendReply, useDismissDraft } from '@/hooks/useMessages';
+import { apiFetch, apiFetchBlob } from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { cn, customerLabel, formatPhone } from '@/lib/utils';
 
@@ -25,13 +27,20 @@ export default function ConversationThread({
   onBack: () => void;
 }): React.JSX.Element {
   const endRef = useRef<HTMLDivElement>(null);
-  const days = useMemo(() => groupByDay(thread.messages), [thread.messages]);
+  const [older, setOlder] = useState<Thread[]>([]);
+  const next = older.length ? older[0]?.nextBefore : thread.nextBefore;
+  const history = useMutation({
+    mutationFn: (before: string) => apiFetch<Thread>(`/conversations/${encodeURIComponent(thread.customer.id)}?before=${encodeURIComponent(before)}`),
+    onSuccess: (page) => setOlder((previous) => [page, ...previous]),
+  });
+  const days = useMemo(() => groupByDay([...new Map([...older.flatMap((page) => page.messages), ...thread.messages]
+    .map((message) => [message.id, message])).values()]), [older, thread.messages]);
 
   // Open at the newest message, the way every messaging app does. Without this
   // a long thread opens on messages from weeks ago.
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [thread.customer.id, thread.messages.length]);
+  }, [thread.customer.id]);
 
   const label = customerLabel(thread.customer);
   const phone = formatPhone(thread.customer.waNumber);
@@ -58,8 +67,12 @@ export default function ConversationThread({
           Customer profile
         </Link>
       </header>
+      <CustomerWork customerId={thread.customer.id} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {next && <Button variant="ghost" size="sm" className="mb-3" disabled={history.isPending}
+          onClick={() => history.mutate(next)}>{history.isPending ? 'Loading history…' : 'Load earlier messages'}</Button>}
+        {history.isError && <p role="alert" className="mb-3 text-sm text-danger">Earlier messages could not load. Try again.</p>}
         {days.map((day) => (
           <section key={day.key} aria-label={day.label} className="mb-4">
             <p className="mb-3 text-center text-2xs font-medium text-text-muted">{day.label}</p>
@@ -92,6 +105,49 @@ const deliveryLabels: Record<string, string> = {
   REVIEW_REQUIRED: 'Delivery needs review',
 };
 
+function CustomerWork({ customerId }: { customerId: string }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const context = useQuery({ queryKey: ['conversations', 'context', customerId], enabled: open,
+    queryFn: () => apiFetch<{
+      orders: { id: string; referenceNumber: string; status: string }[];
+      visits: { appointmentId: string; state: string; appointment: { reference: string } }[];
+      invoices: { id: string; reference: string }[];
+    }>('/conversations/' + encodeURIComponent(customerId) + '/context') });
+  const rows = context.data && [
+    ...context.data.orders.map((item) => ({ ref: item.referenceNumber, status: item.status, href: '/orders?order=' + encodeURIComponent(item.id) })),
+    ...context.data.visits.map((item) => ({ ref: item.appointment.reference, status: item.state,
+      href: '/bookings?view=operations&visit=' + encodeURIComponent(item.appointmentId) })),
+    ...context.data.invoices.map((item) => ({ ref: item.reference, status: '', href: '/payments?view=invoices&invoice=' + encodeURIComponent(item.id) })),
+  ];
+  return <details className="max-h-40 overflow-y-auto border-b border-border px-4 py-2 text-sm" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary className="min-h-8 cursor-pointer font-medium">Customer orders, bookings and invoices</summary>
+    {open && context.isPending && <p role="status">Loading linked work…</p>}
+    {context.isError && <p role="alert">Linked work could not load. <button className="underline" onClick={() => void context.refetch()}>Try again</button></p>}
+    {rows?.length === 0 && <p>No linked work.</p>}
+    {rows && <ul className="grid gap-1">{rows.map((record) => <li key={record.href}>
+      <Link to={record.href} className="inline-flex min-h-8 items-center gap-2 text-primary underline">
+        {record.ref}{record.status && ' · ' + record.status.toLowerCase().replaceAll('_', ' ')}
+      </Link>
+    </li>)}</ul>}
+  </details>;
+}
+
+function Attachment({ id }: { id: string }): React.JSX.Element {
+  const download = useMutation({ mutationFn: () => apiFetchBlob('/messages/' + encodeURIComponent(id) + '/media'),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf',
+        'audio/ogg': 'ogg', 'video/mp4': 'mp4', 'text/plain': 'txt' }[blob.type] ?? 'bin';
+      link.download = 'message-attachment.' + extension;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } });
+  return <><Button size="sm" variant="secondary" isLoading={download.isPending} onClick={() => download.mutate()}>Download attachment</Button>
+    {download.isError && <p role="alert" className="text-sm">This attachment could not be downloaded.</p>}</>;
+}
+
 function Bubble({ message }: { message: ThreadMessage }): React.JSX.Element {
   const body = message.body?.trim() || (message.type === 'IMAGE' ? 'Photo' : 'Attachment');
   const attribution =
@@ -109,6 +165,7 @@ function Bubble({ message }: { message: ThreadMessage }): React.JSX.Element {
         )}
       >
         {body}
+        {message.hasAttachment && <div className="mt-2"><Attachment id={message.id} /></div>}
       </div>
       <p className="mt-0.5 px-1 text-2xs text-text-muted">
         {formatTime(message.createdAt)}
@@ -126,6 +183,7 @@ const REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 function Composer({ thread }: { thread: Thread }): React.JSX.Element {
   const [body, setBody] = useState('');
   const send = useSendReply();
+  const dismiss = useDismissDraft();
 
   // A reply attaches to the customer's most recent message. With none there is
   // nothing to reply to — WhatsApp will not let a shop open a conversation with
@@ -135,19 +193,13 @@ function Composer({ thread }: { thread: Thread }): React.JSX.Element {
     lastInbound !== null &&
     Date.now() - new Date(lastInbound.createdAt).getTime() > REPLY_WINDOW_MS;
 
-  // Opening a thread offers the assistant's suggestion, when there is one, so a
-  // DRAFT_ONLY shop approves a reply in one tap instead of retyping it. It is
-  // put in the box rather than sent, and the owner can change every word.
-  //
-  // Keyed on the customer AND the draft: switching threads must not carry one
-  // customer's unsent text into another's, and a new suggestion arriving for
-  // the open thread should replace a stale one.
+  // Leave typed text intact while the conversation refreshes.
   const draft = lastInbound?.draft ?? '';
   const { reset } = send;
   useEffect(() => {
-    setBody(draft);
+    setBody('');
     reset();
-  }, [thread.customer.id, draft, reset]);
+  }, [thread.customer.id, reset]);
 
   if (!lastInbound) {
     return (
@@ -161,17 +213,24 @@ function Composer({ thread }: { thread: Thread }): React.JSX.Element {
 
   function submit(): void {
     const text = body.trim();
-    if (!text) return;
-    send.mutate({ id: target.id, body: text, source: 'human' }, { onSuccess: () => setBody('') });
+    if (!text || send.isPending || windowClosed) return;
+    send.mutate({ id: target.id, body: text, source: text === draft ? 'assistant_draft' : draft ? 'human_takeover' : 'human' },
+      { onSuccess: () => setBody('') });
   }
 
   return (
     <div className="border-t border-border px-4 py-3">
-      {draft && body === draft && (
-        <p className="mb-2 text-2xs text-text-muted">
-          Suggested by your assistant. Edit it or send it as it is.
-        </p>
-      )}
+      {draft && <details className="mb-3 max-h-36 overflow-y-auto rounded-md border border-border p-2">
+        <summary className="min-h-8 cursor-pointer text-sm font-medium">Assistant draft awaiting review</summary>
+        <p className="whitespace-pre-wrap break-words py-2 text-sm">{draft}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" disabled={send.isPending || dismiss.isPending || windowClosed}
+            onClick={() => send.mutate({ id: target.id, body: draft, source: 'assistant_draft' })}>Approve and send</Button>
+          <Button size="sm" variant="secondary" disabled={send.isPending || dismiss.isPending}
+            onClick={() => dismiss.mutate({ id: target.id })}>Discard draft</Button>
+          <Button size="sm" variant="ghost" onClick={() => setBody(draft)}>Edit as team reply</Button>
+        </div>
+      </details>}
       {windowClosed && (
         <p className="mb-2 text-2xs text-text-muted">
           Their last message was over a day ago. WhatsApp only allows approved templates now, so a
@@ -204,11 +263,12 @@ function Composer({ thread }: { thread: Thread }): React.JSX.Element {
           placeholder="Write a reply"
           className="fd-input max-h-40 min-h-[40px] flex-1 resize-none"
         />
-        <Button type="submit" disabled={!body.trim() || send.isPending}>
-          {send.isPending ? 'Sending…' : 'Send'}
+        <Button type="submit" disabled={!body.trim() || send.isPending || windowClosed}>
+          {send.isPending ? 'Sending…' : draft ? 'Replace draft' : 'Send'}
         </Button>
       </form>
-      {send.error && <p className="mt-2 text-xs text-danger">{send.error.message}</p>}
+      {(send.error || dismiss.error) && <p role="alert" className="mt-2 text-xs text-danger">{send.error?.message ?? dismiss.error?.message}</p>}
+      {send.isSuccess && <p role="status" className="mt-2 text-xs text-text-secondary">Reply accepted for sending.</p>}
     </div>
   );
 }

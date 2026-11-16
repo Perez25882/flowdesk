@@ -257,11 +257,12 @@ export interface RevenueStats {
   byMethod: Record<string, number>;
 }
 
-export function useRevenueStats(): UseQueryResult<RevenueStats, Error> {
+export function useRevenueStats(enabled = true): UseQueryResult<RevenueStats, Error> {
   return useQuery({
     queryKey: ['payments', 'stats'],
     queryFn: () => apiFetch<RevenueStats>('/payments/stats'),
     staleTime: 60_000,
+    enabled,
   });
 }
 

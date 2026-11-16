@@ -61,9 +61,10 @@ export interface Appointment {
   customer: { id: string; name: string | null; waNumber: string };
 }
 
-export function useServices(): UseQueryResult<Service[], Error> {
+export function useServices(enabled = true): UseQueryResult<Service[], Error> {
   return useQuery({
     queryKey: ['services'],
+    enabled,
     queryFn: () => apiFetch<Service[]>('/services'),
     staleTime: 60_000,
   });
@@ -87,6 +88,7 @@ export function useSlots(
 export function useAppointments(
   from?: string,
   to?: string,
+  enabled = true,
 ): UseQueryResult<Appointment[], Error> {
   const params = new URLSearchParams();
   if (from) params.set('from', from);
@@ -95,6 +97,7 @@ export function useAppointments(
 
   return useQuery({
     queryKey: ['appointments', from, to],
+    enabled,
     queryFn: () => apiFetch<Appointment[]>(`/appointments${query ? `?${query}` : ''}`),
     staleTime: 30_000,
   });
@@ -105,7 +108,7 @@ export function useCreateService(): UseMutationResult<Service, Error, Partial<Se
 
   return useMutation({
     mutationFn: (data) =>
-      apiFetch<Service>('/services', { method: 'POST', body: JSON.stringify(data) }),
+      apiFetch<Service>('/services', { method: 'POST', body: data }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['services'] });
     },
@@ -121,7 +124,7 @@ export function useUpdateService(): UseMutationResult<
 
   return useMutation({
     mutationFn: ({ id, data }) =>
-      apiFetch<Service>(`/services/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+      apiFetch<Service>(`/services/${id}`, { method: 'PATCH', body: data }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['services'] });
     },
@@ -150,7 +153,7 @@ export function useSetAppointmentStatus(): UseMutationResult<
     mutationFn: ({ id, status, cancelReason }) =>
       apiFetch<{ id: string }>(`/appointments/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status, ...(cancelReason ? { cancelReason } : {}) }),
+        body: { status, ...(cancelReason ? { cancelReason } : {}) },
       }),
     onSuccess: () => {
       // Both: cancelling frees a slot, so the availability the owner is

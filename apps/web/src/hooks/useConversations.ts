@@ -22,6 +22,7 @@ interface ConversationPage {
 }
 
 export interface ThreadMessage {
+  hasAttachment?: boolean;
   id: string;
   body: string | null;
   type: string;
@@ -38,6 +39,7 @@ export interface ThreadMessage {
 export interface Thread {
   customer: { id: string; name: string | null; waNumber: string };
   messages: ThreadMessage[];
+  nextBefore: string | null;
 }
 
 export type InboxFilter = 'all' | 'needs_you';
@@ -78,7 +80,7 @@ export function useConversations(
 export function useThread(customerId: string | null): UseQueryResult<Thread, Error> {
   return useQuery({
     queryKey: ['conversations', 'thread', customerId],
-    queryFn: () => apiFetch<Thread>(`/conversations/${customerId}`),
+    queryFn: () => apiFetch<Thread>(`/conversations/${encodeURIComponent(customerId ?? '')}`),
     enabled: customerId !== null,
     refetchInterval: POLL_MS,
     staleTime: 5_000,

@@ -16,7 +16,7 @@ import {
   LogOut,
   type LucideIcon,
 } from 'lucide-react';
-import { getNavItemsForRole } from '@/config/navigation';
+import { getNavItemsForRole, workspaceFeatures } from '@/config/navigation';
 import { getUserRole, useLogout } from '@/hooks/useAuth';
 import { useBadges } from '@/hooks/useBadges';
 import { useBusiness } from '@/hooks/useBusiness';
@@ -66,9 +66,7 @@ export default function BottomNav(): React.JSX.Element {
   const [moreOpen, setMoreOpen] = useState(false);
   const role = getUserRole();
   const { data: business } = useBusiness();
-  const visibleNavItems = getNavItemsForRole(role, {
-    bookings: business?.bookingsEnabled ?? false,
-  });
+  const visibleNavItems = getNavItemsForRole(role, workspaceFeatures(business));
   const primaryItems = visibleNavItems.filter((item) => item.mobile);
   const overflowItems = visibleNavItems.filter((item) => !item.mobile);
   const { data: badges } = useBadges();

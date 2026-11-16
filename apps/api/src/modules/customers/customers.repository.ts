@@ -241,7 +241,15 @@ export async function upsertCustomerByPhone(
   businessId: string,
   waNumber: string,
   displayName: string | null,
+  tx?: Prisma.TransactionClient,
 ): Promise<CustomerWithStats> {
+  if (tx) {
+    await tx.customer.createMany({ data: { businessId, waNumber, name: displayName }, skipDuplicates: true });
+    if (displayName) await tx.customer.updateMany({ where: { businessId, waNumber, deletedAt: null, name: null }, data: { name: displayName } });
+    const customer = await tx.customer.findFirst({ where: { businessId, waNumber, deletedAt: null } });
+    if (!customer) throw new NotFoundError('Customer not found');
+    return customer as CustomerWithStats;
+  }
   // Idempotent: lookup first (unique on [businessId, waNumber]), then create.
   // The unique constraint combined with the deletedAt filter rules out races because
   // we'd hit P2002 if a parallel transaction beat us to insert — we then re-read.

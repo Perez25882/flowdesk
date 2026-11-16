@@ -16,6 +16,7 @@ export interface CreateOrderItemInput {
 }
 
 export interface CreateOrderInput {
+  id?: string;
   businessId: string;
   customerId: string;
   referenceNumber: string;
@@ -165,6 +166,7 @@ export async function createOrder(
 
   const order = await db.order.create({
     data: {
+      ...(data.id ? { id: data.id } : {}),
       businessId: data.businessId,
       customerId: data.customerId,
       referenceNumber: data.referenceNumber,

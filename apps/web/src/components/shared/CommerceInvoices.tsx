@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { InvoiceCheckout, type InvoiceCheckoutView } from '@/components/orders/InvoiceCheckout';
@@ -6,9 +7,11 @@ import { InvoiceReminders } from '@/components/orders/InvoiceReminders';
 import { useCustomers } from '@/hooks/useCustomers';
 import { apiFetch } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
+import { can, isOwner } from '@/hooks/useAuth';
 
 type Summary = { id: string; reference: string; status: string; total: string; customer: { name: string | null } };
-type Invoice = InvoiceCheckoutView & { reference: string; status: string; total: string; paid: string; due: string; dueAt: string; terms: string | null;
+type Invoice = InvoiceCheckoutView & { reference: string; status: string; total: string; paid: string; verified: string; due: string; dueAt: string;
+  scopeKind: 'ORDER' | 'SERVICE' | 'STANDALONE'; terms: string | null;
   receiptLines: { name: string; quantity: number; subtotal: string }[] };
 type Policy = { enabled: boolean; intervalDays: number; maxReminders: number; templateName: string | null; templateLanguage: string | null; approvedAt?: string | null };
 const field = 'w-full min-w-0 rounded border border-border bg-transparent p-2';
@@ -42,17 +45,28 @@ function ReminderSettings({ policy }: { policy: Policy | null }): React.JSX.Elem
   </details>;
 }
 
-function DraftForm({ onCreate }: { onCreate: (id: string) => void }): React.JSX.Element {
+function DraftForm({ requestKey, onCreate }: { requestKey: string; onCreate: (id: string) => void }): React.JSX.Element {
   const customers = useCustomers();
   const [lines, setLines] = useState([{ description: '', quantity: 1, price: '' }]);
   const [customerId, setCustomerId] = useState('');
   const [due, setDue] = useState('');
   const [terms, setTerms] = useState('');
-  const create = useMutation({ mutationFn: () => apiFetch<Summary>('/commerce/invoices', { method: 'POST', body: {
-    customerId, dueAt: new Date(due + 'T23:59:59.000Z').toISOString(), terms,
+  const submitting = useRef(false);
+  const saved = useQuery({ queryKey: ['commerce', 'draft-request', requestKey], queryFn: () =>
+    apiFetch<{ id: string; reference: string } | null>('/commerce/invoices/drafts/' + encodeURIComponent(requestKey)) });
+  const create = useMutation({ mutationFn: () => apiFetch<Summary>('/commerce/invoices', { method: 'POST', signal: AbortSignal.timeout(20_000), body: {
+    customerId, dueAt: new Date(due + 'T23:59:59.000Z').toISOString(), terms, requestKey,
     lines: lines.map((line) => ({ description: line.description, quantity: line.quantity, unitMinor: Math.round(Number(line.price) * 100) })),
-  } }), onSuccess: (invoice) => onCreate(invoice.id) });
-  return <form className="grid max-w-lg gap-2" aria-label="New invoice" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
+  } }), onSuccess: (invoice) => onCreate(invoice.id), onError: () => { void saved.refetch(); },
+  onSettled: () => { submitting.current = false; } });
+  if (saved.data) return <div className="grid justify-items-start gap-2" role="status">
+    <p>Your invoice was saved.</p>
+    <Button size="sm" onClick={() => { if (saved.data) onCreate(saved.data.id); }}>Open saved invoice</Button>
+  </div>;
+  return <form className="grid max-w-lg gap-2" aria-label="New invoice" onSubmit={(event) => {
+    event.preventDefault();
+    if (!submitting.current) { submitting.current = true; create.mutate(); }
+  }}>
     <label>Customer <select className={field} required value={customerId} onChange={(event) => setCustomerId(event.target.value)}>
       <option value="">Select a customer</option>
       {customers.data?.map((customer) => <option key={customer.id} value={customer.id}>{customer.name ?? customer.waNumber}</option>)}
@@ -76,52 +90,94 @@ function DraftForm({ onCreate }: { onCreate: (id: string) => void }): React.JSX.
       <Button type="button" size="sm" variant="secondary" disabled={lines.length >= 12} onClick={() => setLines([...lines, { description: '', quantity: 1, price: '' }])}>Add invoice item</Button>
       <Button type="submit" size="sm" isLoading={create.isPending}>Save draft</Button>
     </div>
-    {create.isError && <p role="alert">{create.error.message}</p>}
+    {create.isError && <p role="alert">{create.error.name === 'TimeoutError'
+      ? 'The request timed out. Check for a saved invoice or retry with the same details.' : create.error.message}</p>}
   </form>;
+}
+
+function InvoiceAdjustment({ invoiceId, onSaved }: { invoiceId: string; onSaved: () => void }): React.JSX.Element {
+  const [amount, setAmount] = useState('');
+  const [reference, setReference] = useState('');
+  const [reason, setReason] = useState('');
+  const [requestKey, setRequest] = useState(() => crypto.randomUUID());
+  const save = useMutation({ mutationFn: () => apiFetch(`/commerce/invoices/${encodeURIComponent(invoiceId)}/adjustments`, {
+    method: 'POST', body: { amountMinor: Math.round(Number(amount) * 100), reason, reference, requestKey },
+  }), onSuccess: () => { setAmount(''); setReference(''); setReason(''); setRequest(crypto.randomUUID()); onSaved(); } });
+  return <details>
+    <summary className="cursor-pointer font-medium">Record a financial adjustment</summary>
+    <p className="my-2">Record money already returned to the customer. This does not initiate a transfer.</p>
+    <form className="grid max-w-lg gap-2" onSubmit={(event) => { event.preventDefault(); if (!save.isPending) save.mutate(); }}>
+      <label>Returned amount (GHS) <input className={field} type="number" step="0.01" min="0.01" required value={amount} onChange={(event) => setAmount(event.target.value)} /></label>
+      <label>Adjustment reference <input className={field} required maxLength={100} value={reference} onChange={(event) => setReference(event.target.value)} /></label>
+      <label>Evidence and reason <textarea className={field} required minLength={3} maxLength={350} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+      <Button size="sm" className="justify-self-start" type="submit" isLoading={save.isPending}>Record adjustment</Button>
+      {save.isSuccess && <p role="status">Adjustment recorded in the ledger.</p>}
+      {save.isError && <p role="alert">{save.error.message}</p>}
+    </form>
+  </details>;
 }
 
 export function CommerceInvoices(): React.JSX.Element {
   const client = useQueryClient();
-  const [draft, setDraft] = useState(false);
-  const [selected, select] = useState<string | null>(null);
-  const list = useQuery({ queryKey: ['commerce', 'standalone-invoices'], queryFn: () => apiFetch<Summary[]>('/commerce/invoices?standalone=true') });
+  const [params, setParams] = useSearchParams();
+  const owner = isOwner();
+  const draft = owner && /^[\da-f-]{36}$/i.test(params.get('draft') ?? '') ? params.get('draft') : null;
+  const selected = params.get('invoice');
+  const [onlyStandalone, setOnlyStandalone] = useState(false);
+  function select(id: string | null, draftId: string | null): void {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (id) next.set('invoice', id); else next.delete('invoice');
+      if (draftId) next.set('draft', draftId); else next.delete('draft');
+      return next;
+    });
+  }
+  const list = useQuery({ queryKey: ['commerce', 'invoices', onlyStandalone], queryFn: () =>
+    apiFetch<Summary[]>('/commerce/invoices' + (onlyStandalone ? '?standalone=true' : '')) });
   const details = useQuery({ queryKey: ['commerce', 'standalone-invoice', selected], enabled: Boolean(selected), refetchInterval: 3_000,
-    queryFn: () => apiFetch<Invoice>('/commerce/invoices/' + selected) });
-  const policy = useQuery({ queryKey: ['commerce', 'reminder-policy'], queryFn: () => apiFetch<Policy | null>('/commerce/reminders/policy') });
+    queryFn: () => apiFetch<Invoice>('/commerce/invoices/' + encodeURIComponent(selected!)) });
+  const policy = useQuery({ queryKey: ['commerce', 'reminder-policy'], enabled: owner, queryFn: () => apiFetch<Policy | null>('/commerce/reminders/policy') });
   const action = useMutation({ mutationFn: (decision: 'ISSUE' | 'CANCEL' | 'SEND') => apiFetch(`/commerce/invoices/${selected}/decision`, {
     method: 'POST', body: { action: decision },
   }), onSettled: () => { void client.invalidateQueries({ queryKey: ['commerce'] }); } });
   const invoice = details.data;
   return <div className="grid gap-3 px-4 py-3 text-sm">
     {policy.isSuccess && <ReminderSettings policy={policy.data} />}
-    <div><Button size="sm" variant="secondary" onClick={() => setDraft(!draft)}>{draft ? 'Close invoice form' : 'New standalone invoice'}</Button></div>
-    {draft && <DraftForm onCreate={(id) => { select(id); setDraft(false); void list.refetch(); }} />}
+    <div className="flex flex-wrap items-center gap-3">
+      {owner && <Button size="sm" variant="secondary" onClick={() => select(selected, draft ? null : crypto.randomUUID())}>
+        {draft ? 'Close invoice form' : 'New standalone invoice'}</Button>}
+      <label><input type="checkbox" checked={onlyStandalone} onChange={(event) => setOnlyStandalone(event.target.checked)} /> Standalone invoices only</label>
+    </div>
+    {draft && <DraftForm key={draft} requestKey={draft} onCreate={(id) => { select(id, null); void list.refetch(); }} />}
     {list.isPending && <p role="status">Loading invoices…</p>}
     {list.isError && <Button size="sm" variant="secondary" onClick={() => { void list.refetch(); }}>Retry loading invoices</Button>}
-    {list.data?.length === 0 && <p>No standalone invoices yet.</p>}
+    {list.data?.length === 0 && <p>{onlyStandalone ? 'No standalone invoices yet.' : 'No invoices yet.'}</p>}
     <ul className="grid gap-2">
       {list.data?.map((entry) => <li key={entry.id}>
-        <button type="button" className="block max-w-full break-all text-left text-primary underline" onClick={() => { action.reset(); select(entry.id); }}>{entry.reference}</button>
+        <button type="button" className="block min-h-8 max-w-full break-all text-left text-primary underline"
+          onClick={() => { action.reset(); select(entry.id, null); }}>{entry.reference}</button>
         <p>{entry.customer.name ?? 'Customer'} · {formatCurrency(Number(entry.total))}</p>
       </li>)}
     </ul>
     {selected && details.isPending && <p role="status">Loading invoice…</p>}
     {selected && details.isError && <Button size="sm" variant="secondary" onClick={() => { void details.refetch(); }}>Retry invoice</Button>}
-    {invoice && <section aria-label="Standalone invoice" className="grid gap-2 rounded-md border border-border p-3">
+    {invoice && <section aria-label={invoice.scopeKind === 'STANDALONE' ? 'Standalone invoice' : 'Linked invoice'} className="grid gap-2 rounded-md border border-border p-3">
       <h3 className="break-all font-semibold">{invoice.reference}</h3>
       <p>{labels[invoice.state] ?? invoice.state} · Due {invoice.dueAt.slice(0, 10)}</p>
       {invoice.terms && <p>{invoice.terms}</p>}
       <ul>{invoice.receiptLines.map((line, index) => <li key={index}>{line.quantity} × {line.name} · {formatCurrency(Number(line.subtotal))}</li>)}</ul>
-      <p>Total {formatCurrency(Number(invoice.total))} · Recorded {formatCurrency(Number(invoice.paid))} · Balance {formatCurrency(Number(invoice.due))}</p>
-      <div className="flex flex-wrap gap-2">
+      <p>Total {formatCurrency(Number(invoice.total))} · Recorded {formatCurrency(Number(invoice.paid))} · Verified {formatCurrency(Number(invoice.verified))} · Balance {formatCurrency(Number(invoice.due))}</p>
+      {owner && invoice.scopeKind === 'STANDALONE' && <div className="flex flex-wrap gap-2">
         {invoice.status === 'DRAFT' && <Button size="sm" disabled={action.isPending} onClick={() => action.mutate('ISSUE')}>Issue invoice</Button>}
         {invoice.status === 'ISSUED' && <Button size="sm" variant="secondary" disabled={action.isPending} onClick={() => action.mutate('SEND')}>Send invoice</Button>}
         {invoice.status !== 'CANCELLED' && <Button size="sm" variant="secondary" disabled={action.isPending} onClick={() => action.mutate('CANCEL')}>Cancel invoice</Button>}
-      </div>
-      <InvoiceCheckout key={invoice.id} invoice={invoice} partial onChange={() => { void details.refetch(); }} />
+      </div>}
+      {can('payments.create') && <InvoiceCheckout key={'checkout-' + invoice.id} invoice={invoice} partial={invoice.scopeKind === 'STANDALONE'} onChange={() => { void details.refetch(); }} />}
       {action.isError && <p role="alert">{action.error.message}</p>}
       {action.isSuccess && <p role="status">Invoice updated.</p>}
-      <InvoiceReminders invoiceId={invoice.id} />
+      {owner && invoice.status === 'ISSUED' && Number(invoice.paid) > 0 && <InvoiceAdjustment key={'adjustment-' + invoice.id} invoiceId={invoice.id}
+        onSaved={() => { void client.invalidateQueries({ queryKey: ['commerce'] }); void client.invalidateQueries({ queryKey: ['payments'] }); }} />}
+      {owner && <InvoiceReminders invoiceId={invoice.id} />}
     </section>}
   </div>;
 }

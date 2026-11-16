@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Prisma, type OrderStatus } from '@prisma/client';
 import { cancelCommerceOrder, prepareForDelivery, requireCommercePreparation } from '../commerce/commerce.fulfillment.js';
 import { logger } from '../../config/logger.js';
@@ -32,9 +33,7 @@ import {
 import type { CreateOrderInput as ManualOrderInput } from './orders.schema.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
 import { normalizeGhanaPhone } from '../../utils/phone.js';
-import { upsertCustomerByPhone } from '../customers/customers.service.js';
-import { findCustomerById, recalculateCustomerTotals } from '../customers/customers.repository.js';
-import { findProductById } from '../products/products.repository.js';
+import { recalculateCustomerTotals, upsertCustomerByPhone } from '../customers/customers.repository.js';
 import { lockCustomerForTotals } from '../customers/customers.repository.js';
 import { buildLadder } from '../../services/pricing/ladder.js';
 import { approvedNegotiatedPrice, displayLabel, explicitOrderRequest, hasPolicyOverride, mentioned } from '../../services/assistant/commitment.js';
@@ -84,7 +83,7 @@ function isReferenceCollision(error: unknown): boolean {
  */
 async function createOrderWithReference(
   businessId: string,
-  build: (referenceNumber: string) => CreateOrderInput,
+  create: (referenceNumber: string) => Promise<OrderWithRelations>,
 ): Promise<OrderWithRelations> {
   const MAX_ATTEMPTS = 5;
   let lastError: unknown;
@@ -93,7 +92,7 @@ async function createOrderWithReference(
     const referenceNumber = await generateOrderReference(businessId);
 
     try {
-      return await createOrder(build(referenceNumber), undefined);
+      return await create(referenceNumber);
     } catch (error: unknown) {
       if (!isReferenceCollision(error)) throw error;
       lastError = error;
@@ -312,66 +311,67 @@ export async function createOrderFromAssistant(
   return order;
 }
 
-export async function createManualOrder(
+function manualOrderPrefix(businessId: string, key: string): string {
+  return 'manual-' + createHash('sha256').update(businessId + ':' + key).digest('hex').slice(0, 32) + '-';
+}
+
+export async function findManualOrderRequest(businessId: string, key: string, tx: Prisma.TransactionClient = prisma) {
+  return tx.order.findFirst({ where: { businessId, isManual: true, id: { startsWith: manualOrderPrefix(businessId, key) } },
+    select: { id: true, deletedAt: true } });
+}
+
+async function manualOrderInput(
   data: ManualOrderInput,
   businessId: string,
-): Promise<OrderWithRelations> {
-  // Two ways in: an existing customer id, or a phone number for a walk-in that
-  // we upsert. The schema guarantees exactly one is present.
-  let resolvedCustomerId: string;
-
-  if (data.customerId) {
-    // The id must belong to THIS business. Trusting it verbatim let one tenant
-    // attach another tenant's customer to an order — leaking that customer's
-    // name and phone in the response and injecting a fabricated balance into
-    // the victim's books. Ownership is verified before use.
-    const customer = await findCustomerById(data.customerId, businessId);
-    if (!customer) {
-      throw new NotFoundError('Customer not found');
-    }
-    resolvedCustomerId = customer.id;
-  } else {
-    const phone = normalizeGhanaPhone(data.customerPhone!);
-    const customer = await upsertCustomerByPhone(businessId, phone, data.customerName ?? null);
-    resolvedCustomerId = customer.id;
+  referenceNumber: string,
+  tx?: Prisma.TransactionClient,
+): Promise<CreateOrderInput> {
+  const db = tx ?? prisma;
+  const customer = data.customerId
+    ? await db.customer.findFirst({ where: { id: data.customerId, businessId, deletedAt: null }, select: { id: true } })
+    : await upsertCustomerByPhone(businessId, normalizeGhanaPhone(data.customerPhone!), data.customerName ?? null, tx);
+  if (!customer) throw new NotFoundError('Customer not found');
+  const ids = [...new Set(data.items.flatMap((item) => item.productId ? [item.productId] : []))];
+  if (ids.length && await db.product.count({ where: { id: { in: ids }, businessId, deletedAt: null } }) !== ids.length) {
+    throw new NotFoundError('Product not found');
   }
+  return { businessId, customerId: customer.id, referenceNumber, rawMessage: data.rawMessage, isManual: true,
+    items: data.items.map((item) => ({ ...item, ...(item.productId ? { matchConfidence: 1 } : {}) })),
+    ...(data.notes !== undefined ? { notes: data.notes } : {}) };
+}
 
-  // Product references are validated the same way — a foreign productId would
-  // otherwise be recorded as a "matched" line against another tenant's catalogue.
-  const items: CreateOrderItemInput[] = [];
-  for (const item of data.items) {
-    const base: CreateOrderItemInput = {
-      description: item.description,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-    };
-    if (item.productId) {
-      const product = await findProductById(item.productId, businessId);
-      if (!product) {
-        throw new NotFoundError('Product not found');
+export async function createManualOrder(data: ManualOrderInput, businessId: string, actor?: OrderActor): Promise<OrderWithRelations> {
+  let created = true;
+  const requestKey = data.requestKey;
+  const order = await createOrderWithReference(businessId, async (referenceNumber) => {
+    if (!requestKey) return createOrder(await manualOrderInput(data, businessId, referenceNumber));
+    const prefix = manualOrderPrefix(businessId, requestKey);
+    const digest = createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 32);
+    const id = prefix + digest;
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${prefix}, 0))`;
+      if (actor) await requireStaffMembership(tx, actor);
+      const prior = await findManualOrderRequest(businessId, requestKey, tx);
+      if (prior) {
+        if (prior.id !== id || prior.deletedAt) throw new ConflictError('This request already belongs to a different or closed order');
+        const existing = await findOrderById(prior.id, businessId, { tx });
+        if (!existing) throw new ConflictError('This order can no longer be opened');
+        created = false;
+        return existing;
       }
-      base.productId = product.id;
-      base.matchConfidence = 1;
-    }
-    items.push(base);
-  }
-
-  const order = await createOrderWithReference(businessId, (referenceNumber) => {
-    const input: CreateOrderInput = {
-      businessId,
-      customerId: resolvedCustomerId,
-      referenceNumber,
-      rawMessage: data.rawMessage,
-      isManual: true,
-      items,
-    };
-    if (data.notes !== undefined) input.notes = data.notes;
-    return input;
+      const input = await manualOrderInput(data, businessId, referenceNumber, tx);
+      const customer = await lockCustomerForTotals(tx, input.customerId, businessId);
+      if (!customer || customer.deletedAt) throw new NotFoundError('Customer not found');
+      const saved = await createOrder({ ...input, id }, tx);
+      await recalculateCustomerTotals(input.customerId, tx);
+      return saved;
+    });
   });
 
-  await Promise.all([recalculateCustomerTotals(resolvedCustomerId), recordOrder(businessId)]);
-
-  await emitCreated(order);
+  if (created) {
+    if (!requestKey) await recalculateCustomerTotals(order.customerId);
+    await Promise.all([recordOrder(businessId), emitCreated(order)]);
+  }
 
   // Manual orders get no auto-reply: the customer may have ordered in person and
   // an unexpected WhatsApp message would be confusing.

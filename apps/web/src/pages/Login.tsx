@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useLogin, useStaffLogin, isAuthenticated } from '@/hooks/useAuth';
 import AuthShell, {
   AuthField,
@@ -19,6 +19,10 @@ const FIELDS = ['email', 'phone', 'password'] as const;
 
 export default function LoginPage(): React.JSX.Element {
   const navigate = useNavigate();
+  const { state } = useLocation();
+  const requested = (state as { returnTo?: unknown } | null)?.returnTo;
+  const destination = typeof requested === 'string' && /^\/(dashboard|setup|orders|bookings|messages|customers|payments|products|settings|reports|staff)(?:[/?#]|$)/.test(requested)
+    ? requested : '/dashboard';
   const [mode, setMode] = useState<Mode>('owner');
 
   const ownerLogin = useLogin();
@@ -34,9 +38,9 @@ export default function LoginPage(): React.JSX.Element {
 
   useEffect(() => {
     if (isAuthenticated()) {
-      navigate('/dashboard', { replace: true });
+      navigate(destination, { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, destination]);
 
   const active = mode === 'owner' ? ownerLogin : staffLogin;
   const busy = active.isPending;
@@ -106,7 +110,7 @@ export default function LoginPage(): React.JSX.Element {
       return;
     }
 
-    const onSuccess = (): void => navigate('/dashboard', { replace: true });
+    const onSuccess = (): void => navigate(destination, { replace: true });
 
     if (mode === 'owner') {
       ownerLogin.mutate({ email: email.trim(), password }, { onSuccess });

@@ -1,6 +1,8 @@
-import { cloneElement, useId, useState, type FormEvent, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, useId, useRef, useState, type FormEvent, type ReactElement, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useTabParam } from '@/hooks/useTabParam';
+import { Tabs } from '@/components/ui/Tabs';
 import { Button } from '@/components/ui/Button';
 import { Panel, PanelHead } from '@/components/ui/Panel';
 import { InvoiceCheckout, type InvoiceCheckoutView } from '@/components/orders/InvoiceCheckout';
@@ -28,7 +30,7 @@ type Visit = { appointmentId: string; assignedStaffId: string | null; revision: 
   history: { revision: number; action: string; evidence: string | null; createdAt: string }[];
   notices?: { kind: string; dueAt: string; reason: string | null; checkedAt: string | null; send: { state: string; reason: string | null } | null }[] };
 type Staff = { id: string; name: string };
-type Workbench = { visits: Visit[]; settings?: Settings | null; resources?: Resource[]; services?: Service[]; leads?: Lead[]; staff?: Staff[];
+type Workbench = { visits: Visit[]; truncated?: boolean; settings?: Settings | null; resources?: Resource[]; services?: Service[]; leads?: Lead[]; staff?: Staff[];
   closedServiceRevenue?: string };
 type Options = { serviceRevision: number; settingsRevision: number; slots: { startsAt: string; localTime: string }[];
   terms: { total: string; deposit: string; approvalRequired: boolean } };
@@ -44,6 +46,13 @@ const number = (form: FormData, name: string) => Number(value(form, name));
 const list = (text: string) => text.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean);
 const displayDate = (instant: string, timeZone: string) =>
   new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(instant));
+const calendarModes = ['list', 'day', 'week'] as const;
+const calendarTabs = [{ value: 'list', label: 'List' }, { value: 'day', label: 'Day' }, { value: 'week', label: 'Seven days' }] as const;
+const dayLength = 86_400_000;
+function dateInZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+  return ['year', 'month', 'day'].map((part) => parts.find(({ type }) => type === part)?.value).join('-');
+}
 
 function Field({ label, children }: { label: string; children: ReactElement<{ id?: string }> }) {
   const id = useId();
@@ -53,13 +62,15 @@ function Field({ label, children }: { label: string; children: ReactElement<{ id
 function Form({ children, submit, onSubmit }: { children: ReactNode; submit: string; onSubmit: (form: FormData) => Promise<void> }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const submitting = useRef(false);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending) return;
+    if (submitting.current) return;
+    submitting.current = true;
     const data = new FormData(event.currentTarget);
     setError('');
     setPending(true);
-    try { await onSubmit(data); } catch (failure) { setError((failure as Error).message); } finally { setPending(false); }
+    try { await onSubmit(data); } catch (failure) { setError((failure as Error).message); } finally { submitting.current = false; setPending(false); }
   }
   return <form onSubmit={save} className="grid gap-3">
     {children}
@@ -274,6 +285,8 @@ function AppointmentCard({ visit, manager, staff, save }: { visit: Visit; manage
 }
 
 function BookingForm({ services, leads, save }: { services: Service[]; leads: Lead[]; save: Save }) {
+  const [params, setParams] = useSearchParams();
+  const attempted = params.get('reserve');
   const customers = useCustomers();
   const [serviceId, setService] = useState('');
   const [leadId, setLead] = useState('');
@@ -282,15 +295,33 @@ function BookingForm({ services, leads, save }: { services: Service[]; leads: Le
   const [quantity, setQuantity] = useState(1);
   const selected = services.find((service) => service.id === serviceId);
   const [selection, select] = useState<{ key: string; startsAt: string } | null>(null);
+  const saved = useQuery({ queryKey: ['service-operations', 'reservation', attempted],
+    enabled: Boolean(attempted && /^[\da-f-]{36}$/i.test(attempted)),
+    queryFn: () => apiFetch<{ appointmentId: string } | null>(root + '/reservations/' + encodeURIComponent(attempted ?? '')) });
   const slots = useMutation({ mutationFn: () => apiFetch<Options>(root + '/slots?' + new URLSearchParams({
     serviceId, quantity: String(quantity), from: from ? new Date(from + 'T00:00:00Z').toISOString() : new Date().toISOString(),
   })) });
-  function reset() { slots.reset(); select(null); }
+  function requestKey(key: string | null): void {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (key) next.set('reserve', key); else next.delete('reserve');
+      return next;
+    }, { replace: true });
+  }
+  function reset() { slots.reset(); select(null); requestKey(null); }
+  if (saved.data) return <div role="status" className="grid gap-2">
+    <p>Your appointment was saved.</p>
+    <Link className="text-primary underline" to={'/bookings?view=operations&visit=' + encodeURIComponent(saved.data.appointmentId)}>Open saved appointment</Link>
+    <Button size="sm" variant="secondary" className="justify-self-start" onClick={reset}>Start another reservation</Button>
+  </div>;
   return <Form submit="Reserve appointment" onSubmit={async (data) => {
     if (!selection || !slots.data) throw new Error('Find current times and choose an appointment.');
     await save('POST', '/visits', { serviceId, customerId, startsAt: selection.startsAt, quantity, requestKey: selection.key,
       ...(leadId ? { leadId } : {}), ...(value(data, 'location') ? { location: value(data, 'location') } : {}),
-      serviceRevision: slots.data.serviceRevision, settingsRevision: slots.data.settingsRevision });
+      serviceRevision: slots.data.serviceRevision, settingsRevision: slots.data.settingsRevision }).catch(async (error: unknown) => {
+      await saved.refetch();
+      throw error;
+    });
     reset();
   }}>
     <div className={formGrid}>
@@ -319,7 +350,11 @@ function BookingForm({ services, leads, save }: { services: Service[]; leads: Le
       {slots.data.terms.approvalRequired ? ' · Manager approval required' : ''}</p>}
     {slots.data?.slots.length === 0 && <p role="status">No matching times found. Try a different date.</p>}
     {Boolean(slots.data?.slots.length) && <Field label="Available times"><select className={control} required value={selection?.startsAt ?? ''}
-      onChange={(event) => select(event.target.value ? { startsAt: event.target.value, key: crypto.randomUUID() } : null)}>
+      onChange={(event) => {
+        const chosen = event.target.value ? { startsAt: event.target.value, key: crypto.randomUUID() } : null;
+        select(chosen);
+        requestKey(chosen?.key ?? null);
+      }}>
       <option value="">Choose time</option>{slots.data?.slots.map((slot) => <option key={slot.startsAt} value={slot.startsAt}>{slot.localTime} · {slot.startsAt.slice(11, 16)} UTC</option>)}
     </select></Field>}
   </Form>;
@@ -349,18 +384,37 @@ function LeadForm({ services, save }: { services: Service[]; save: Save }) {
 
 export default function ServiceOperations({ manager }: { manager: boolean }): React.JSX.Element {
   const client = useQueryClient();
-  const work = useQuery({ queryKey: ['service-operations', 'workbench', manager], queryFn: () => apiFetch<Workbench>(root), refetchInterval: 10_000 });
+  const [params, setParams] = useSearchParams();
+  const [calendar, setCalendar] = useTabParam('calendar', calendarModes, 'list');
+  const [date, setDate] = useState('');
+  const visitId = params.get('visit');
+  const base = useQuery({ queryKey: ['service-operations', 'workbench', manager], queryFn: () => apiFetch<Workbench>(root), refetchInterval: 20_000 });
+  const timeZone = base.data?.settings?.timeZone ?? base.data?.visits[0]?.service.timeZone ?? 'Africa/Accra';
+  const firstDay = date || dateInZone(new Date(), timeZone);
+  const start = Date.parse(firstDay + 'T00:00:00Z');
+  const end = start + (calendar === 'week' ? 7 : 1) * dayLength;
+  const lastDay = new Date(end).toISOString().slice(0, 10);
+  const range = visitId ? new URLSearchParams({ visit: visitId }).toString()
+    : calendar !== 'list' ? new URLSearchParams({ from: new Date(start - dayLength).toISOString(), until: new Date(end + dayLength).toISOString() }).toString() : '';
+  const filtered = useQuery({ queryKey: ['service-operations', 'visit-list', range], enabled: Boolean(range && base.data),
+    queryFn: () => apiFetch<Workbench>(root + '?' + range) });
   const mutation = useMutation({
     mutationFn: ({ method, path, body }: { method: Parameters<Save>[0]; path: string; body: unknown }) =>
       apiFetch(root + path, { method, body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['service-operations'] }),
   });
   const save: Save = async (method, path, body) => { await mutation.mutateAsync({ method, path, body }); };
-  if (work.isPending) return <p role="status">Loading service operations…</p>;
-  if (!work.data) return <div role="alert"><p>Service operations could not load.</p><Button onClick={() => void work.refetch()}>Retry</Button></div>;
-  const { settings, services = [], resources = [], staff = [], leads = [], visits, closedServiceRevenue } = work.data;
+  if (base.isPending) return <p role="status">Loading service operations…</p>;
+  if (!base.data) return <div role="alert"><p>Service operations could not load.</p><Button onClick={() => void base.refetch()}>Retry</Button></div>;
+  const { settings, services = [], resources = [], staff = [], leads = [], closedServiceRevenue } = base.data;
+  const source = range ? filtered.data : base.data;
+  const visits = source?.visits.filter((visit) => {
+    if (visitId || calendar === 'list') return true;
+    const local = dateInZone(new Date(visit.appointment.startsAt), timeZone);
+    return local >= firstDay && local < lastDay;
+  });
   return <div className="grid gap-4">
-    {manager && <Panel><PanelHead title="Service setup" /><div className={padding}>
+    {manager && <div id="service-setup"><Panel><PanelHead title="Service setup" /><div className={padding}>
       <CalendarSettings key={settings?.revision ?? 0} settings={settings ?? null} save={save} />
       {settings && <>
         {resources.map((resource) => <ResourceForm key={resource.id} resource={resource} staff={staff} save={save} />)}
@@ -368,7 +422,7 @@ export default function ServiceOperations({ manager }: { manager: boolean }): Re
         {services.map((service) => <CatalogueForm key={service.id + ':' + service.bookingRevision} service={service} resources={resources} save={save} />)}
         <CatalogueForm resources={resources} save={save} />
       </>}
-    </div></Panel>}
+    </div></Panel></div>}
     {manager && settings?.enabled && <>
       <Panel><PanelHead title="Service leads" /><div className={padding}>
         <LeadForm services={services} save={save} />
@@ -377,7 +431,8 @@ export default function ServiceOperations({ manager }: { manager: boolean }): Re
           <div className="grid gap-2 pl-2 pt-2">
             {lead.budgetMinor !== null && <p>Budget {formatCurrency(lead.budgetMinor / 100)}</p>}
             {lead.followupAt && <p>Follow up {displayDate(lead.followupAt, settings.timeZone)}</p>}
-            {lead.supportCase && <Link to="/dashboard" className="text-primary underline">Case {lead.supportCase.id} · {status(lead.supportCase.state)}</Link>}
+            {lead.supportCase && <Link to={'/messages?view=cases&case=' + encodeURIComponent(lead.supportCase.id)} className="text-primary underline">
+              Open case · {status(lead.supportCase.state)}</Link>}
             {['NEW', 'WAITING', 'QUALIFIED'].includes(lead.status) && <Form key={lead.revision} submit="Save qualification" onSubmit={(data) =>
               save('PATCH', '/leads/' + lead.id, { revision: lead.revision, status: value(data, 'status'),
                 ...(value(data, 'service') ? { serviceId: value(data, 'service') } : {}), assignedStaffId: value(data, 'staff') || null,
@@ -399,8 +454,21 @@ export default function ServiceOperations({ manager }: { manager: boolean }): Re
       <Panel><PanelHead title="Reserve a service" /><div className={padding}><BookingForm services={services} leads={leads} save={save} /></div></Panel>
     </>}
     <Panel><PanelHead title={manager ? 'Service appointments' : 'Assigned appointments'} />
+      <div className="grid gap-2 px-4">
+        {visitId ? <Button size="sm" variant="secondary" className="justify-self-start" onClick={() => setParams((previous) => {
+          const next = new URLSearchParams(previous); next.delete('visit'); return next;
+        })}>Show all appointments</Button> : <>
+          <Tabs label="Calendar view" options={calendarTabs} value={calendar} onChange={setCalendar} />
+          {calendar !== 'list' && <label className="text-sm">Starting date ({timeZone}) <input className={control} type="date" value={firstDay}
+            onChange={(event) => { if (event.target.value) setDate(event.target.value); }} /></label>}
+        </>}
+        {range && filtered.isPending && <p role="status">Loading appointments…</p>}
+        {range && filtered.isError && <p role="alert">The requested appointments are unavailable.{' '}
+          <button className="underline" onClick={() => void filtered.refetch()}>Try again</button></p>}
+        {source?.truncated && <p className="text-sm text-text-secondary">Showing up to 100 appointments. Choose a day to narrow the results.</p>}
+      </div>
       {closedServiceRevenue && <p className="px-4 pt-3 text-sm">Verified receipts for completed services {formatCurrency(Number(closedServiceRevenue))}</p>}
-      <ul className={padding}>{visits.length === 0 ? <li>No service appointments yet.</li> : visits.map((visit) =>
+      <ul className={padding}>{visits?.length === 0 ? <li>No service appointments in this view.</li> : visits?.map((visit) =>
         <AppointmentCard key={visit.appointmentId} visit={visit} manager={manager} staff={staff} save={save} />)}</ul>
     </Panel>
   </div>;

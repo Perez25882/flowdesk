@@ -1,157 +1,92 @@
 import { prisma } from '../../config/database.js';
-import { features } from '../../config/env.js';
+import { env, features } from '../../config/env.js';
 import { hasGroundableFacts, type BusinessProfile } from '@flowdesk/shared';
+import { ConflictError, NotFoundError } from '../../utils/errors.js';
+import { profiles } from '../workflows/workflow.contract.js';
 
-/**
- * How far a shop is from being able to use this.
- *
- * Computed from what is actually in the database, never from a "completed
- * onboarding" flag. A flag records that somebody clicked through a wizard; this
- * records whether the product can do its job — and those come apart the first
- * time a WhatsApp token is revoked, an owner deletes their last product, or a
- * trial account is set up by one person and used by another.
- *
- * Because it is derived, a step can go BACK to incomplete, which is the point:
- * a disconnected number should put "connect WhatsApp" in front of the owner
- * again rather than sitting quietly under a green tick.
- */
-
-export type StepId =
-  | 'whatsapp'
-  | 'shop'
-  | 'facts'
-  | 'catalogue'
-  | 'payouts'
-  | 'assistant';
-
-export interface OnboardingStep {
-  id: StepId;
-  title: string;
-  /** What the owner gets out of finishing it — not what the system needs. */
-  why: string;
-  done: boolean;
-  /**
-   * Whether the shop can take a customer message at all without this.
-   *
-   * Only WhatsApp is. Everything else improves the answers; this one decides
-   * whether there are any.
-   */
-  blocking: boolean;
-  /** Where in the dashboard it is finished. */
-  href: string;
-  /** Present when a step that was done has come undone, with the reason. */
-  warning?: string;
-}
-
-export interface OnboardingState {
-  steps: OnboardingStep[];
+type Profile = typeof profiles[number];
+type ProviderState = 'NOT_CONFIGURED' | 'INCOMPLETE' | 'LOCAL_VALIDATION' | 'VERIFICATION_PENDING' | 'VERIFIED' | 'ERROR' | 'DISABLED';
+type StepId = 'profile' | 'shop' | 'facts' | 'catalogue' | 'hours' | 'policies' | 'team' | 'whatsapp' | 'payouts' | 'assistant';
+type Step = { id: StepId; title: string; why: string; done: boolean; blocking: boolean; href: string };
+interface OnboardingState {
+  profile: Profile | null;
+  profileRevision: number;
+  steps: Step[];
   completed: number;
   total: number;
-  /** True once every non-optional step is done — the checklist then disappears. */
   ready: boolean;
+  providers: { whatsapp: ProviderState; payments: ProviderState };
+}
+
+export async function saveSetupProfile(businessId: string, profile: Profile, revision: number): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const [business] = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM businesses WHERE id = ${businessId}
+      AND active AND "deletedAt" IS NULL AND "deactivatedAt" IS NULL AND "suspendedAt" IS NULL FOR NO KEY UPDATE`;
+    if (!business) throw new NotFoundError('Business not found');
+    const saved = revision === 0
+      ? await tx.workflowSettings.createMany({ data: { businessId, profile, enabled: false, supportMode: 'OWNER_REVIEW' }, skipDuplicates: true })
+      : await tx.workflowSettings.updateMany({ where: { businessId, revision }, data: { profile, revision: { increment: 1 } } });
+    if (!saved.count) throw new ConflictError('Your business setup changed. Refresh before saving.');
+    if (profile === 'APPOINTMENT' || profile === 'PROFESSIONAL_SERVICES') {
+      await tx.business.update({ where: { id: businessId }, data: { bookingsEnabled: true } });
+    }
+  });
 }
 
 export async function getOnboardingState(businessId: string): Promise<OnboardingState> {
   const business = await prisma.business.findUnique({
     where: { id: businessId },
-    select: {
-      waPhoneNumberId: true,
-      waConnectionState: true,
-      waConnectionError: true,
-      businessType: true,
-      businessProfile: true,
-      catalogueMode: true,
-      aiAssistMode: true,
-      paystackSubaccountCode: true,
-    },
+    select: { name: true, ownerName: true, waPhoneNumberId: true, waAccessToken: true, waWebhookVerified: true,
+      waConnectionState: true, waConnectionCheckedAt: true, waDisplayNumber: true,
+      businessProfile: true, catalogueMode: true, paystackSubaccountCode: true, payoutConnectedAt: true,
+      workflowSettings: { select: { profile: true, revision: true, enabled: true } },
+      serviceSettings: { select: { enabled: true } }, commercePolicy: { select: { enabled: true } } },
   });
-
-  if (!business) {
-    return { steps: [], completed: 0, total: 0, ready: false };
-  }
-
-  const productCount = await prisma.product.count({
-    where: { businessId, deletedAt: null, active: true },
-  });
-
-  const profile = (business.businessProfile ?? null) as BusinessProfile | null;
-  const connected = Boolean(business.waPhoneNumberId);
-  const healthy = business.waConnectionState === 'ACTIVE';
-
-  const steps: OnboardingStep[] = [
-    {
-      id: 'whatsapp',
-      title: 'Connect your WhatsApp number',
-      why: 'Nothing reaches you until this is done — no messages, no orders.',
-      done: connected && healthy,
-      blocking: true,
-      href: '/settings?section=business',
-      ...(connected && !healthy
-        ? {
-            warning:
-              business.waConnectionError ??
-              'Your number needs reconnecting before messages can come through.',
-          }
-        : {}),
-    },
-    {
-      id: 'shop',
-      title: 'Tell us what you sell',
-      why: '"Do you have panadol?" is a stock question at a pharmacy and noise at a hardware shop.',
-      done: business.businessType !== null,
-      blocking: false,
-      href: '/settings?section=assistant',
-    },
-    {
-      id: 'facts',
-      title: 'Add your hours, delivery and payment details',
-      why: 'These are the questions customers ask most, and the only ones that can be answered without you.',
-      done: hasGroundableFacts(profile),
-      blocking: false,
-      href: '/settings?section=assistant',
-    },
-    {
-      // A shop that has told us it keeps no product list has finished this step
-      // by saying so. Leaving it permanently unticked would be the product
-      // nagging an owner to do something it already knows they will not.
-      id: 'catalogue',
-      title:
-        business.catalogueMode === 'ENQUIRY_LED'
-          ? 'Catalogue — not needed for your shop'
-          : 'Add what you sell',
-      why: 'Prices and stock come from here. Without it the assistant can only take a message.',
-      done: business.catalogueMode === 'ENQUIRY_LED' || productCount > 0,
-      blocking: false,
-      href: '/products',
-    },
-    {
-      id: 'payouts',
-      title: 'Set up how you get paid',
-      why: 'Lets you send a payment link instead of a momo number and a screenshot to check.',
-      done: Boolean(business.paystackSubaccountCode),
-      blocking: false,
-      href: '/settings?section=payouts',
-    },
-    {
-      id: 'assistant',
-      title: 'Turn the assistant on',
-      why: 'Until you do, every reply waits for you — which is the thing you came here to stop doing.',
-      done: business.aiAssistMode !== 'OFF',
-      blocking: false,
-      href: '/settings?section=assistant',
-    },
+  if (!business) throw new NotFoundError('Business not found');
+  const profile = (business.workflowSettings?.profile ?? null) as Profile | null;
+  const service = profile === 'APPOINTMENT' || profile === 'PROFESSIONAL_SERVICES';
+  const phone = business.waPhoneNumberId;
+  const hasMeta = Boolean(phone && business.waAccessToken);
+  const [catalogue, staff, inbound, paystack] = await Promise.all([
+    service ? prisma.service.count({ where: { businessId, active: true, deletedAt: null, bookingRevision: { gt: 0 } } })
+      : prisma.product.count({ where: { businessId, active: true, deletedAt: null } }),
+    prisma.staff.count({ where: { businessId, active: true, inviteAcceptedAt: { not: null } } }),
+    hasMeta && env.NODE_ENV === 'production' && phone
+      ? prisma.$queryRaw<{ id: string }[]>`SELECT r.id FROM whatsapp_text_receipts r
+        JOIN whatsapp_phone_ownership o ON o.id = r."ownershipId" AND o."businessId" = r."businessId"
+        WHERE r."businessId" = ${businessId} AND r."phoneNumberId" = ${phone} AND o."phoneNumberId" = ${phone}
+          AND o."endedAt" IS NULL AND r.kind = 'TEXT' AND r.status = 'COMPLETED' LIMIT 1` : null,
+    features.billing && env.NODE_ENV === 'production' && business.payoutConnectedAt
+      ? prisma.paystackSettlement.findFirst({ where: { request: { businessId }, createdAt: { gte: business.payoutConnectedAt } }, select: { id: true } }) : null,
+  ]);
+  const whatsapp: ProviderState = business.waConnectionState === 'TOKEN_INVALID' || business.waConnectionState === 'NUMBER_UNAVAILABLE' ? 'ERROR'
+    : !hasMeta ? (phone || business.waAccessToken ? 'INCOMPLETE' : features.whatsapp ? 'NOT_CONFIGURED' : 'DISABLED')
+      : env.NODE_ENV !== 'production' && business.waDisplayNumber && business.waConnectionCheckedAt ? 'LOCAL_VALIDATION'
+        : business.waWebhookVerified && business.waConnectionState === 'ACTIVE' && business.waDisplayNumber &&
+          business.waConnectionCheckedAt && inbound?.length ? 'VERIFIED' : 'VERIFICATION_PENDING';
+  const payments: ProviderState = !features.billing ? 'DISABLED' : !business.paystackSubaccountCode ? 'NOT_CONFIGURED'
+    : env.NODE_ENV !== 'production' && business.payoutConnectedAt ? 'LOCAL_VALIDATION'
+      : paystack && env.PAYSTACK_SECRET_KEY?.startsWith('sk_live_') ? 'VERIFIED' : 'VERIFICATION_PENDING';
+  const providerDone = (state: ProviderState) => state === 'VERIFIED' || state === 'DISABLED';
+  const steps: Step[] = [
+    { id: 'profile', title: 'Choose how you work', why: 'Show the workspaces your business uses.', done: Boolean(profile), blocking: true, href: '/setup#profile' },
+    { id: 'shop', title: 'Confirm business details', why: 'Use your existing business name and contact details.', done: Boolean(business.name.trim() && business.ownerName.trim()), blocking: true, href: '/settings?section=business' },
+    { id: 'catalogue', title: service ? 'Add services and prices' : 'Add products and prices',
+      why: service ? 'Customers book at a configured price and duration.' : 'Give your team current prices and stock.', done: catalogue > 0 || (!service && business.catalogueMode === 'ENQUIRY_LED'),
+      blocking: true, href: service ? '/bookings?view=operations#service-setup' : '/products' },
+    { id: service ? 'hours' : 'facts', title: service ? 'Set business hours and time zone' : 'Set hours and customer terms',
+      why: 'Record the hours, limits and policies your team uses.', done: service ? business.serviceSettings?.enabled === true : hasGroundableFacts(business.businessProfile as BusinessProfile | null),
+      blocking: service, href: service ? '/bookings?view=operations#service-setup' : '/settings?section=assistant' },
+    { id: 'policies', title: service ? 'Review deposits and booking rules' : 'Review checkout and fulfillment',
+      why: 'Choose how work is confirmed and paid for.', done: service ? catalogue > 0 : business.commercePolicy?.enabled === true,
+      blocking: false, href: service ? '/bookings?view=operations#service-setup' : '/orders?workspace=quotes' },
+    { id: 'team', title: 'Invite your team', why: 'Invite staff when you are ready to assign work.', done: staff > 0, blocking: false, href: '/staff' },
+    { id: 'assistant', title: 'Choose assistant permissions', why: 'Control when FlowDesk tracks requests and when a person reviews them.',
+      done: business.workflowSettings?.enabled === true, blocking: false, href: '/dashboard?view=work' },
+    { id: 'whatsapp', title: 'Customer messaging', why: 'Provider setup is separate from using your local workspace.', done: providerDone(whatsapp), blocking: false, href: '/settings?section=business' },
+    { id: 'payouts', title: 'Online payments', why: 'Review the provider setup and its verification status.', done: providerDone(payments), blocking: false, href: '/settings?section=payouts' },
   ];
-
-  // A deployment with no Paystack keys cannot offer payouts, and a step nobody
-  // can finish is a checklist that never completes.
-  const applicable = features.billing ? steps : steps.filter((step) => step.id !== 'payouts');
-
-  const completed = applicable.filter((step) => step.done).length;
-
-  return {
-    steps: applicable,
-    completed,
-    total: applicable.length,
-    ready: completed === applicable.length,
-  };
+  return { profile, profileRevision: business.workflowSettings?.revision ?? 0, steps,
+    completed: steps.filter(({ done }) => done).length, total: steps.length,
+    ready: steps.every(({ blocking, done }) => !blocking || done), providers: { whatsapp, payments } };
 }

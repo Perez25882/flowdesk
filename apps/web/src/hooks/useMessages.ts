@@ -71,7 +71,7 @@ export interface SendReplyResult {
 export function useSendReply(): UseMutationResult<
   SendReplyResult,
   Error,
-  { id: string; body: string; source?: 'assistant_draft' | 'human' }
+  { id: string; body: string; source?: 'assistant_draft' | 'human' | 'human_takeover' }
 > {
   const qc = useQueryClient();
   return useMutation({
@@ -80,6 +80,7 @@ export function useSendReply(): UseMutationResult<
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['messages'] });
       qc.invalidateQueries({ queryKey: ['dashboard', 'badges'] });
+      qc.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
 }
@@ -92,6 +93,7 @@ export function useDismissDraft(): UseMutationResult<unknown, Error, { id: strin
       apiFetch(`/messages/${id}/dismiss-draft`, { method: 'POST', body: {} }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['messages'] });
+      qc.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
 }

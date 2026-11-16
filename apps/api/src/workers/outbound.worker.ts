@@ -162,8 +162,15 @@ async function ownerTookOver(data: OutboundJobData): Promise<boolean> {
     where: { businessId: data.businessId, customerId: data.customerId, sentFromApp: true, createdAt: { gt: since } },
     select: { id: true },
   });
-
-  return takeover !== null;
+  if (takeover) return true;
+  const intent = await prisma.whatsAppSend.findFirst({
+    where: { businessId: data.businessId, createdAt: { gt: since }, state: { not: 'FAILED' }, AND: [
+      { payload: { path: ['customerId'], equals: data.customerId } },
+      { payload: { path: ['operatorReply'], equals: true } },
+    ] },
+    select: { id: true },
+  });
+  return intent !== null;
 }
 
 const SEND_LEASE_MS = 90_000;

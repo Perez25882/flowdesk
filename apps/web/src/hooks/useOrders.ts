@@ -71,7 +71,7 @@ export function useOrdersByStatus(status: OrderStatus, staffId?: string): UseQue
 export function useOrderDetail(orderId: string | null): UseQueryResult<OrderWithRelations, Error> {
   return useQuery({
     queryKey: ['orders', 'detail', orderId],
-    queryFn: () => apiFetch<OrderWithRelations>(`/orders/${orderId}`),
+    queryFn: () => apiFetch<OrderWithRelations>(`/orders/${encodeURIComponent(orderId ?? '')}`),
     enabled: !!orderId,
     staleTime: STALE_TIME,
   });
@@ -83,6 +83,7 @@ export function useCreateOrder(): UseMutationResult<OrderWithRelations, Error, C
     mutationFn: (data: CreateOrderInput) =>
       apiFetch<OrderWithRelations>('/orders', {
         method: 'POST',
+        signal: AbortSignal.timeout(20_000),
         body: data,
       }),
     onSuccess: () => {

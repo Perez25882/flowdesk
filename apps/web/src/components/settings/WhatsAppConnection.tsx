@@ -75,7 +75,7 @@ export default function WhatsAppConnection(): React.JSX.Element {
           connected ? (
             <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success">
               <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
-              Connected
+              {status?.state === 'TOKEN_INVALID' || status?.state === 'NUMBER_UNAVAILABLE' ? 'Connection error' : 'Configuration saved'}
             </span>
           ) : undefined
         }
@@ -92,7 +92,7 @@ export default function WhatsAppConnection(): React.JSX.Element {
           <div className="flex flex-col gap-4">
             <div>
               <p className="max-w-prose text-sm text-text-secondary">
-                Messages arrive here. Replies go out from your own number.
+                Review delivery and verification evidence in business setup.
               </p>
               {status?.waPhoneNumberId && (
                 <p className="fd-figure mt-2 text-xs text-text-muted">

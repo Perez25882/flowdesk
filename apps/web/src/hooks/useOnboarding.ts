@@ -3,7 +3,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 
 export type OnboardingStepId =
-  | 'whatsapp'
+  | 'profile' | 'hours' | 'policies' | 'team' | 'whatsapp'
   | 'shop'
   | 'facts'
   | 'catalogue'
@@ -21,11 +21,21 @@ export interface OnboardingStep {
 }
 
 export interface OnboardingState {
+  profile: SetupProfile | null;
+  profileRevision: number;
   steps: OnboardingStep[];
   completed: number;
   total: number;
   ready: boolean;
+  providers: { whatsapp: ProviderState; payments: ProviderState };
 }
+
+export type SetupProfile = 'ONLINE_RETAIL' | 'CUSTOM_ORDER' | 'APPOINTMENT' | 'PROFESSIONAL_SERVICES';
+type ProviderState = 'NOT_CONFIGURED' | 'INCOMPLETE' | 'LOCAL_VALIDATION' | 'VERIFICATION_PENDING' | 'VERIFIED' | 'ERROR' | 'DISABLED';
+export const providerLabels: Record<ProviderState, string> = {
+  NOT_CONFIGURED: 'Not configured', INCOMPLETE: 'Configuration incomplete', LOCAL_VALIDATION: 'Validated in this environment',
+  VERIFICATION_PENDING: 'Provider verification pending', VERIFIED: 'Independently verified', ERROR: 'Connection error', DISABLED: 'Disabled',
+};
 
 /**
  * Setup progress, derived server-side from what is actually configured.

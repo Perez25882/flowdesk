@@ -28,7 +28,7 @@ export const quoteInput = z.object({
 export const quoteDecisionInput = z.object({ decision: z.enum(['OFFER', 'DECLINE']) }).strict();
 const moneyMinor = z.number().int().min(1).max(100_000_000);
 export const invoiceDraftInput = z.object({
-  customerId: id, dueAt: z.string().datetime(), terms: z.string().trim().max(240).optional(),
+  customerId: id, dueAt: z.string().datetime(), terms: z.string().trim().max(240).optional(), requestKey: z.string().uuid().optional(),
   lines: z.array(z.object({ description: z.string().trim().min(1).max(120), quantity: z.number().int().min(1).max(1000),
     unitMinor: moneyMinor }).strict()).min(1).max(12),
 }).strict();

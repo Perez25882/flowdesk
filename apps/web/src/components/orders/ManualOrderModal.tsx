@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import {
   Dialog,
@@ -16,6 +18,7 @@ import { useProducts } from '@/hooks/useProducts';
 import { useCustomers } from '@/hooks/useCustomers';
 import { Button } from '@/components/ui/Button';
 import { formatCurrency, cn } from '@/lib/utils';
+import { apiFetch } from '@/lib/api';
 
 /**
  * Manual order entry, for a walk-in or a phone call.
@@ -49,8 +52,22 @@ function normalizeGhanaPhone(raw: string): string {
 }
 
 export default function ManualOrderModal(): React.JSX.Element {
-  const [open, setOpen] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const rawKey = params.get('new');
+  const requestKey = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(rawKey ?? '') ? rawKey : null;
   const createOrder = useCreateOrder();
+  const submitting = useRef(false);
+  const saved = useQuery({ queryKey: ['orders', 'manual-request', requestKey], enabled: Boolean(requestKey),
+    queryFn: () => apiFetch<{ id: string } | null>(`/orders/manual/${encodeURIComponent(requestKey ?? '')}`) });
+
+  function setOpen(next: boolean, orderId?: string): void {
+    setParams((previous) => {
+      const current = new URLSearchParams(previous);
+      if (next) current.set('new', requestKey ?? crypto.randomUUID()); else current.delete('new');
+      if (orderId) current.set('order', orderId);
+      return current;
+    });
+  }
 
   const [mode, setMode] = useState<'existing' | 'new'>('existing');
   const [customerId, setCustomerId] = useState('');
@@ -117,7 +134,10 @@ export default function ManualOrderModal(): React.JSX.Element {
   }
 
   function handleSubmit(): void {
+    if (!requestKey || submitting.current || saved.data) return;
+    submitting.current = true;
     const data: CreateOrderInput = {
+      requestKey,
       rawMessage: notes || 'Entered by hand',
       items: items.map((i) => {
         const base = { description: i.description, quantity: i.quantity, unitPrice: i.unitPrice };
@@ -138,6 +158,8 @@ export default function ManualOrderModal(): React.JSX.Element {
         setOpen(false);
         reset();
       },
+      onError: () => { void saved.refetch(); },
+      onSettled: () => { submitting.current = false; },
     });
   }
 
@@ -148,7 +170,7 @@ export default function ManualOrderModal(): React.JSX.Element {
 
   return (
     <Dialog
-      open={open}
+      open={Boolean(requestKey)}
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) reset();
@@ -168,6 +190,10 @@ export default function ManualOrderModal(): React.JSX.Element {
           </DialogDescription>
         </DialogHeader>
 
+        {saved.data ? <DialogBody className="space-y-3">
+          <p role="status">Your order was saved.</p>
+          <Button onClick={() => { if (saved.data) setOpen(false, saved.data.id); }}>Open saved order</Button>
+        </DialogBody> : <>
         <DialogBody className="space-y-6">
           {/* ── Who ── */}
           <section>
@@ -376,10 +402,10 @@ export default function ManualOrderModal(): React.JSX.Element {
             </span>
           </span>
 
-          <Button onClick={handleSubmit} disabled={!canSubmit} isLoading={createOrder.isPending}>
+          <Button onClick={handleSubmit} disabled={!canSubmit || saved.isPending} isLoading={createOrder.isPending}>
             Create order
           </Button>
-        </DialogFooter>
+        </DialogFooter></>}
       </DialogContent>
     </Dialog>
   );

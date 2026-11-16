@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ClipboardList, LayoutGrid, Rows3 } from 'lucide-react';
 import type { OrderStatus } from '@/types/order';
 import { useRealtimeOrders } from '@/hooks/useRealtimeOrders';
@@ -24,6 +24,8 @@ import { Tabs, type TabOption } from '@/components/ui/Tabs';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
+import { can } from '@/hooks/useAuth';
+import CommercePanel from '@/components/shared/CommercePanel';
 
 type View = 'list' | 'board';
 
@@ -53,8 +55,18 @@ const EMPTY_COPY: Record<OrderListFilter, string> = {
  * choice rather than the only option.
  */
 export default function OrdersPage(): React.JSX.Element {
+  const [params] = useSearchParams();
+  if (params.get('workspace') === 'quotes' && can('orders.create')) return <div className="grid gap-4">
+    <PageHeader title="Orders & work" actions={<Link className="min-h-10 text-primary underline" to="/orders">View orders</Link>} />
+    <CommercePanel section="quotes" />
+  </div>;
+  return <OrderList />;
+}
+
+function OrderList(): React.JSX.Element {
   const [params, setParams] = useSearchParams();
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const selectedOrderId = params.get('order');
+  const mayCreate = can('orders.create');
   const [staffId, setStaffId] = useState('');
   const [search, setSearch] = useState('');
   const query = useDebouncedValue(search, 250);
@@ -63,7 +75,7 @@ export default function OrdersPage(): React.JSX.Element {
   const status = (params.get('status') ?? 'ALL') as OrderListFilter;
   const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
 
-  const { data: staffList = [] } = useStaff();
+  const { data: staffList = [] } = useStaff(can('staff.read'));
   useRealtimeOrders();
 
   const counts = useOrderCounts({ search: query, staffId: staffId || undefined });
@@ -95,14 +107,14 @@ export default function OrdersPage(): React.JSX.Element {
   return (
     <div className="flex min-h-0 flex-col gap-4">
       <PageHeader
-        title="Orders"
+        title="Orders & work"
         description={
           view === 'board' ? 'Drag an order along as it moves.' : 'Every order, newest first.'
         }
         actions={
           <>
             <ViewToggle view={view} onChange={(next) => update({ view: next, page: null })} />
-            <InlineSelect
+            {can('staff.read') && <InlineSelect
               aria-label="Filter orders by assigned staff member"
               value={staffId}
               onChange={(event) => setStaffId(event.target.value)}
@@ -113,15 +125,16 @@ export default function OrdersPage(): React.JSX.Element {
                   {member.name}
                 </option>
               ))}
-            </InlineSelect>
-            <ManualOrderModal />
+            </InlineSelect>}
+            {mayCreate && <Link to="/orders?workspace=quotes" className="inline-flex min-h-8 items-center text-sm text-primary underline">Quotes</Link>}
+            {mayCreate && <ManualOrderModal />}
           </>
         }
       />
 
       {view === 'board' ? (
         <div className="flex min-h-0 flex-1 flex-col">
-          <OrderBoard onSelectOrder={(order) => setSelectedOrderId(order.id)} staffId={staffId} />
+          <OrderBoard onSelectOrder={(order) => update({ order: order.id })} staffId={staffId} />
         </div>
       ) : (
         <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-surface">
@@ -172,7 +185,7 @@ export default function OrdersPage(): React.JSX.Element {
                 />
               )
             ) : (
-              <OrderTable orders={orders} onSelect={(order) => setSelectedOrderId(order.id)} />
+              <OrderTable orders={orders} onSelect={(order) => update({ order: order.id })} />
             )}
           </div>
 
@@ -207,7 +220,7 @@ export default function OrdersPage(): React.JSX.Element {
         </div>
       )}
 
-      <OrderDetailDrawer orderId={selectedOrderId} onClose={() => setSelectedOrderId(null)} />
+      <OrderDetailDrawer orderId={selectedOrderId} onClose={() => update({ order: null })} />
     </div>
   );
 }

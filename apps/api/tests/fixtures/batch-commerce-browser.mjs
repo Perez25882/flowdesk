@@ -149,7 +149,7 @@ try {
   await page.locator('#email').fill(email);
   await page.locator('#password').fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.getByRole('heading', { name: 'Commerce', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
 
   await page.goto(base + '/products');
   await page.getByRole('button', { name: 'Add product', exact: true }).click();
@@ -188,9 +188,9 @@ try {
   await invoicePanel.getByRole('button', { name: 'Mark preparation complete', exact: true }).click();
   await invoicePanel.getByText('Packing · Ready', { exact: true }).waitFor();
 
-  await page.goto(base + '/dashboard');
+  await page.goto(base + '/dashboard?view=work');
   await page.getByText(/Fulfillment & Operations · Needs staff action/).waitFor();
-  await page.getByRole('button', { name: 'Customer cases', exact: true }).click();
+  await page.goto(base + '/messages?view=cases');
   await page.getByRole('button', { name: 'View case', exact: true }).click();
   await page.getByText('Customer confirmed the resolution.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Resolve case', exact: true }).click();
@@ -228,8 +228,13 @@ try {
     throw new Error('Return or pickup UI did not persist the expected order evidence');
   }
 
-  await page.goto(base + '/dashboard');
-  async function showInvoices() { await page.getByRole('button', { name: 'Standalone invoices', exact: true }).click(); }
+  await page.goto(base + '/payments?view=invoices');
+  async function showInvoices() {
+    if (new URL(page.url()).pathname !== '/payments') await page.goto(base + '/payments?view=invoices');
+    await page.getByRole('button', { name: 'New standalone invoice' }).waitFor();
+    await page.getByLabel('Standalone invoices only').check();
+  }
+  const standalonePanel = page.getByRole('region', { name: 'Standalone invoice' });
   async function createInvoice(description) {
     await page.getByRole('button', { name: 'New standalone invoice' }).click();
     await page.getByRole('form', { name: 'New invoice' }).getByRole('combobox').selectOption(customer.id);
@@ -238,7 +243,7 @@ try {
     await page.getByLabel('Unit price (GHS)').fill('50');
     await page.getByRole('button', { name: 'Save draft' }).click();
     await page.getByRole('button', { name: 'Issue invoice' }).click();
-    await page.getByRole('button', { name: 'Send payment link' }).waitFor();
+    await standalonePanel.getByRole('button', { name: 'Send payment link' }).waitFor();
     return prisma.commerceInvoice.findFirstOrThrow({ where: { ...scope, orderId: null, receiptLines: { array_contains: [{
       name: description, sku: null, quantity: 1, listPrice: '50.00', unitPrice: '50.00', subtotal: '50.00',
     }] } } });
@@ -250,8 +255,8 @@ try {
   let resume;
   paused = new Promise((resolveProvider) => { resume = resolveProvider; });
   try {
-    await page.getByLabel('Payment amount (GHS)').fill('10');
-    await page.getByRole('button', { name: 'Send payment link' }).evaluate((button) => { button.click(); button.click(); });
+    await standalonePanel.getByLabel('Payment amount (GHS)').fill('10');
+    await standalonePanel.getByRole('button', { name: 'Send payment link' }).evaluate((button) => { button.click(); button.click(); });
     const charge = await waitFor(() => initializations.find((entry) => entry.metadata.flowdeskInvoiceId === standalone.id), 'provider initialize');
     await page.reload();
     await showInvoices();
@@ -260,7 +265,7 @@ try {
     resume();
     paused = null;
     await page.getByRole('link', { name: 'Open existing payment link' }).waitFor();
-    await page.getByRole('button', { name: 'Send payment link' }).click();
+    await standalonePanel.getByRole('button', { name: 'Send payment link' }).click();
     await page.getByText('Payment link is ready.').waitFor();
     await Promise.all([page.reload(), settle(charge, 950001)]);
   } finally { resume(); paused = null; }
@@ -271,7 +276,7 @@ try {
     headers: { authorization }, data: { amountMinor: 1000, checkoutVersion: version },
   });
   if (stale.status() !== 409) throw new Error('Stale browser action was not rejected');
-  await page.getByRole('button', { name: 'Send payment link' }).click();
+  await standalonePanel.getByRole('button', { name: 'Send payment link' }).click();
   await page.getByText('Payment link is ready.').waitFor();
   const standCharges = initializations.filter((entry) => entry.metadata.flowdeskInvoiceId === standalone.id);
   if (standCharges.length !== 2 || standCharges[0].amount !== 1000 || standCharges[1].amount !== 4000) throw new Error('Browser checkout identities or amounts disagree');
@@ -315,7 +320,7 @@ try {
 
   const incomplete = await createInvoice('Browser provider timeout case');
   ambiguousInvoice = incomplete.id;
-  await page.getByRole('button', { name: 'Send payment link' }).click();
+  await standalonePanel.getByRole('button', { name: 'Send payment link' }).click();
   await page.getByText(/This checkout needs payment review/).waitFor();
   await page.reload();
   await showInvoices();

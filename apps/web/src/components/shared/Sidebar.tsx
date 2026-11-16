@@ -17,7 +17,7 @@ import {
   LogOut,
   type LucideIcon,
 } from 'lucide-react';
-import { getGroupedNavItems, type NavItem } from '@/config/navigation';
+import { getGroupedNavItems, workspaceFeatures, type NavItem } from '@/config/navigation';
 import { getUserRole, useLogout } from '@/hooks/useAuth';
 import { useBadges } from '@/hooks/useBadges';
 import { useBusiness } from '@/hooks/useBusiness';
@@ -190,7 +190,7 @@ export default function Sidebar({
   const navigate = useNavigate();
   const role = getUserRole();
   const { data: business } = useBusiness();
-  const groups = getGroupedNavItems(role, { bookings: business?.bookingsEnabled ?? false });
+  const groups = getGroupedNavItems(role, workspaceFeatures(business));
   const { data: badges } = useBadges();
   const logout = useLogout();
 

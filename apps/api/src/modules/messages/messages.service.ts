@@ -171,9 +171,11 @@ export async function sendReply(
     throw new ValidationError('This customer is blocked. Unblock them to reply.');
   }
 
-  const approving = data.source === 'assistant_draft' ||
+  const takingOver = data.source === 'human_takeover';
+  if (takingOver && message.aiReplyText === data.body) throw new ConflictError('Review the unchanged assistant draft before sending it.');
+  const approving = !takingOver && (data.source === 'assistant_draft' ||
     (message.aiReplyText !== null && data.body === message.aiReplyText) ||
-    (message.aiReplyStatus === 'DRAFT' && data.source !== 'human');
+    (message.aiReplyStatus === 'DRAFT' && data.source !== 'human'));
   if (approving) {
     if (message.aiReplyStatus !== 'DRAFT' || message.aiReplyText !== data.body || !message.body) {
       throw new ConflictError('This draft changed or was already resolved.');
@@ -206,7 +208,34 @@ export async function sendReply(
   const outbound: OutboundJobData = {
     businessId, customerId: message.customerId, to: message.customer.waNumber,
     body: data.body, inReplyToMessageId: message.id, ...(staffId ? { sentByStaffId: staffId } : {}),
+    ...(!approving ? { operatorReply: true } : {}),
   };
+  if (takingOver) {
+    const id = await prisma.$transaction(async (tx) => {
+      await requireMessageActor(businessId, staffId, tx);
+      const key = 'operator-replaced-draft-' + messageId;
+      const prior = await tx.whatsAppSend.findUnique({ where: { businessId_eventKey: { businessId, eventKey: key } } });
+      if (prior) {
+        const payload = prior.payload as unknown as OutboundJobData;
+        if (payload.customerId !== message.customerId || payload.body !== data.body) {
+          throw new ConflictError('The team already replaced this draft.');
+        }
+        return prior.id;
+      }
+      const claim = await tx.message.updateMany({ where: { id: messageId, businessId, customerId: message.customerId,
+        aiReplyStatus: 'DRAFT', customer: { businessId, deletedAt: null, blacklisted: false },
+        business: { active: true, deletedAt: null, deactivatedAt: null, suspendedAt: null } },
+      data: { aiReplyStatus: 'DISMISSED', requiresReview: false, aiPolicy: {
+        ...draftAudit(message.aiPolicy), state: 'REJECTED', rejectedBy: staffId ?? 'owner',
+      } } });
+      if (!claim.count) throw new ConflictError('The draft changed. Refresh the conversation before replying.');
+      const saved = await persistOutboundSend(tx, outbound, key);
+      if (!saved) throw new ConflictError('The team already replaced this draft.');
+      return saved;
+    });
+    void scheduleOutbound(id, outbound).catch(() => logger.warn({ sendId: id }, 'Team reply awaits Redis'));
+    return { messageId, body: data.body, edited: true, duplicate: false, sendId: id };
+  }
   let sendId: string | null = null;
   // Claim the draft. `updateMany` with the expected status is atomic, so only
   // one of two concurrent clicks can transition it — the same idiom used for

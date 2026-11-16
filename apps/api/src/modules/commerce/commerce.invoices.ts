@@ -7,6 +7,7 @@ import { serviceCharge } from '../bookings/service.billing.js';
 type Tx = Prisma.TransactionClient;
 type InvoiceAmounts = { paid: Prisma.Decimal; verified: Prisma.Decimal; due: Prisma.Decimal; nextCharge: Prisma.Decimal };
 type InvoiceView = CommerceInvoice & InvoiceAmounts & {
+  scopeKind: 'ORDER' | 'SERVICE' | 'STANDALONE';
   order: { referenceNumber: string; status: OrderStatus } | null;
   preparation: CommercePreparation | null;
   state: string;
@@ -106,7 +107,8 @@ export async function invoiceView(tx: Tx, id: string, businessId: string): Promi
     business: { commercePolicy: { enabled: true, allowFollowup: true } },
   }, select: { id: true } }));
   const checkout = request && !['CANCELLED', 'DRAFT', 'REVIEW_REQUIRED', 'VERIFIED_PAID', 'RECORDED_PAID'].includes(state) ? request : null;
-  return { ...invoice, ...amounts, state, openRequestId: checkout?.id ?? null, checkout, checkoutVersion, followupAvailable };
+  return { ...invoice, ...amounts, state, scopeKind: service ? 'SERVICE' : invoice.orderId ? 'ORDER' : 'STANDALONE',
+    openRequestId: checkout?.id ?? null, checkout, checkoutVersion, followupAvailable };
 }
 
 /** Invoked inside the existing customer and order relationship lock. */

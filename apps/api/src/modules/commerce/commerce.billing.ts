@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type CommerceInvoice } from '@prisma/client';
 import { lockPaymentRelationship } from '../payments/payment-relationships.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
@@ -8,9 +8,12 @@ import type { InvoiceDraftInput } from './commerce.contract.js';
 
 type Tx = Prisma.TransactionClient;
 
+export function draftId(businessId: string, requestKey: string): string {
+  return 'draft-' + createHash('sha256').update(businessId + ':' + requestKey).digest('hex');
+}
+
 export async function createInvoiceDraft(tx: Tx, businessId: string, input: InvoiceDraftInput): Promise<CommerceInvoice> {
   const dueAt = new Date(input.dueAt);
-  if (dueAt <= new Date()) throw new ValidationError('Invoice due date must be in the future');
   const lines = input.lines.map(({ description, quantity, unitMinor }) => ({
     name: description, sku: null, quantity, listPrice: (unitMinor / 100).toFixed(2), unitPrice: (unitMinor / 100).toFixed(2),
     subtotal: (quantity * unitMinor / 100).toFixed(2),
@@ -18,7 +21,19 @@ export async function createInvoiceDraft(tx: Tx, businessId: string, input: Invo
   const total = new Prisma.Decimal(input.lines.reduce((sum, line) => sum + line.quantity * line.unitMinor, 0)).div(100);
   if (total.gt(1_000_000)) throw new ValidationError('Invoice total is too large');
   await lockPaymentRelationship(tx, { businessId, customerId: input.customerId });
-  const id = randomUUID();
+  const id = input.requestKey ? draftId(businessId, input.requestKey) : randomUUID();
+  if (input.requestKey) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${id}, 0))`;
+    const prior = await tx.commerceInvoice.findUnique({ where: { id_businessId: { id, businessId } } });
+    if (prior) {
+      const priorLines = (prior.receiptLines as typeof lines).map((line) => [line.name, line.quantity, line.unitPrice]);
+      const nextLines = lines.map((line) => [line.name, line.quantity, line.unitPrice]);
+      if (prior.customerId !== input.customerId || +prior.dueAt !== +dueAt || prior.terms !== (input.terms ?? null) ||
+          JSON.stringify(priorLines) !== JSON.stringify(nextLines)) throw new ConflictError('This invoice request already belongs to a different draft');
+      return prior;
+    }
+  }
+  if (dueAt <= new Date()) throw new ValidationError('Invoice due date must be in the future');
   const invoice = await tx.commerceInvoice.create({ data: {
     id, businessId, customerId: input.customerId, reference: 'INV-' + id.toUpperCase(), status: 'DRAFT',
     receiptLines: lines, total, releaseThreshold: total, dueAt, terms: input.terms ?? null,

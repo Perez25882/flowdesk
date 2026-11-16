@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { Prisma } from '@prisma/client';
-import { requireCapability } from '../../middleware/role.middleware.js';
+import { requireCapability, requireOwner } from '../../middleware/role.middleware.js';
 import { success } from '../../utils/response.js';
 import { prisma } from '../../config/database.js';
 import { getUsage } from '../../services/plan/plan.service.js';
@@ -15,7 +15,8 @@ import {
 import { z } from 'zod';
 import { UpdateBusinessSchema } from './settings.schema.js';
 import { getLogo, readLogoFile, setLogo } from '../../services/notifications/receipts.js';
-import { getOnboardingState } from './onboarding.service.js';
+import { getOnboardingState, saveSetupProfile } from './onboarding.service.js';
+import { profiles } from '../workflows/workflow.contract.js';
 import { MAX_IMAGE_BYTES } from '../../services/media/image-file.js';
 
 /** Same reasoning as the product-photo route: raised here and nowhere else. */
@@ -69,6 +70,8 @@ const BUSINESS_SELECT = {
   businessProfile: true,
   businessPolicyNotes: true,
   profileUpdatedAt: true,
+  workflowSettings: { select: { profile: true } },
+  serviceSettings: { select: { enabled: true } },
   aiAssistMode: true,
   autonomyAcceptedAt: true,
   catalogueMode: true,
@@ -260,6 +263,12 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
    * "connect your number" in front of the owner again, not sit under a tick.
    */
   app.get('/onboarding', canRead, async (request: FastifyRequest, reply: FastifyReply) => {
+    return success(reply, await getOnboardingState(request.business!.id));
+  });
+
+  app.put('/onboarding/profile', { preHandler: requireOwner }, async (request, reply) => {
+    const { profile, revision } = z.object({ profile: z.enum(profiles), revision: z.number().int().min(0) }).strict().parse(request.body);
+    await saveSetupProfile(request.business!.id, profile, revision);
     return success(reply, await getOnboardingState(request.business!.id));
   });
 

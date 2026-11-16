@@ -1,5 +1,9 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { requireCapability } from '../../middleware/role.middleware.js';
+import { z } from 'zod';
+import { callerHasCapability, requireCapability } from '../../middleware/role.middleware.js';
+import { prisma } from '../../config/database.js';
+import { NotFoundError } from '../../utils/errors.js';
+import { orderActor, requireStaffMembership } from '../orders/orders.authorization.js';
 import { success } from '../../utils/response.js';
 import {
   ListConversationsQuerySchema,
@@ -27,9 +31,31 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
     { preHandler: requireCapability('messages.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { customerId } = request.params as { customerId: string };
-      return success(reply, await getThread(request.business!.id, customerId));
+      const { before } = z.object({ before: z.string().min(1).max(100).optional() }).strict().parse(request.query);
+      return success(reply, await getThread(request.business!.id, customerId, before));
     },
   );
+
+  app.get('/conversations/:customerId/context', { preHandler: requireCapability('messages.read') }, async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    const actor = orderActor(request);
+    await requireStaffMembership(prisma, actor);
+    const scope = { businessId: actor.businessId, customerId };
+    if (!await prisma.customer.findFirst({ where: { id: customerId, businessId: scope.businessId, deletedAt: null }, select: { id: true } })) {
+      throw new NotFoundError('Conversation not found');
+    }
+    const [orders, visits, invoices] = await Promise.all([
+      callerHasCapability(request, 'orders.read') ? prisma.order.findMany({ where: { ...scope, deletedAt: null },
+        orderBy: { createdAt: 'desc' }, take: 4, select: { id: true, referenceNumber: true, status: true } }) : [],
+      callerHasCapability(request, 'orders.create') ? prisma.serviceVisit.findMany({
+        where: { ...scope, ...(actor.role === 'OPERATIONS' ? { assignedStaffId: actor.staffId } : {}) },
+        orderBy: { appointment: { startsAt: 'desc' } }, take: 4, select: { appointmentId: true, state: true,
+          appointment: { select: { reference: true } } } }) : [],
+      callerHasCapability(request, 'payments.read') ? prisma.commerceInvoice.findMany({ where: scope, orderBy: { issuedAt: 'desc' }, take: 4,
+        select: { id: true, reference: true } }) : [],
+    ]);
+    return success(reply, { orders, visits, invoices });
+  });
 
   app.get(
     '/messages',

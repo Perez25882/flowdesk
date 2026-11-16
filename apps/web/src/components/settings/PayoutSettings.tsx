@@ -69,7 +69,7 @@ export default function PayoutSettings(): React.JSX.Element {
             <BadgeCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" strokeWidth={2} aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-text-primary">
-                {status.accountName ?? 'Connected'}
+                {status.accountName ?? 'Settlement details saved'}
               </p>
               <p className="text-xs text-text-muted">
                 {status.bankName ?? 'Settlement account'} ·{' '}

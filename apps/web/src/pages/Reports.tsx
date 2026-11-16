@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api';
+import type { WorkspaceOverview } from './Dashboard';
 import { Download, TrendingDown, TrendingUp } from 'lucide-react';
 import { downloadReportCsv, useReport, type ReportWindow } from '@/hooks/useReports';
 import PageHeader from '@/components/shared/PageHeader';
@@ -25,13 +28,18 @@ const WINDOWS: ReportWindow[] = [30, 60, 90];
 export default function ReportsPage(): React.JSX.Element {
   const [days, setDays] = useState<ReportWindow>(30);
   const [downloading, setDownloading] = useState(false);
-  const { data: report, isLoading } = useReport(days);
+  const [exportError, setExportError] = useState(false);
+  const { data: report, isLoading, isError, refetch } = useReport(days);
+  const work = useQuery({ queryKey: ['dashboard', 'overview', days], queryFn: () => apiFetch<WorkspaceOverview>('/dashboard/overview?days=' + days) });
 
   async function handleDownload(): Promise<void> {
     if (!report) return;
     setDownloading(true);
+    setExportError(false);
     try {
       await downloadReportCsv(days, `flowdesk-${report.from}-to-${report.to}.csv`);
+    } catch {
+      setExportError(true);
     } finally {
       setDownloading(false);
     }
@@ -81,6 +89,19 @@ export default function ReportsPage(): React.JSX.Element {
           </>
         }
       />
+      {exportError && <p role="alert">Could not export the report. Try again.</p>}
+      {isError && <div role="alert">The report could not load. <Button size="sm" onClick={() => void refetch()}>Try again</Button></div>}
+      {work.data && <Panel>
+        <PanelHead title="Business activity" meta={days + ' days · UTC reporting dates'} />
+        <dl className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            { label: 'Orders received', value: work.data.orders.received },
+            ...(work.data.visits ? [{ label: 'Completed services', value: work.data.visits.completed },
+              { label: 'Missed appointments', value: work.data.visits.missed }] : []),
+            ...(work.data.money ? [{ label: 'Gateway-verified receipts', value: formatCurrency(Number(work.data.money.verifiedReceipts)) }] : []),
+          ].map((item) => <div key={item.label}><dt className="text-sm text-text-secondary">{item.label}</dt><dd className="fd-figure font-semibold">{item.value}</dd></div>)}
+        </dl>
+      </Panel>}
 
       {isLoading && (
         <Panel>

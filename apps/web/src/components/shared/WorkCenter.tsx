@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
@@ -67,7 +68,9 @@ type Workflow = {
   customer: { name: string | null };
   actions: { approve: boolean; cancel: boolean; retry: boolean; escalate: boolean };
 };
-type Detail = Workflow & { order: { referenceNumber: string } | null; evidence: { id: string; eventType: string; createdAt: string }[] };
+type Detail = Workflow & { orderId: string | null; appointmentId: string | null; order: { referenceNumber: string } | null;
+  approval: { action: string; expiresAt: string; decision: string | null } | null;
+  evidence: { id: string; eventType: string; createdAt: string }[] };
 type Command = { path: 'decision' | 'cancel' | 'retry' | 'escalate'; approve?: boolean };
 
 function Setup({ settings }: { settings: Settings | null }) {
@@ -79,7 +82,11 @@ function Setup({ settings }: { settings: Settings | null }) {
     mutationFn: () => apiFetch('/workflow-settings', { method: 'PUT', body: {
       profile, enabled, supportMode: automatic ? 'VERIFIED_STATUS' : 'OWNER_REVIEW', revision: settings?.revision ?? 0,
     } }),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['workflow-settings'] }); },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflow-settings'] });
+      void queryClient.invalidateQueries({ queryKey: ['onboarding'] });
+      void queryClient.invalidateQueries({ queryKey: ['business'] });
+    },
   });
   return (
     <details className="px-4 py-3">
@@ -104,8 +111,15 @@ function Setup({ settings }: { settings: Settings | null }) {
 }
 
 export default function WorkCenter(): React.JSX.Element {
-  const [selected, select] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
+  const [params, setParams] = useSearchParams();
+  const selected = params.get('work');
+  const specified = params.get('state') ?? '';
+  const filter = Object.hasOwn(states, specified) ? specified : '';
+  const select = (id: string | null) => setParams((current) => {
+    const next = new URLSearchParams(current);
+    if (id) next.set('work', id); else next.delete('work');
+    return next;
+  });
   const client = useQueryClient();
   const rows = useQuery({
     queryKey: ['workflows', filter],
@@ -118,12 +132,12 @@ export default function WorkCenter(): React.JSX.Element {
   });
   const detail = useQuery({
     queryKey: ['workflow', selected],
-    queryFn: () => apiFetch<Detail>('/workflows/' + selected),
+    queryFn: () => apiFetch<Detail>('/workflows/' + encodeURIComponent(selected!)),
     enabled: selected !== null,
     refetchInterval: 5_000,
   });
   const action = useMutation({
-    mutationFn: (command: Command) => apiFetch('/workflows/' + selected + '/' + command.path, {
+    mutationFn: (command: Command) => apiFetch('/workflows/' + encodeURIComponent(selected ?? '') + '/' + command.path, {
       method: 'POST', body: { revision: detail.data?.revision, ...(command.approve === undefined ? {} : { approve: command.approve }) },
     }),
     onSettled: () => {
@@ -140,7 +154,12 @@ export default function WorkCenter(): React.JSX.Element {
       <label className="flex items-center gap-2 px-4 py-2 text-sm">
         Show
         <select className="rounded border bg-transparent p-1" value={filter}
-          onChange={(event) => { setFilter(event.target.value); select(null); }}>
+          onChange={(event) => setParams((current) => {
+            const next = new URLSearchParams(current);
+            if (event.target.value) next.set('state', event.target.value); else next.delete('state');
+            next.delete('work');
+            return next;
+          })}>
           <option value="">Recent work</option>
           {Object.entries(states).map(([code, label]) => <option key={code} value={code}>{label}</option>)}
         </select>
@@ -167,7 +186,13 @@ export default function WorkCenter(): React.JSX.Element {
             <h3 className="text-sm font-semibold">{states[current.state]}</h3>
             <Button size="sm" variant="secondary" onClick={() => select(null)}>Close details</Button>
           </div>
-          {current.order && <p className="mt-2 text-sm font-medium">Order {current.order.referenceNumber}</p>}
+          {current.order && current.orderId && <Link className="mt-2 block text-sm font-medium text-primary underline"
+            to={'/orders?order=' + encodeURIComponent(current.orderId)}>{current.order.referenceNumber}</Link>}
+          {current.appointmentId && <Link className="mt-2 block text-sm font-medium text-primary underline"
+            to={'/bookings?view=operations&visit=' + encodeURIComponent(current.appointmentId)}>Open appointment</Link>}
+          {current.approval?.action === 'SEND_VERIFIED_STATUS' && current.approval.decision === null && <p className="mt-2 text-sm">
+            This action sends the customer a verified order status. Review the linked order before approving.
+          </p>}
           {reasons[current.reason] && <p className="mt-2 text-sm">{reasons[current.reason]}</p>}
           <ol className="mt-3 grid gap-2 text-sm">
             {current.evidence.map((entry) => <li key={entry.id}>{steps[entry.eventType] ?? 'Recorded an update'} · {timeAgo(entry.createdAt)}</li>)}

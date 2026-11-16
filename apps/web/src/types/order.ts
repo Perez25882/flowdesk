@@ -112,6 +112,7 @@ export interface OrderStats {
 }
 
 export interface CreateOrderInput {
+  requestKey?: string;
   customerId?: string;
   customerPhone?: string;
   customerName?: string;

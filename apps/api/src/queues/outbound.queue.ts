@@ -28,6 +28,7 @@ export interface OutboundTemplate {
 }
 
 export interface OutboundJobData {
+  operatorReply?: true;
   businessId: string;
   workflowAuthorization?: { id: string; evidenceKey: string; payment: boolean };
   commerceFollowupConsentId?: string;

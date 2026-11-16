@@ -23,6 +23,8 @@ export interface Business {
   bargainingEnabled?: boolean;
   /** Whether this business takes appointments. Drives the Bookings nav item. */
   bookingsEnabled?: boolean;
+  workflowSettings?: { profile: string } | null;
+  serviceSettings?: { enabled: boolean } | null;
   replyTemplates: ReplyTemplatesConfig | null;
   businessType: BusinessType | null;
   businessTypeOther: string | null;
@@ -98,9 +100,10 @@ export function useReplyTemplates(): UseQueryResult<ReplyTemplateEntry[], Error>
   });
 }
 
-export function useBusiness(): UseQueryResult<Business, Error> {
+export function useBusiness(enabled = true): UseQueryResult<Business, Error> {
   return useQuery({
     queryKey: BUSINESS_QUERY_KEY,
+    enabled,
     queryFn: () => apiFetch<Business>('/businesses/me'),
     staleTime: 60_000,
   });

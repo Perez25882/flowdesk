@@ -264,6 +264,10 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     expect(new Set(ids).size).toBe(1);
     expect(await prisma.serviceVisit.count({ where: { businessId: f.businessId } })).toBe(1);
     const winner = results[0]?.statusCode === 201 ? first : second;
+    const recovery = root + '/reservations/' + winner.requestKey;
+    expect(expectResponse(await f.api('GET', recovery), 200)).toEqual({ appointmentId: ids[0] });
+    expect(expectResponse(await (await shop()).api('GET', recovery), 200)).toBeNull();
+    expect((await f.api('GET', recovery, undefined, await f.staff(9))).statusCode).toBe(403);
     expect((await f.api('POST', root + '/visits', { ...winner, startsAt: slot(3 * day).toISOString() })).statusCode).toBe(409);
   });
 

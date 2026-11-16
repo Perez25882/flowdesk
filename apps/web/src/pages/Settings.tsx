@@ -21,7 +21,7 @@ import { BILLABLE_PLAN_CODES, PLANS, getPlan, limit, planHighlights } from '@/co
 import WhatsAppConnection from '@/components/settings/WhatsAppConnection';
 import PageHeader from '@/components/shared/PageHeader';
 import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
-import { isOwner } from '@/hooks/useAuth';
+import { can, isOwner } from '@/hooks/useAuth';
 import AccountSettings from '@/components/settings/AccountSettings';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -80,12 +80,12 @@ const TAB_OPTIONS: readonly TabOption<SettingsTab>[] = [
   { value: 'replies', label: 'Automatic replies' },
   { value: 'payouts', label: 'Payouts' },
   { value: 'plan', label: 'Plan and billing' },
-  // Owner-only: the password, pausing and closing all belong to the account
-  // holder. Staff see five tabs; the owner sees six.
-  ...(isOwner() ? ([{ value: 'account', label: 'Account' }] as const) : []),
+  { value: 'account', label: 'Account' },
 ];
 
 const SETTINGS_TAB_VALUES = TAB_OPTIONS.map((t) => t.value);
+const STAFF_TAB_OPTIONS = TAB_OPTIONS.filter(({ value }) => value !== 'account' && value !== 'plan');
+const STAFF_TAB_VALUES = STAFF_TAB_OPTIONS.map(({ value }) => value);
 
 /**
  * The wording currently in force for each template: the owner's override where
@@ -130,7 +130,9 @@ export default function SettingsPage(): React.JSX.Element {
   const checkout = useCheckout();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [tab, setTab] = useTabParam<SettingsTab>('section', SETTINGS_TAB_VALUES, 'business');
+  const owner = isOwner();
+  const editable = can('settings.write');
+  const [tab, setTab] = useTabParam<SettingsTab>('section', owner ? SETTINGS_TAB_VALUES : STAFF_TAB_VALUES, 'business');
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [draftTemplates, setDraftTemplates] = useState<ReplyTemplatesDraft>({});
   const [draftAssistant, setDraftAssistant] = useState<AssistantDraft | null>(null);
@@ -281,6 +283,11 @@ export default function SettingsPage(): React.JSX.Element {
       )
     : null;
 
+  if (!editable && business) return <div className="grid gap-4">
+    <PageHeader title="Business settings" description="Your business contact details." />
+    <Panel><PanelHead title={business.name} /><p className="p-4 text-sm text-text-secondary">Account owner {business.ownerName}</p></Panel>
+  </div>;
+
   return (
     // Bottom padding leaves room for the save bar so it never covers the last
     // control on the page.
@@ -292,16 +299,16 @@ export default function SettingsPage(): React.JSX.Element {
 
       {/* The connection sits above the tabs because it is the only setting
           that can stop the entire product working. */}
-      <WhatsAppConnection />
+      {owner && <WhatsAppConnection />}
 
-      {wantsWhatsAppSetup && (
+      {owner && wantsWhatsAppSetup && (
         <p className="rounded-lg border border-info-border bg-info-muted px-4 py-3 text-sm text-text-secondary">
-          Connect your number above. Everything else can wait.
+          Review your messaging configuration above, or continue setting up your workspace.
         </p>
       )}
 
       <div>
-        <Tabs label="Settings sections" options={TAB_OPTIONS} value={tab} onChange={setTab} />
+        <Tabs label="Settings sections" options={owner ? TAB_OPTIONS : STAFF_TAB_OPTIONS} value={tab} onChange={setTab} />
 
         <div className="mt-5 flex flex-col gap-5">
           {/* ── Business ── */}

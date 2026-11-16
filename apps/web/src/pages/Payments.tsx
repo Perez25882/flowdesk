@@ -16,9 +16,11 @@ import { Tabs, type TabOption } from '@/components/ui/Tabs';
 import { Badge } from '@/components/ui/Badge';
 import { useTabParam } from '@/hooks/useTabParam';
 import { formatCurrency, customerLabel } from '@/lib/utils';
+import { CommerceInvoices } from '@/components/shared/CommerceInvoices';
+import { can } from '@/hooks/useAuth';
 
-type PaymentTab = 'all' | 'review';
-const PAYMENT_TABS = ['all', 'review'] as const;
+type PaymentTab = 'all' | 'review' | 'invoices';
+const PAYMENT_TABS = ['all', 'review', 'invoices'] as const;
 
 const METHOD_LABEL: Record<string, string> = {
   MOMO_MTN: 'MTN MoMo',
@@ -39,11 +41,21 @@ const METHOD_LABEL: Record<string, string> = {
  */
 export default function PaymentsPage(): React.JSX.Element {
   const [tab, setTab] = useTabParam<PaymentTab>('view', PAYMENT_TABS, 'all');
+  if (tab === 'invoices') return <div className="grid gap-4">
+    <PageHeader title="Payments" description="Invoices, recorded payments and verified settlement." />
+    <Tabs label="Payment workspace" options={[{ value: 'all', label: 'Payment ledger' }, { value: 'review', label: 'Needs checking' },
+      { value: 'invoices', label: 'Invoices' }]} value={tab} onChange={setTab} />
+    <Panel><CommerceInvoices /></Panel>
+  </div>;
+  return <PaymentLedger tab={tab} setTab={setTab} />;
+}
+
+function PaymentLedger({ tab, setTab }: { tab: 'all' | 'review'; setTab: (next: PaymentTab) => void }): React.JSX.Element {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   const { data: allPayments, isLoading: allLoading } = usePayments();
   const { data: reviewPayments, isLoading: reviewLoading } = usePayments(false, true);
-  const { data: stats } = useRevenueStats();
+  const { data: stats } = useRevenueStats(can('revenue.read'));
   const attest = useAttestPayment();
   const voidPayment = useVoidPayment();
 
@@ -53,6 +65,7 @@ export default function PaymentsPage(): React.JSX.Element {
   const tabOptions: readonly TabOption<PaymentTab>[] = [
     { value: 'all', label: 'All payments' },
     { value: 'review', label: 'Needs checking', count: reviewPayments?.length ?? 0 },
+    { value: 'invoices', label: 'Invoices' },
   ];
 
   return (
@@ -64,7 +77,7 @@ export default function PaymentsPage(): React.JSX.Element {
 
       {stats && (
         <MetricStrip>
-          <Metric label="Today" value={formatCurrency(stats.today)} emphasis />
+          <Metric label="Recorded receipts today" value={formatCurrency(stats.today)} emphasis />
           <Metric label="This week" value={formatCurrency(stats.thisWeek)} />
           <Metric label="This month" value={formatCurrency(stats.thisMonth)} />
           <Metric label="All time" value={formatCurrency(stats.totalRevenue)} />
@@ -173,7 +186,7 @@ export default function PaymentsPage(): React.JSX.Element {
                         </span>
                       ) : (
                         <>
-                          {payment.confidence === 'CLAIMED' && payment.voidedAt === null && (
+                          {can('payments.verify') && payment.confidence === 'CLAIMED' && payment.voidedAt === null && (
                             <button
                               type="button"
                               onClick={() => attest.mutate(payment.id)}
@@ -189,7 +202,7 @@ export default function PaymentsPage(): React.JSX.Element {
                             </button>
                           )}
 
-                          {payment.voidedAt === null && (
+                          {can('payments.void') && payment.voidedAt === null && (
                             <button
                               type="button"
                               onClick={() => setConfirmingId(payment.id)}

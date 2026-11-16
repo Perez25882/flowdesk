@@ -133,9 +133,21 @@ try {
   const times = page.getByLabel('Available times');
   await times.waitFor();
   await times.selectOption({ index: 1 });
-  await page.getByRole('button', { name: 'Reserve appointment' }).click();
+  let attempts = 0;
+  await page.route('**/api/v1/service-operations/visits', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    attempts++;
+    const response = await route.fetch();
+    if (response.status() !== 201) return route.fulfill({ response });
+    return route.abort('timedout');
+  });
+  await page.getByRole('button', { name: 'Reserve appointment' }).evaluate((button) => { button.click(); button.click(); });
+  await page.getByText('Your appointment was saved.', { exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole('link', { name: 'Open saved appointment' }).click();
   const created = await waitFor(() => prisma.serviceVisit.findFirst({ where: { businessId: business.id }, include: { appointment: true } }), 'reserved appointment');
-  console.log('Owner qualified a signed lead and held its booking');
+  if (attempts !== 1 || await prisma.serviceVisit.count({ where: { businessId: business.id } }) !== 1) throw new Error('Appointment response loss repeated its side effect');
+  console.log('Owner qualified a signed lead and recovered the one held booking across a lost response and refresh');
   if (created.state !== 'HELD' || created.assignedStaffId !== staff.id) throw new Error('Expected held visit and current worker');
   await page.getByLabel('Appointment action').selectOption('APPROVE');
   await page.getByLabel('Evidence or staff notes').fill('Owner approved this repair');

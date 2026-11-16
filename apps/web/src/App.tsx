@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import LandingPage from '@/pages/Landing';
 import LoginPage from '@/pages/Login';
@@ -34,6 +34,7 @@ const StaffPage = lazy(() => import('@/pages/Staff'));
 const SettingsPage = lazy(() => import('@/pages/Settings'));
 const ReportsPage = lazy(() => import('@/pages/Reports'));
 const BookingsPage = lazy(() => import('@/pages/Bookings'));
+const SetupPage = lazy(() => import('@/pages/Setup'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -85,8 +86,9 @@ function IndexRoute(): React.JSX.Element {
  * authorised server-side regardless of what the client renders.
  */
 function RequireAuth({ children }: { children: React.JSX.Element }): React.JSX.Element {
+  const location = useLocation();
   if (!isAuthenticated()) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/login" state={{ returnTo: location.pathname + location.search + location.hash }} replace />;
   }
   return children;
 }
@@ -130,6 +132,7 @@ export default function App(): React.JSX.Element {
               }
             >
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/setup" element={<SetupPage />} />
               <Route path="/orders" element={<OrdersPage />} />
               <Route path="/customers" element={<CustomersPage />} />
               <Route path="/customers/:id" element={<CustomerProfilePage />} />

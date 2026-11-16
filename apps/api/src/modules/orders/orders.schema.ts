@@ -32,6 +32,7 @@ export const CreateOrderSchema = z
     rawMessage: z.string().min(1),
     items: z.array(CreateOrderItemSchema).min(1),
     notes: z.string().optional(),
+    requestKey: z.string().uuid().optional(),
   })
   .refine((data) => data.customerId || data.customerPhone, {
     message: 'Either customerId or customerPhone is required',

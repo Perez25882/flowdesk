@@ -5,6 +5,8 @@ import { getPageTitle } from '@/config/navigation';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/Sheet';
 import Sidebar from './Sidebar';
 import { useSSE } from '@/hooks/useSSE';
+import { can } from '@/hooks/useAuth';
+import { useBusiness } from '@/hooks/useBusiness';
 import { cn } from '@/lib/utils';
 
 /**
@@ -62,6 +64,7 @@ export default function TopBar(): React.JSX.Element {
   const { connected } = useSSE();
 
   const pageTitle = getPageTitle(location.pathname);
+  const { data: business } = useBusiness(can('settings.read'));
 
   return (
     <header className="sticky top-0 z-header flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border bg-background/85 px-4 backdrop-blur-md md:h-12 md:px-6">
@@ -80,6 +83,7 @@ export default function TopBar(): React.JSX.Element {
         <span className="truncate text-base font-semibold tracking-tight text-text-primary md:hidden">
           {pageTitle}
         </span>
+        {business && <span title={business.name} className="hidden truncate text-sm font-medium text-text-secondary md:block">{business.name}</span>}
       </div>
 
       <div className="flex shrink-0 items-center gap-3">

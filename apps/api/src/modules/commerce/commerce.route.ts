@@ -15,7 +15,7 @@ import { activeCommercePolicy, createCommerceQuote, decideCommerceQuote } from '
 import { invoiceView } from './commerce.invoices.js';
 import { updatePreparation } from './commerce.fulfillment.js';
 import { receiveCommerceReturn, updateCommerceCase } from './commerce.cases.js';
-import { createInvoiceDraft, decideStandaloneInvoice } from './commerce.billing.js';
+import { createInvoiceDraft, decideStandaloneInvoice, draftId } from './commerce.billing.js';
 import { saveReminderPolicy } from './commerce.reminders.js';
 import { decidePartialReturn, finishReturnObligation, openReturnCase, verifyPartialReturn } from './commerce.returns.js';
 
@@ -103,6 +103,14 @@ export default async function commerceRoutes(app: FastifyInstance): Promise<void
   app.post('/commerce/invoices', owner, async (request, reply) => {
     const input = invoiceDraftInput.parse(request.body);
     return created(reply, await prisma.$transaction((tx) => createInvoiceDraft(tx, request.business!.id, input)));
+  });
+
+  app.get('/commerce/invoices/drafts/:key', owner, async (request, reply) => {
+    const { key } = z.object({ key: z.string().uuid() }).parse(request.params);
+    const businessId = request.business!.id;
+    const saved = await prisma.commerceInvoice.findUnique({ where: { id_businessId: { id: draftId(businessId, key), businessId } },
+      select: { id: true, reference: true } });
+    return success(reply, saved);
   });
 
   app.post('/commerce/invoices/:id/decision', owner, async (request, reply) => {

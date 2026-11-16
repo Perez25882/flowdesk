@@ -18,11 +18,12 @@ export interface StaffMember {
   createdAt: string;
 }
 
-export function useStaff(): UseQueryResult<StaffMember[], Error> {
+export function useStaff(enabled = true): UseQueryResult<StaffMember[], Error> {
   return useQuery({
     queryKey: ['staff'],
     queryFn: () => apiFetch<StaffMember[]>('/staff'),
     staleTime: 30_000,
+    enabled,
   });
 }
 

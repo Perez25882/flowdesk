@@ -51,14 +51,31 @@ export default async function serviceRoutes(app: FastifyInstance): Promise<void>
   const write = { preHandler: requireCapability('orders.create') };
   const act = { preHandler: requireCapability('orders.transition') };
 
+  app.get('/service-operations/reservations/:key', write, async (request, reply) => {
+    const actor = orderActor(request);
+    await manager(prisma, actor, false);
+    const { key } = z.object({ key: z.string().uuid() }).parse(request.params);
+    const visit = await prisma.serviceVisit.findUnique({ where: { businessId_requestKey: { businessId: actor.businessId, requestKey: key } },
+      select: { appointmentId: true } });
+    return success(reply, visit);
+  });
+
   app.get('/service-operations', read, async (request, reply) => {
     const actor = orderActor(request);
     await requireStaffMembership(prisma, actor);
     if (!isManager(actor) && actor.role !== 'OPERATIONS') throw new ForbiddenError('Service work requires eligible staff');
     const { businessId, staffId } = actor;
-    const where = { businessId, ...(!isManager(actor) && staffId ? { assignedStaffId: staffId } : {}) };
-    const visits = await prisma.serviceVisit.findMany({ where, select: operationalVisit, orderBy: { appointment: { startsAt: 'desc' } }, take: 100 });
-    if (!isManager(actor)) return success(reply, { visits: visits.map(operationalView) });
+    const { visit, from, until } = z.object({ visit: z.string().min(1).max(100).optional(),
+      from: z.string().datetime().optional(), until: z.string().datetime().optional() }).strict().parse(request.query);
+    const where = { businessId, ...(!isManager(actor) && staffId ? { assignedStaffId: staffId } : {}),
+      ...(visit ? { appointmentId: visit } : {}),
+      ...(from && until ? { appointment: { startsAt: { gte: new Date(from), lt: new Date(until) } } } : {}) };
+    const page = await prisma.serviceVisit.findMany({ where, select: operationalVisit,
+      orderBy: { appointment: { startsAt: from ? 'asc' : 'desc' } }, take: 101 });
+    const visits = page.slice(0, 100);
+    if (visit && !visits.length) throw new NotFoundError('Appointment not found');
+    const truncated = page.length > visits.length;
+    if (!isManager(actor)) return success(reply, { visits: visits.map(operationalView), truncated });
     const [settings, services, resources, leads, staff, details, revenue] = await Promise.all([
       prisma.serviceBusinessSettings.findUnique({ where: { businessId } }),
       prisma.service.findMany({ where: { businessId, deletedAt: null, bookingRules: { not: Prisma.DbNull } }, orderBy: { name: 'asc' }, take: 100 }),
@@ -83,7 +100,7 @@ export default async function serviceRoutes(app: FastifyInstance): Promise<void>
       notices: entry.notices.map((notice) => ({ ...notice, send: notice.sendId ? byId.get(notice.sendId) ?? null : null })) }]));
     const closedServiceRevenue = revenue?.reduce((total, { direction, _sum }) =>
       direction === 'IN' ? total.plus(_sum.amount ?? 0) : total.minus(_sum.amount ?? 0), new Prisma.Decimal(0));
-    return success(reply, { settings, services, resources, leads, staff,
+    return success(reply, { settings, services, resources, leads, staff, truncated,
       ...(closedServiceRevenue ? { closedServiceRevenue: closedServiceRevenue.toFixed(2) } : {}),
       visits: visits.map((visit) => ({ ...operationalView(visit), ...byAppointment.get(visit.appointmentId) })) });
   });

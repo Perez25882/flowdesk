@@ -1,4 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { z } from 'zod';
+import { prisma } from '../../config/database.js';
 import { assignedStaffScope, requireCapability } from '../../middleware/role.middleware.js';
 import { success, created, paginated } from '../../utils/response.js';
 import { ForbiddenError, NotFoundError } from '../../utils/errors.js';
@@ -11,9 +13,10 @@ import {
   type DateRange,
   type OrderWithRelations,
 } from './orders.repository.js';
-import { orderActor, requireOrderRouteAccess } from './orders.authorization.js';
+import { orderActor, requireOrderRouteAccess, requireStaffMembership } from './orders.authorization.js';
 import {
   createManualOrder,
+  findManualOrderRequest,
   confirmOrder,
   markProcessing,
   fulfillOrder,
@@ -147,10 +150,18 @@ export default async function orderRoutes(app: FastifyInstance): Promise<void> {
       const body = CreateOrderSchema.parse(request.body);
       const businessId = request.business!.id;
 
-      const order = await createManualOrder(body, businessId);
+        const order = await createManualOrder(body, businessId, orderActor(request));
       return created(reply, order);
     },
   );
+
+  app.get('/orders/manual/:key', { preHandler: requireCapability('orders.create') }, async (request, reply) => {
+    const { key } = z.object({ key: z.string().uuid() }).parse(request.params);
+    const actor = orderActor(request);
+    await requireStaffMembership(prisma, actor);
+    const saved = await findManualOrderRequest(actor.businessId, key);
+    return success(reply, saved && !saved.deletedAt ? { id: saved.id } : null);
+  });
 
   app.patch(
     '/orders/:id/status',

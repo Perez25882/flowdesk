@@ -17,12 +17,21 @@ export interface NavItem {
    * a shop selling bags has no diary, and showing it one is a nav item nobody
    * will ever open sitting between two they use every day.
    */
-  feature?: 'bookings';
+  feature?: 'bookings' | 'catalogue';
 }
 
 /** Which optional features this business has switched on. */
 export interface NavFeatures {
   bookings?: boolean;
+  catalogue?: boolean;
+  service?: boolean;
+}
+
+export function workspaceFeatures(business?: { bookingsEnabled?: boolean; workflowSettings?: { profile: string } | null;
+  serviceSettings?: { enabled: boolean } | null }): NavFeatures {
+  const profile = business?.workflowSettings?.profile;
+  const service = profile === 'APPOINTMENT' || profile === 'PROFESSIONAL_SERVICES';
+  return { bookings: Boolean(business?.bookingsEnabled || business?.serviceSettings?.enabled || service), catalogue: !service, service };
 }
 
 /**
@@ -40,7 +49,7 @@ export const NAV_GROUPS: { id: NavGroup; label: string }[] = [
 
 export const navItems: NavItem[] = [
   {
-    label: 'Dashboard',
+    label: 'Overview',
     path: '/dashboard',
     icon: 'LayoutDashboard',
     group: 'today',
@@ -48,7 +57,7 @@ export const navItems: NavItem[] = [
     mobile: true,
   },
   {
-    label: 'Orders',
+    label: 'Orders & work',
     path: '/orders',
     icon: 'ShoppingCart',
     group: 'today',
@@ -57,12 +66,13 @@ export const navItems: NavItem[] = [
     mobile: true,
   },
   {
-    label: 'Messages',
+    label: 'Inbox',
     path: '/messages',
     icon: 'MessageSquare',
     group: 'today',
     description: 'Messages Flowdesk could not read on its own.',
     badge: 'reviewMessages',
+    mobile: true,
     roles: ['owner', 'MANAGER', 'OPERATIONS'],
   },
   {
@@ -71,7 +81,6 @@ export const navItems: NavItem[] = [
     icon: 'Users',
     group: 'records',
     description: 'Who buys from you, and who still owes you.',
-    mobile: true,
     roles: ['owner', 'MANAGER', 'OPERATIONS'],
   },
   {
@@ -80,6 +89,7 @@ export const navItems: NavItem[] = [
     icon: 'Package',
     group: 'records',
     description: 'Your catalogue, prices and stock levels.',
+    feature: 'catalogue',
     roles: ['owner', 'MANAGER', 'OPERATIONS'],
   },
   {
@@ -88,7 +98,6 @@ export const navItems: NavItem[] = [
     icon: 'Wallet',
     group: 'records',
     description: 'Mobile money, transfers and cash against each order.',
-    mobile: true,
     roles: ['owner', 'MANAGER', 'OPERATIONS'],
   },
   {
@@ -114,7 +123,7 @@ export const navItems: NavItem[] = [
     roles: ['owner', 'MANAGER'],
   },
   {
-    label: 'Staff',
+    label: 'Team',
     path: '/staff',
     icon: 'UserCog',
     group: 'business',
@@ -129,19 +138,27 @@ export const navItems: NavItem[] = [
     description: 'Your WhatsApp connection, business details and plan.',
     roles: ['owner', 'MANAGER', 'OPERATIONS'],
   },
+  {
+    label: 'Business setup', path: '/setup', icon: 'Settings2', group: 'business',
+    description: 'Choose your profile and review what is ready.', roles: ['owner'],
+  },
 ];
 
-export function getNavItemsForRole(role: string | null, features: NavFeatures = {}): NavItem[] {
-  const effectiveRole = role ?? 'owner';
+export function mayOpenNavigation(item: NavItem, role: string | null): boolean {
+  return !item.roles || item.roles.includes(role ?? 'owner');
+}
 
+export function getNavItemsForRole(role: string | null, features: NavFeatures = {}): NavItem[] {
   return navItems.filter((item) => {
-    if (item.roles && !item.roles.includes(effectiveRole)) return false;
+    if (!mayOpenNavigation(item, role)) return false;
     // An unknown feature key hides the item rather than showing it. A nav entry
     // that appears because a flag was misspelled leads to a page that cannot
     // work, which is worse than one the owner has to switch on.
+    if (item.feature === 'catalogue') return features.catalogue !== false;
     if (item.feature) return features[item.feature] === true;
     return true;
-  });
+  }).map((item) => item.path === '/orders' && features.service && role !== 'DELIVERY'
+    ? { ...item, mobile: false } : item);
 }
 
 export function getGroupedNavItems(

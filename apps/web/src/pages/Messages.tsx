@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { MessagesSquare } from 'lucide-react';
 import PageHeader from '@/components/shared/PageHeader';
 import EmptyState from '@/components/shared/EmptyState';
@@ -19,6 +19,7 @@ import {
 } from '@/hooks/useConversations';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { cn } from '@/lib/utils';
+import CommercePanel from '@/components/shared/CommercePanel';
 
 const FILTERS: readonly TabOption<InboxFilter>[] = [
   { value: 'all', label: 'All' },
@@ -41,6 +42,15 @@ const FILTERS: readonly TabOption<InboxFilter>[] = [
  * linked to directly.
  */
 export default function MessagesPage(): React.JSX.Element {
+  const [params] = useSearchParams();
+  if (params.get('view') === 'cases') return <div className="grid gap-4">
+    <PageHeader title="Inbox" actions={<Link className="inline-flex min-h-10 items-center text-primary underline" to="/messages">Conversations</Link>} />
+    <CommercePanel section="cases" />
+  </div>;
+  return <Conversations />;
+}
+
+function Conversations(): React.JSX.Element {
   const [params, setParams] = useSearchParams();
   const [filter, setFilter] = useState<InboxFilter>('all');
   const [search, setSearch] = useState('');
@@ -66,7 +76,8 @@ export default function MessagesPage(): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <PageHeader title="Messages" description="Every customer who has written, newest first." />
+      <PageHeader title="Inbox" description="Customer conversations and work that needs a reply."
+        actions={<Link className="inline-flex min-h-10 items-center text-primary underline" to="/messages?view=cases">Customer cases</Link>} />
 
       <div
         className={cn(
@@ -233,5 +244,5 @@ function ThreadBody({
   if (isLoading) return <SkeletonRows count={5} className="p-4" />;
   if (error || !data) return <LoadError what="This conversation" onRetry={onRetry} />;
 
-  return <ConversationThread thread={data} onBack={onBack} />;
+  return <ConversationThread key={data.customer.id} thread={data} onBack={onBack} />;
 }

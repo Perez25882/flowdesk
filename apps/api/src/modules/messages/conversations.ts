@@ -245,6 +245,7 @@ export async function countConversationsNeedingYou(businessId: string): Promise<
 }
 
 export interface ThreadMessage {
+  hasAttachment?: boolean;
   id: string;
   body: string | null;
   type: string;
@@ -270,7 +271,6 @@ export interface ThreadMessage {
   deliveryState?: string;
 }
 
-/** How far back a thread reaches. Older history is not what an owner is replying to. */
 const THREAD_LIMIT = 200;
 
 /**
@@ -283,9 +283,11 @@ const THREAD_LIMIT = 200;
 export async function getThread(
   businessId: string,
   customerId: string,
+  beforeId?: string,
 ): Promise<{
   customer: { id: string; name: string | null; waNumber: string };
   messages: ThreadMessage[];
+  nextBefore: string | null;
 }> {
   const customer = await prisma.customer.findFirst({
     where: { id: customerId, businessId, deletedAt: null },
@@ -294,10 +296,15 @@ export async function getThread(
 
   if (!customer) throw new NotFoundError('Conversation not found');
 
-  const rows = await prisma.message.findMany({
-    where: { businessId, customerId },
-    orderBy: { createdAt: 'desc' },
-    take: THREAD_LIMIT,
+  const scope = { businessId, customerId };
+  const before = beforeId ? await prisma.message.findFirst({ where: { ...scope, id: beforeId }, select: { id: true, createdAt: true } }) : null;
+  if (beforeId && !before) throw new NotFoundError('Conversation history was not found');
+  const [history, lastReply, pending] = await Promise.all([
+    prisma.message.findMany({
+    where: { ...scope, ...(before ? { OR: [{ createdAt: { lt: before.createdAt } },
+      { createdAt: before.createdAt, id: { lt: before.id } }] } : {}) },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: THREAD_LIMIT + 1,
     select: {
       id: true,
       body: true,
@@ -307,19 +314,26 @@ export async function getThread(
       sentFromApp: true,
       sentByStaffId: true,
       aiReplyText: true,
+      mediaKey: true,
       aiReplyStatus: true,
       waMessageId: true,
       createdAt: true,
     },
-  });
-
-  const lastOutbound = rows.find((row) => row.direction === 'OUTBOUND')?.createdAt ?? null;
-  const sends = await prisma.whatsAppSend.findMany({
-    where: { businessId, payload: { path: ['customerId'], equals: customerId } },
-    orderBy: { createdAt: 'desc' }, take: THREAD_LIMIT,
-    select: { id: true, state: true, payload: true, createdAt: true, providerMessageId: true },
-  });
-  const providerIds = new Map(sends.filter((send) => send.providerMessageId).map((send) => [send.providerMessageId, send.state]));
+    }),
+    prisma.message.findFirst({ where: { ...scope, direction: 'OUTBOUND' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+    before ? [] : prisma.whatsAppSend.findMany({
+      where: { businessId, providerMessageId: null, payload: { path: ['customerId'], equals: customerId } },
+      orderBy: { createdAt: 'desc' }, take: 25, select: { id: true, state: true, payload: true, createdAt: true },
+    }),
+  ]);
+  const rows = history.slice(0, THREAD_LIMIT);
+  const nextBefore = history.length > THREAD_LIMIT ? rows.at(-1)!.id : null;
+  const outboundIds = rows.filter((row) => row.direction === 'OUTBOUND').map((row) => row.waMessageId);
+  const sends = outboundIds.length ? await prisma.whatsAppSend.findMany({
+    where: { businessId, providerMessageId: { in: outboundIds }, payload: { path: ['customerId'], equals: customerId } },
+    select: { providerMessageId: true, state: true },
+  }) : [];
+  const providerIds = new Map(sends.map((send) => [send.providerMessageId, send.state]));
 
   const messages: ThreadMessage[] = rows.reverse().map((row) => {
     const fromShop = row.direction === 'OUTBOUND';
@@ -337,21 +351,22 @@ export async function getThread(
       needsYou:
         !fromShop &&
         row.requiresReview &&
-        (lastOutbound === null || row.createdAt.getTime() > lastOutbound.getTime()),
+        (!lastReply || row.createdAt > lastReply.createdAt),
       // Only a suggestion still waiting to be sent. One the owner already sent,
       // dismissed, or that was superseded is history, not something to offer.
       draft: !fromShop && row.aiReplyStatus === 'DRAFT' ? row.aiReplyText : null,
+      ...(row.mediaKey ? { hasAttachment: true } : {}),
       ...(deliveryState ? { deliveryState } : {}),
       createdAt: row.createdAt,
     };
   });
 
-  for (const send of sends) {
-    if (send.providerMessageId || !send.payload || typeof send.payload !== 'object' || Array.isArray(send.payload) ||
+  for (const send of pending) {
+    if (!send.payload || typeof send.payload !== 'object' || Array.isArray(send.payload) ||
         typeof send.payload.body !== 'string') continue;
     messages.push({ id: send.id, body: send.payload.body, type: 'TEXT', fromShop: true,
       sentBy: typeof send.payload.sentByStaffId === 'string' ? 'staff' : null,
       needsYou: false, draft: null, createdAt: send.createdAt, deliveryState: send.state });
   }
-  return { customer, messages: messages.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(-THREAD_LIMIT) };
+  return { customer, nextBefore, messages: messages.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()) };
 }

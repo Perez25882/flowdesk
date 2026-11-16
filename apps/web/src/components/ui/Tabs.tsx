@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import type { KeyboardEvent } from 'react';
 
 /**
  * Segmented filter for switching a view between mutually exclusive states.
@@ -29,6 +30,16 @@ export function Tabs<T extends string>({
   label: string;
   className?: string;
 }): React.JSX.Element {
+  function navigate(event: KeyboardEvent<HTMLButtonElement>, position: number): void {
+    const count = options.length;
+    const targets: Record<string, number> = { ArrowLeft: (position + count - 1) % count,
+      ArrowRight: (position + 1) % count, Home: 0, End: count - 1 };
+    const next = targets[event.key];
+    if (next === undefined || !options[next]) return;
+    event.preventDefault();
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+    onChange(options[next].value);
+  }
   return (
     <div
       role="tablist"
@@ -41,7 +52,7 @@ export function Tabs<T extends string>({
         className,
       )}
     >
-      {options.map((option) => {
+      {options.map((option, position) => {
         const isActive = option.value === value;
 
         return (
@@ -50,9 +61,11 @@ export function Tabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={isActive}
+            tabIndex={isActive ? 0 : -1}
+            onKeyDown={(event) => navigate(event, position)}
             onClick={() => onChange(option.value)}
             className={cn(
-              'relative shrink-0 whitespace-nowrap px-3 pb-2.5 pt-1.5 text-sm font-medium',
+              'relative min-h-10 shrink-0 whitespace-nowrap px-3 pb-2.5 pt-1.5 text-sm font-medium',
               'transition-colors duration-fast ease-out',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background',
               isActive

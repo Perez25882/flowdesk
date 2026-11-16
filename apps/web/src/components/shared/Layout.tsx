@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Link, Outlet, useLocation } from 'react-router-dom';
+import { getNavItem, mayOpenNavigation } from '@/config/navigation';
+import { getUserRole, isOwner } from '@/hooks/useAuth';
 import WhatsAppHealthBanner from './WhatsAppHealthBanner';
 import { useSSE } from '@/hooks/useSSE';
 import Sidebar from './Sidebar';
@@ -32,6 +34,12 @@ function useSidebarState(): [boolean, () => void] {
 
 export default function Layout(): React.JSX.Element {
   const [collapsed, toggleCollapsed] = useSidebarState();
+  const location = useLocation();
+  const item = getNavItem(location.pathname);
+  const authorized = !item || mayOpenNavigation(item, getUserRole());
+  useEffect(() => {
+    if (!location.hash) document.getElementById('main')?.scrollTo(0, 0);
+  }, [location.pathname, location.hash]);
 
   // Establish the singleton SSE connection for the entire dashboard tree.
   // Idempotent, multiple components can call useSSE without spawning new
@@ -59,8 +67,12 @@ export default function Layout(): React.JSX.Element {
           {/* Above every page: a dead WhatsApp connection stops the whole
               product working, so it must not be buried in Settings. */}
           <div className="mx-auto flex w-full max-w-shell flex-col gap-5">
-            <WhatsAppHealthBanner />
-            <Outlet />
+            {isOwner() && <WhatsAppHealthBanner />}
+            {authorized ? <Outlet /> : <section className="rounded-lg border border-border bg-surface p-5">
+              <h1 className="text-xl font-semibold">Access restricted</h1>
+              <p className="my-3 text-text-secondary">Your current role cannot open this workspace.</p>
+              <Link className="text-primary underline" to="/dashboard">Return to overview</Link>
+            </section>}
           </div>
         </main>
 

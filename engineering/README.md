@@ -40,6 +40,10 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 4 service operations contract](batch-4/service-contract.md) | Lead, booking, payment, execution, communications and recovery |
 | [Batch 4 progress and handoff](batch-4/progress.md) | Baseline, verification checkpoint and next authorized work |
 | [Batch 4 engineering acceptance](batch-4/report.md) | Journey matrix, verification results and release decision |
+| [Batch 5 continuity](batch-5/progress.md) | Approved baselines, active source and work remaining |
+| [Batch 5 product audit](batch-5/audit.md) | Feature disposition, defects, dependencies and acceptance |
+| [Batch 5 workspace contract](batch-5/contract.md) | Navigation, onboarding, permissions, financial presentation and accessibility |
+| [Batch 5 acceptance](batch-5/report.md) | Command evidence, journey matrix and recommendation |
 
 ## Engineering conventions
 

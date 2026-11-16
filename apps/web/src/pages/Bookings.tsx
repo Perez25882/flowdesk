@@ -17,6 +17,10 @@ import { Button } from '@/components/ui/Button';
 import { SkeletonRows } from '@/components/ui/Skeleton';
 import ServiceOperations from '@/components/bookings/ServiceOperations';
 import { getUserRole } from '@/hooks/useAuth';
+import { useBusiness } from '@/hooks/useBusiness';
+import { workspaceFeatures } from '@/config/navigation';
+import { useTabParam } from '@/hooks/useTabParam';
+import { Tabs } from '@/components/ui/Tabs';
 import { cn, formatCurrency } from '@/lib/utils';
 
 const EMPTY_SERVICE = {
@@ -28,6 +32,9 @@ const EMPTY_SERVICE = {
 };
 
 type Tab = 'diary' | 'services' | 'operations';
+const bookingTabs = [{ value: 'diary', label: 'Legacy diary' }, { value: 'services', label: 'Legacy services' },
+  { value: 'operations', label: 'Service operations' }] as const;
+const bookingViews = ['diary', 'services', 'operations'] as const;
 
 /**
  * The diary, and the things that can be booked into it.
@@ -44,13 +51,15 @@ type Tab = 'diary' | 'services' | 'operations';
  */
 export default function BookingsPage(): React.JSX.Element {
   const manager = getUserRole() !== 'OPERATIONS';
-  const [tab, setTab] = useState<Tab>(manager ? 'diary' : 'operations');
+  const business = useBusiness();
+  const [tab, setTab] = useTabParam<Tab>('view', bookingViews,
+    manager && !workspaceFeatures(business.data).service && !business.data?.serviceSettings?.enabled ? 'diary' : 'operations');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_SERVICE);
   const [previewServiceId, setPreviewServiceId] = useState<string | null>(null);
 
-  const { data: services, isLoading: loadingServices } = useServices();
-  const { data: appointments, isLoading: loadingDiary } = useAppointments();
+  const { data: services, isLoading: loadingServices } = useServices(tab === 'services');
+  const { data: appointments, isLoading: loadingDiary } = useAppointments(undefined, undefined, tab === 'diary');
   const createService = useCreateService();
   const deleteService = useDeleteService();
   const setStatus = useSetAppointmentStatus();
@@ -101,31 +110,7 @@ export default function BookingsPage(): React.JSX.Element {
         }
       />
 
-      <span className="flex flex-wrap items-center gap-1 border-b border-border" role="tablist">
-        {(
-          [
-            ['diary', 'Diary'],
-            ['services', 'What you offer'],
-            ['operations', 'Service operations'],
-          ] as Array<[Tab, string]>
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={tab === value}
-            onClick={() => setTab(value)}
-            className={cn(
-              '-mb-px border-b-2 px-3 py-2 text-sm transition-colors',
-              tab === value
-                ? 'border-primary font-medium text-text-primary'
-                : 'border-transparent text-text-secondary hover:text-text-primary',
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </span>
+      <Tabs label="Booking workspace" options={bookingTabs} value={tab} onChange={setTab} />
 
       {tab === 'operations' && <ServiceOperations manager={manager} />}
 

@@ -372,6 +372,28 @@ vi.mock('../src/services/whatsapp/client.js', async (original) => ({
     expect(await durableJob(`assistant-approved-${input.messageId}`)).toBeUndefined();
   });
 
+  it('lets exactly one of draft approval and a team replacement authorize an outbound message', async () => {
+    const fixture = await shop('DRAFT_ONLY');
+    model.generate.mockResolvedValue(output(quote(fixture.product.id)));
+    const input = await inbound(fixture, 'How much is Rice?');
+    await assistant.runAssistant(input);
+    const draft = (await read(input.messageId)).aiReplyText!;
+    const human = { body: 'We will check the current price and get back to you.', source: 'human_takeover' as const };
+    const outcomes = await Promise.allSettled([
+      messages.sendReply(input.messageId, input.businessId, { body: draft, source: 'assistant_draft' }, null),
+      messages.sendReply(input.messageId, input.businessId, human, null),
+    ]);
+    expect(outcomes.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected']);
+    const sends = await prisma.whatsAppSend.findMany({ where: { businessId: input.businessId,
+      eventKey: { in: [`assistant-approved-${input.messageId}`, `operator-replaced-draft-${input.messageId}`] } } });
+    expect(sends).toHaveLength(1);
+    if (outcomes[1].status === 'fulfilled') {
+      const replay = await messages.sendReply(input.messageId, input.businessId, human, null);
+      expect(replay.sendId).toBe(sends[0]!.id);
+      expect((await read(input.messageId)).aiReplyStatus).toBe('DISMISSED');
+    }
+  });
+
   it('takes rejected AI output through a staff reply and signed recipient delivery evidence', async () => {
     const fixture = await shop();
     await prisma.business.update({ where: { id: fixture.business.id }, data: { waPhoneNumberId: 'synthetic' } });

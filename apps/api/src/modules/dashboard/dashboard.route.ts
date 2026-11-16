@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { hasCapability, type StaffRole } from '@flowdesk/shared';
-import { assignedStaffScope, isOwner, requireCapability } from '../../middleware/role.middleware.js';
+import { assignedStaffScope, callerHasCapability, isOwner, requireCapability } from '../../middleware/role.middleware.js';
+import { getProductOverview } from './overview.service.js';
+import { orderActor, requireStaffMembership } from '../orders/orders.authorization.js';
 import { success } from '../../utils/response.js';
 import { prisma } from '../../config/database.js';
 import { buildReport, reportToCsv, type ReportWindow } from './reports.service.js';
@@ -13,6 +15,22 @@ export interface DashboardBadges {
 }
 
 export default async function dashboardRoutes(app: FastifyInstance): Promise<void> {
+  app.get('/dashboard/overview', { preHandler: requireCapability('orders.read') }, async (request, reply) => {
+    const actor = orderActor(request);
+    await requireStaffMembership(prisma, actor);
+    const scoped = assignedStaffScope(request);
+    const operations = actor.role === 'OPERATIONS' && actor.staffId ? actor.staffId : undefined;
+    const days = Number((request.query as { days?: string }).days);
+    return success(reply, await getProductOverview({
+      businessId: actor.businessId,
+      ...(scoped ? { orderAssignee: scoped } : {}),
+      ...(operations ? { visitAssignee: operations, caseAssignee: operations } : {}),
+      bookings: callerHasCapability(request, 'orders.create'),
+      care: callerHasCapability(request, 'messages.read'),
+      revenue: callerHasCapability(request, 'revenue.read'),
+      owner: isOwner(request),
+    }, new Date(), [30, 60, 90].includes(days) ? days : 1));
+  });
   /**
    * Lightweight badge counts — used by the sidebar / bottom nav so they don't
    * need to fetch full orders/messages/products lists just to render a counter.

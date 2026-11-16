@@ -4,7 +4,7 @@ import { useConfirmEmailCode, useRequestEmailCode } from '@/hooks/useEmailVerifi
 import AuthShell, { AuthError, AuthField, AuthNotice, AuthSubmit } from '@/components/auth/AuthShell';
 import { Button } from '@/components/ui/Button';
 
-const NEXT = '/settings?connect=whatsapp';
+const NEXT = '/setup';
 
 /**
  * Confirm the email address, with a code.
