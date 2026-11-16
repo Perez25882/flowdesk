@@ -337,7 +337,8 @@ async function manualOrderInput(
     throw new NotFoundError('Product not found');
   }
   return { businessId, customerId: customer.id, referenceNumber, rawMessage: data.rawMessage, isManual: true,
-    items: data.items.map((item) => ({ ...item, ...(item.productId ? { matchConfidence: 1 } : {}) })),
+    items: data.items.map(({ productId, description, quantity, unitPrice }) => ({ description, quantity, unitPrice,
+      ...(productId ? { productId, matchConfidence: 1 } : {}) })),
     ...(data.notes !== undefined ? { notes: data.notes } : {}) };
 }
 
