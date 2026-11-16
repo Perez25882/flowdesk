@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { apiFetch } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
 import { InvoiceCheckout, type InvoiceCheckoutView } from './InvoiceCheckout';
+import { InvoiceReminders } from './InvoiceReminders';
 
 type Summary = { id: string };
 type Invoice = Summary & InvoiceCheckoutView & { reference: string; total: string; deposit: string; paid: string; due: string; nextCharge: string;
@@ -58,6 +59,7 @@ export default function OrderInvoice({ orderId, status }: { orderId: string; sta
       </div>
       {action.isError && <p role="alert">{action.error.message}</p>}
       {action.isSuccess && <p role="status">Update saved.</p>}
+      <InvoiceReminders invoiceId={invoice.id} />
     </section>
   );
 }

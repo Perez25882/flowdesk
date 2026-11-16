@@ -182,6 +182,7 @@ try {
   await page.getByText(order.referenceNumber, { exact: true }).first().click();
   const invoicePanel = page.getByRole('region', { name: 'Commerce invoice' });
   await invoicePanel.getByText('Invoice ' + invoice.reference, { exact: true }).waitFor();
+  await invoicePanel.getByRole('region', { name: 'Payment reminders' }).getByText('No reminders recorded.').waitFor();
   await invoicePanel.getByText(/Verified payment/).waitFor();
   await page.getByRole('button', { name: 'Start packing', exact: true }).click();
   await invoicePanel.getByRole('button', { name: 'Mark preparation complete', exact: true }).click();

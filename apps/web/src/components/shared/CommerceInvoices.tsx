@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { InvoiceCheckout, type InvoiceCheckoutView } from '@/components/orders/InvoiceCheckout';
+import { InvoiceReminders } from '@/components/orders/InvoiceReminders';
 import { useCustomers } from '@/hooks/useCustomers';
 import { apiFetch } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
@@ -9,7 +10,6 @@ import { formatCurrency } from '@/lib/utils';
 type Summary = { id: string; reference: string; status: string; total: string; customer: { name: string | null } };
 type Invoice = InvoiceCheckoutView & { reference: string; status: string; total: string; paid: string; due: string; dueAt: string; terms: string | null;
   receiptLines: { name: string; quantity: number; subtotal: string }[] };
-type Reminder = { id: string; status: string; reason: string | null; send: { state: string; attempts: number; reason: string | null } | null };
 type Policy = { enabled: boolean; intervalDays: number; maxReminders: number; templateName: string | null; templateLanguage: string | null; approvedAt?: string | null };
 const field = 'w-full min-w-0 rounded border border-border bg-transparent p-2';
 const labels: Record<string, string> = { DRAFT: 'Draft', ISSUED: 'Issued', PARTIALLY_PAID: 'Partially paid', PAYMENT_PENDING: 'Waiting for payment',
@@ -87,8 +87,6 @@ export function CommerceInvoices(): React.JSX.Element {
   const list = useQuery({ queryKey: ['commerce', 'standalone-invoices'], queryFn: () => apiFetch<Summary[]>('/commerce/invoices?standalone=true') });
   const details = useQuery({ queryKey: ['commerce', 'standalone-invoice', selected], enabled: Boolean(selected), refetchInterval: 3_000,
     queryFn: () => apiFetch<Invoice>('/commerce/invoices/' + selected) });
-  const reminders = useQuery({ queryKey: ['commerce', 'reminders', selected], enabled: Boolean(selected), refetchInterval: 5_000,
-    queryFn: () => apiFetch<Reminder[]>('/commerce/invoices/' + selected + '/reminders') });
   const policy = useQuery({ queryKey: ['commerce', 'reminder-policy'], queryFn: () => apiFetch<Policy | null>('/commerce/reminders/policy') });
   const action = useMutation({ mutationFn: (decision: 'ISSUE' | 'CANCEL' | 'SEND') => apiFetch(`/commerce/invoices/${selected}/decision`, {
     method: 'POST', body: { action: decision },
@@ -123,11 +121,7 @@ export function CommerceInvoices(): React.JSX.Element {
       <InvoiceCheckout key={invoice.id} invoice={invoice} partial onChange={() => { void details.refetch(); }} />
       {action.isError && <p role="alert">{action.error.message}</p>}
       {action.isSuccess && <p role="status">Invoice updated.</p>}
-      <h4 className="font-medium">Payment reminders</h4>
-      {reminders.isError && <p role="alert">Reminder status is unavailable.</p>}
-      {reminders.data?.length === 0 && <p>No reminders recorded.</p>}
-      {reminders.data?.map((reminder) => <p key={reminder.id}>{(reminder.send?.state ?? reminder.status).replaceAll('_', ' ')}
-        {(reminder.send?.reason ?? reminder.reason) && ` · ${(reminder.send?.reason ?? reminder.reason)!.replaceAll('_', ' ').toLowerCase()}`}</p>)}
+      <InvoiceReminders invoiceId={invoice.id} />
     </section>}
   </div>;
 }
