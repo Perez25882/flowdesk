@@ -71,6 +71,10 @@ fixtureOnly('WhatsApp media capacity diagnostics on PostgreSQL', () => {
         expect(diagnostic, diagnostics).toMatchObject({ failure: 'DATABASE_POOL_ACQUISITION' });
         if (diagnostic.prismaCode) expect(['P2024', 'P2028']).toContain(diagnostic.prismaCode);
       }
+      console.info('Synthetic WhatsApp pool diagnostic codes', entries.map(([fields]) => ({
+        failure: (fields as { failure?: string }).failure,
+        prismaCode: (fields as { prismaCode?: string }).prismaCode ?? null,
+      })));
       for (const privateField of [phone, from, wamid, 'private-media-fixture', signingSecret]) expect(diagnostics).not.toContain(privateField);
     } finally {
       await transaction;
