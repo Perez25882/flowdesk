@@ -493,7 +493,7 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     const lead = await prisma.serviceLead.findFirstOrThrow({ where: { businessId: f.businessId, sourceId } });
     expectResponse(await f.api('PATCH', root + '/leads/' + lead.id, { revision: 0, status: 'QUALIFIED', serviceId: service.id,
       assignedStaffId: null, evidence: 'Qualified fixture request' }), 200);
-    const startsAt = slot(3 * day);
+    const startsAt = slot(5 * minute);
     const command = await f.signed('BOOK ' + lead.id + ' ' + startsAt.toISOString() + ' 1 1', f.first, 1, false);
     await workflow.recoverWorkflows(new Date(Date.now() + 250));
     const resumeAt = new Date(Date.now() + 4_000);
@@ -524,5 +524,14 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     expect(await prisma.payment.count({ where: { invoiceId: visit.invoiceId } })).toBe(1);
     const notice = await prisma.serviceVisitNotice.findFirstOrThrow({ where: { appointmentId: visit.appointmentId, kind: 'CONFIRMED' } });
     expect(await prisma.whatsAppSend.count({ where: { businessId: f.businessId, eventKey: 'service-notice-' + notice.id } })).toBe(1);
+    for (const action of ['CHECK_IN', 'START', 'COMPLETE']) expectResponse(await f.action(visit.appointmentId, action), 200);
+    const completion = await prisma.serviceVisitNotice.findFirstOrThrow({ where: { appointmentId: visit.appointmentId, kind: 'COMPLETE' } });
+    await interruptWorker('before-service-notice-commit', new Date(), async () => {
+      expect(await f.visit(visit.appointmentId)).toMatchObject({ state: 'COMPLETED' });
+      expect(await prisma.whatsAppSend.count({ where: { businessId: f.businessId, eventKey: 'service-notice-' + completion.id } })).toBe(0);
+    });
+    await workflow.recoverWorkflows(new Date());
+    expect((await f.visit(visit.appointmentId)).history.filter((event) => event.action === 'COMPLETE')).toHaveLength(1);
+    expect(await prisma.whatsAppSend.count({ where: { businessId: f.businessId, eventKey: 'service-notice-' + completion.id } })).toBe(1);
   }, 85_000);
 });
