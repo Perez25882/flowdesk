@@ -431,6 +431,38 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     expect(await prisma.workflow.findFirst({ where: { businessId: f.businessId, sourceId: inquiry } })).toMatchObject({ reason: 'SERVICE_CASE_RESOLVED' });
   }, 60_000);
 
+  it('hands off one authorized repeat-service invitation and admits a new inquiry only from the signed reply', async () => {
+    const f = await shop();
+    expectResponse(await f.api('PUT', root + '/settings', { ...f.settings, revision: 1, followupEnabled: true }), 200);
+    await f.signed('START SERVICE FOLLOWUPS');
+    await f.signed('STOP SERVICE FOLLOWUPS', f.second);
+    const service = await f.service({}, { capacity: 2 });
+    const time = slot(minute);
+    const first = expectResponse(await f.reserve(service.id, time, f.first.id, { settingsRevision: 2 }), 201).appointmentId;
+    const second = expectResponse(await f.reserve(service.id, time, f.second.id, { settingsRevision: 2 }), 201).appointmentId;
+    expect((await f.action(first, 'FOLLOW_UP')).statusCode).toBe(409);
+    for (const id of [first, second]) {
+      for (const action of ['CHECK_IN', 'START', 'COMPLETE', 'FOLLOW_UP']) expectResponse(await f.action(id, action), 200);
+    }
+    expectResponse(await f.action(first, 'FOLLOW_UP'), 200);
+    await workflow.recoverWorkflows(new Date());
+    const eligible = (await f.visit(first)).notices.filter(({ kind }) => kind === 'FOLLOW_UP');
+    expect(eligible).toHaveLength(1);
+    expect(eligible[0]?.sendId).toBeTruthy();
+    await outbound.processDurableOutbound(eligible[0]!.sendId!);
+    expect(await prisma.whatsAppSend.findUnique({ where: { id: eligible[0]!.sendId! } })).toMatchObject({
+      state: 'PROVIDER_ACCEPTED', payload: { customerId: f.first.id, body: expect.stringContaining('another service') },
+    });
+    expect((await f.visit(second)).notices.find(({ kind }) => kind === 'FOLLOW_UP')).toMatchObject({
+      sendId: null, reason: 'NOTICE_CONSENT_REQUIRED',
+    });
+    const response = await f.signed('SERVICE ' + service.name + ' | Repeat service request');
+    expect(await prisma.serviceLead.findFirst({ where: { businessId: f.businessId, sourceId: response } })).toMatchObject({
+      customerId: f.first.id, status: 'NEW',
+    });
+    expect(await prisma.serviceVisit.count({ where: { businessId: f.businessId } })).toBe(2);
+  }, 65_000);
+
   it('applies a local closure at midnight and disambiguates both repeated DST instants with buffer constraints', async () => {
     const f = await shop();
     const { managedSlots } = await import('../src/modules/bookings/service.schedule.js');
