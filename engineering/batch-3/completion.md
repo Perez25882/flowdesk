@@ -6,13 +6,13 @@ The founder authorized all remaining Batch 3 workstreams. The dedicated branch `
 | --- | --- | --- |
 | A. Standalone invoices | Passing focused checkpoint | Real signed payments allocated to exact invoices. Two obligations for the same customer stayed independent. The prior Batch 3 fixture preserved order-linked settlement and return evidence. |
 | B. Reminders | Passing focused checkpoint | Approved template, partial balance, provider ambiguity, queue eviction and signed delivery passed on the second disposable fixture. Signed opt-out and final-source verification remain scheduled. |
-| C. Partial returns | Implemented, focused suite running | Quantity fence, staff custody, owner approval, inventory restoration and separate financial obligations. |
-| D. Payment release recovery | Implemented, focused suite running | Actual process termination and replay around commit, preparation and notification boundaries. |
-| E. Checkout refresh | Implemented, Chromium pending | Payment-link recovery uses invoice-scoped PostgreSQL state and a ledger-version precondition. |
-| F. Media admission | Instrumented, focused suite running | Structured Prisma and PostgreSQL codes. Deliberate single-connection pool exhaustion uses three signed simultaneous admissions and exact retries. |
-| G. Owner browser | Expanded fixture, pending | Compiled mobile owner navigation, variant, order, partial return, invoice and checkout interruption. |
-| H. Integration | Pending | Final G1, Batch 2, Batch 3 and fresh repeat results. |
-| I. Migration and recovery | Passing migration checkpoint | 38 migrations deployed on empty, approved Batch 2 upgrade, and prior Batch 3 seeded upgrade. Baseline PostgreSQL dump and restore passed. Final binary rollback and roll-forward remain scheduled. |
+| C. Partial returns | Passing integration checkpoint | Quantity fence, staff custody, owner approval, inventory restoration, signed exchange and separate refund evidence. |
+| D. Payment release recovery | Passing integration checkpoint | Actual process termination and replay around verification, commit, preparation, evidence and queue boundaries. Includes interrupted balance settlement after a real deposit. |
+| E. Checkout refresh | Passed compiled Chromium | Payment-link recovery uses invoice-scoped PostgreSQL state and a ledger-version precondition. The browser recovered the same request after reload and refused stale and ambiguous retries. |
+| F. Media admission | Passing integration checkpoint | Deliberate single-connection pool exhaustion produced retryable responses with redacted diagnostics. Exact replay admitted one receipt and a foreign collision was quarantined. |
+| G. Owner browser | Passed compiled Chromium | Mobile owner operated variant, order, pickup, case, partial return, invoice, reminder and checkout controls. |
+| H. Integration | Final suite and repeat pending | Initial complete regression passed 434 cases. The corrected candidate reruns the complete G1, Batch 2 and Batch 3 gate. |
+| I. Migration and recovery | Passing migration and restore checkpoint | 38 migrations on empty, approved Batch 2 upgrade, and prior Batch 3 seeded upgrade. Historical and final commerce database backup and restore passed. Final binary rollback and roll-forward remain scheduled. |
 
 The prior [Batch 3 report](report.md) retains historical evidence. New checks use locally generated identities and disposable loopback services.
 
@@ -20,3 +20,4 @@ The prior [Batch 3 report](report.md) retains historical evidence. New checks us
 
 - The first staged app snapshot passed `pnpm db:generate`, `pnpm build`, `pnpm typecheck`, `pnpm lint`, empty migration and seeded Batch 2 migration. Its two fixture tests failed. A Paystack fixture tried to mutate serialized metadata without decoding it, and the media diagnostic expectation allowed only one Prisma acquisition code. The second run parses transport metadata as JSON and checks the narrow set of actual pool acquisition errors.
 - The second snapshot passed generation, build, typecheck, lint and deployment of 38 migrations on all three database histories. This snapshot covers the original closure workflows. Later refinements and the expanded browser test require a fresh build and fixture run before release.
+- Initial complete snapshot `80de361` passed 434 integration and regression cases. Runtime `73c99c2` adds an obsolete-link guard and wakes waiting reminders after template verification. Fixed test snapshot `3d13718` passed the frozen install, static and default gates, the full Chromium fixture and final commerce backup/restore. The [completion evidence](closure-report.md) tracks final smoke and integration.
