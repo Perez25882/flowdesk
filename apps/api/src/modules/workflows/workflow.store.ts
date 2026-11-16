@@ -10,15 +10,18 @@ export async function admitWorkflow(
   identity: { businessId: string; customerId: string; messageId: string; receiptId: string; phoneNumberId: string;
     body: string | null; replyTo: string | null },
   now: Date,
-): Promise<void> {
+): Promise<boolean> {
   const { businessId, customerId, messageId, receiptId } = identity;
   const policy = await tx.workflowSettings.findUnique({ where: { businessId } });
-  if (!policy?.enabled) return;
+  if (!policy?.enabled) return false;
+  const services = ['APPOINTMENT', 'PROFESSIONAL_SERVICES'].includes(policy.profile) && await tx.serviceBusinessSettings.findUnique({
+    where: { businessId, enabled: true }, select: { businessId: true },
+  });
   const commerce = ['ONLINE_RETAIL', 'CUSTOM_ORDER'].includes(policy.profile) && await tx.commercePolicy.findUnique({
     where: { businessId, enabled: true }, select: { businessId: true },
   });
   const correlationKey = 'whatsapp:' + receiptId;
-  if (identity.body && identity.replyTo && explicitOrderRequest(identity.body) && !hasPolicyOverride(identity.body)) {
+  if (!services && identity.body && identity.replyTo && explicitOrderRequest(identity.body) && !hasPolicyOverride(identity.body)) {
     const [quote] = await tx.$queryRaw<Array<{ id: string; definition: string; version: number }>>`
       SELECT w.id, w.definition, w.version FROM workflows w
       JOIN whatsapp_sends s ON s."businessId" = w."businessId" AND s."eventKey" = 'assistant-reply-' || w."sourceId"
@@ -36,19 +39,21 @@ export async function admitWorkflow(
           eventKey: correlationKey, eventType: 'WHATSAPP_INBOUND', state: 'RUNNING', operator: 'SALES',
           reason: 'PURCHASE_RECEIVED', facts: { receiptId, messageId, customerId },
         } } } });
-      return;
+      return false;
     }
   }
   await tx.workflow.create({
     data: {
-      businessId, customerId, sourceId: messageId, correlationKey, definition, version: commerce ? 3 : Number(env.WORKFLOW_DEFINITION_VERSION),
-      policyRevision: policy.revision, reason: 'AUTHENTICATED_INBOUND', dueAt: now, deadlineAt: new Date(+now + day),
+      businessId, customerId, sourceId: messageId, correlationKey, definition,
+      version: services ? 4 : commerce ? 3 : Number(env.WORKFLOW_DEFINITION_VERSION),
+      policyRevision: policy.revision, reason: 'AUTHENTICATED_INBOUND', dueAt: now, deadlineAt: new Date(+now + day * (services ? 120 : 1)),
       evidence: { create: {
         eventKey: correlationKey, eventType: 'WHATSAPP_INBOUND', state: 'CREATED', operator: 'CARE',
         reason: 'AUTHENTICATED_INBOUND', facts: { receiptId, messageId, customerId },
       } },
     },
   });
+  return Boolean(services);
 }
 
 export async function lockWorkflow(tx: Prisma.TransactionClient, businessId: string, id: string): Promise<Workflow> {

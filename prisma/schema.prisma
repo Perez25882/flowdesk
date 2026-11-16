@@ -23,6 +23,7 @@ datasource db {
 /// are the login credentials. Meta OAuth is used solely to attach a WhatsApp
 /// number (`metaUserId` / `waPhoneNumberId`), never as the identity provider.
 model Business {
+  serviceSettings ServiceBusinessSettings?
   commerceReminderPolicy CommerceReminderPolicy?
   whatsAppSends WhatsAppSend[]
   fulfillmentTasks FulfillmentTask[]
@@ -275,6 +276,12 @@ model Session {
 
 /// Auto-created on first inbound message. No manual entry required.
 model Customer {
+  serviceUpdatesId String?
+  serviceUpdatesAt DateTime?
+  serviceUpdates Boolean @default(false)
+  serviceFollowupId String?
+  serviceFollowupAt DateTime?
+  serviceFollowup Boolean @default(false)
   commerceInvoices CommerceInvoice[]
   reminderConsentId String?
   reminderConsentAt DateTime?
@@ -1251,6 +1258,9 @@ enum MessageType {
 /// stock query had to remember to exclude the rows that are not things, and one
 /// forgotten filter tells a customer the appointment is out of stock.
 model Service {
+  bookingRules Json?
+  bookingRevision Int @default(0)
+  serviceLeads ServiceLead[]
   id             String        @id @default(cuid())
   businessId     String
   name           String
@@ -1265,7 +1275,7 @@ model Service {
   bufferMinutes  Int           @default(0)
   /// How many can run at the same time: chairs, rooms, practitioners.
   capacity       Int           @default(1)
-  /// Display only. There is no payment on a booking — see the migration.
+  /// Legacy bookings display the price. Managed reservations snapshot it on their exact invoice.
   price          Decimal?      @db.Decimal(12, 2)
   active         Boolean       @default(true)
   createdAt      DateTime      @default(now())
@@ -1286,6 +1296,7 @@ model Service {
 /// silently move. It is also what the overlap constraint compares, and a
 /// constraint cannot call a function on another table.
 model Appointment {
+  serviceVisit ServiceVisit?
   id          String            @id @default(cuid())
   businessId  String
   serviceId   String
@@ -1331,6 +1342,146 @@ enum AppointmentStatus {
   COMPLETED
   CANCELLED
   NO_SHOW
+}
+
+model ServiceBusinessSettings {
+  businessId String @id
+  business Business @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  enabled Boolean @default(false)
+  timeZone String
+  hours Json
+  closures String[] @default([])
+  reminderMinutes Int?
+  followupEnabled Boolean @default(false)
+  templateName String?
+  templateLanguage String?
+  templateCheckedAt DateTime?
+  approvedAt DateTime?
+  approvedWabaId String?
+  approvedPhoneId String?
+  revision Int @default(1)
+  resources ServiceResource[]
+
+  @@map("service_business_settings")
+}
+
+model ServiceResource {
+  id String @id @default(uuid())
+  businessId String
+  settings ServiceBusinessSettings @relation(fields: [businessId], references: [businessId], onDelete: Restrict)
+  name String
+  staffId String?
+  hours Json?
+  closures String[] @default([])
+  active Boolean @default(true)
+  blocks ServiceReservation[]
+
+  @@unique([businessId, staffId])
+  @@unique([id, businessId])
+  @@map("service_resources")
+}
+
+model ServiceLead {
+  id String @id @default(uuid())
+  businessId String
+  customerId String
+  sourceId String?
+  workflowId String? @unique
+  serviceId String?
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  caseId String? @unique
+  supportCase CommerceCase? @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  status String @default("NEW")
+  requirements String?
+  budgetMinor Int?
+  preferredAt DateTime?
+  assignedStaffId String?
+  followupAt DateTime?
+  evidence Json @default("[]")
+  revision Int @default(0)
+  createdAt DateTime @default(now())
+  visit ServiceVisit?
+
+  @@unique([businessId, sourceId])
+  @@index([businessId, status, createdAt])
+  @@map("service_leads")
+}
+
+model ServiceVisit {
+  appointmentId String @id
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  businessId String
+  customerId String
+  leadId String? @unique
+  lead ServiceLead? @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  invoiceId String? @unique
+  invoice CommerceInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  requestKey String
+  requestHash String
+  state String
+  approvalRequired Boolean
+  approvedAt DateTime?
+  holdUntil DateTime?
+  assignedStaffId String?
+  paymentReviewAt DateTime?
+  snapshot Json
+  stageIndex Int @default(0)
+  revision Int @default(0)
+  scheduleRevision Int @default(0)
+  blocks ServiceReservation[]
+  history ServiceVisitEvent[]
+  notices ServiceVisitNotice[]
+
+  @@unique([businessId, requestKey])
+  @@unique([appointmentId, businessId])
+  @@index([state, holdUntil])
+  @@index([businessId, assignedStaffId])
+  @@map("service_visits")
+}
+
+model ServiceReservation {
+  id String @id @default(uuid())
+  appointmentId String
+  businessId String
+  visit ServiceVisit @relation(fields: [appointmentId, businessId], references: [appointmentId, businessId], onDelete: Restrict)
+  resourceId String
+  resource ServiceResource @relation(fields: [resourceId, businessId], references: [id, businessId], onDelete: Restrict)
+  startsAt DateTime
+  endsAt DateTime
+  releasedAt DateTime?
+
+  @@index([appointmentId])
+  @@map("service_reservations")
+}
+
+model ServiceVisitEvent {
+  appointmentId String
+  revision Int
+  visit ServiceVisit @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+  action String
+  staffId String?
+  evidence String?
+  createdAt DateTime @default(now())
+
+  @@id([appointmentId, revision])
+  @@map("service_visit_events")
+}
+
+model ServiceVisitNotice {
+  id String @id @default(uuid())
+  appointmentId String
+  visit ServiceVisit @relation(fields: [appointmentId], references: [appointmentId], onDelete: Restrict)
+  kind String
+  scheduleRevision Int
+  reason String?
+  sendId String? @unique
+  dueAt DateTime
+  expiresAt DateTime
+  checkedAt DateTime?
+
+  @@unique([appointmentId, kind, scheduleRevision])
+  @@index([checkedAt, dueAt])
+  @@map("service_visit_notices")
 }
 
 enum IntentType {
@@ -1801,6 +1952,7 @@ model CommerceQuoteLine {
 }
 
 model CommerceInvoice {
+  serviceVisit ServiceVisit?
   id String @id @default(uuid())
   businessId String
   customerId String
@@ -1889,6 +2041,7 @@ model CommercePreparation {
 }
 
 model CommerceCase {
+  serviceLead ServiceLead?
   returns CommerceReturn[]
   id String @id @default(uuid())
   businessId String

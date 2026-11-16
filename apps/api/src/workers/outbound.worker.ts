@@ -25,6 +25,7 @@ import { moveToDeadLetter } from './dead-letter.worker.js';
 import { normalizeGhanaPhone } from '../utils/phone.js';
 import { shouldSendAutoReply } from '../services/templates/template-engine.js';
 import { verifyReminderSend } from '../modules/commerce/commerce.reminders.js';
+import { verifyServiceCheckout, verifyServiceNotice } from '../modules/bookings/service.notices.js';
 import type { CommerceRecoveryProbe } from '../modules/commerce/commerce.recovery.js';
 
 /**
@@ -219,6 +220,8 @@ export async function processDurableOutbound(id: string): Promise<void> {
           business: { commercePolicy: { enabled: true, allowFollowup: true } },
         }, select: { id: true } }))) reason = 'ORDER_FOLLOWUP_CONSENT_STALE';
     if (!reason && data.commerceReminder) reason = await verifyReminderSend(tx, id, data);
+    if (!reason && data.serviceNotice) reason = await verifyServiceNotice(tx, id, data);
+    if (!reason && data.serviceCheckoutId) reason = await verifyServiceCheckout(tx, data);
     if (!reason && data.sentByStaffId) {
       const [staff] = await tx.$queryRaw<Array<{ role: 'MANAGER' | 'OPERATIONS' | 'DELIVERY' }>>`
         SELECT role::text FROM staff WHERE id = ${data.sentByStaffId} AND "businessId" = ${candidate.businessId} AND active FOR SHARE
@@ -242,8 +245,9 @@ export async function processDurableOutbound(id: string): Promise<void> {
       data: { state: 'FAILED', reason: 'OWNER_TAKEOVER', leaseUntil: null } });
     return;
   }
-  if (data.commerceReminder) {
-    const current = await verifyReminderSend(prisma, id, data);
+  if (data.commerceReminder || data.serviceNotice || data.serviceCheckoutId) {
+    const current = data.commerceReminder ? await verifyReminderSend(prisma, id, data)
+      : data.serviceNotice ? await verifyServiceNotice(prisma, id, data) : await verifyServiceCheckout(prisma, data);
     if (current) {
       await prisma.whatsAppSend.updateMany({ where: { id, state: 'SENDING', leaseUntil: lease },
         data: { state: 'FAILED', reason: current, leaseUntil: null } });

@@ -393,9 +393,13 @@ async function sendLinkToCustomer(
   const text =
     message?.trim() ||
     `Here's your payment link for GHS ${amount}. You can pay with MTN MoMo, Telecel Cash, AirtelTigo Money or a card:\n${row.authorizationUrl}`;
+  const forService = row.invoiceId && await prisma.serviceVisit.findFirst({ where: {
+    invoiceId: row.invoiceId, businessId, customerId: row.customerId,
+  }, select: { appointmentId: true } });
 
   const sent = await deliverText(context, text, {
     humanInitiated: true,
+    ...(forService ? { serviceCheckoutId: row.id } : {}),
     ...(assistantCheckout ? {
       idempotencyKey: `assistant-checkout-${assistantCheckout.messageId ?? row.id}`,
       requireQueueHandoff: true,

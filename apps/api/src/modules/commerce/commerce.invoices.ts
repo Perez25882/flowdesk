@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Prisma, type CommerceInvoice, type CommercePreparation, type OrderStatus } from '@prisma/client';
 import { ConflictError, NotFoundError } from '../../utils/errors.js';
 import type { PaymentRelationship } from '../payments/payment-relationships.js';
+import { serviceCharge } from '../bookings/service.billing.js';
 
 type Tx = Prisma.TransactionClient;
 type InvoiceAmounts = { paid: Prisma.Decimal; verified: Prisma.Decimal; due: Prisma.Decimal; nextCharge: Prisma.Decimal };
@@ -75,6 +76,8 @@ export async function invoiceView(tx: Tx, id: string, businessId: string): Promi
   });
   if (!invoice) throw new NotFoundError('Invoice not found');
   const amounts = await invoiceAmounts(tx, invoice);
+  const service = await serviceCharge(tx, invoice, amounts.verified, amounts.due);
+  if (service) amounts.nextCharge = service.charge;
   const scope = invoiceFinancialScope(invoice);
   const [request, unresolved, review, checkoutVersion] = await Promise.all([
     tx.paymentRequest.findFirst({ where: { ...scope, status: 'PENDING', expiresAt: { gt: new Date() } },
@@ -88,7 +91,8 @@ export async function invoiceView(tx: Tx, id: string, businessId: string): Promi
   const initializing = unresolved?.state === 'INITIALIZING' && +unresolved.createdAt > Date.now() - 60_000;
   const changedOrderTotal = invoice.order && !invoice.order.totalAmount.eq(invoice.total);
   const obsoleteRequest = request && (invoice.orderId ? !amounts.nextCharge.eq(request.amount) : amounts.nextCharge.lt(request.amount));
-  const state = invoice.status === 'CANCELLED' || invoice.order?.status === 'CANCELLED' ? 'CANCELLED'
+  const state = service?.review ? 'REVIEW_REQUIRED'
+    : service?.cancelled || invoice.status === 'CANCELLED' || invoice.order?.status === 'CANCELLED' ? 'CANCELLED'
     : invoice.status === 'DRAFT' ? 'DRAFT'
     : review || changedOrderTotal || obsoleteRequest || (unresolved && !initializing) ? 'REVIEW_REQUIRED'
       : initializing ? 'CHECKOUT_INITIALIZING'
@@ -112,8 +116,10 @@ export async function requireInvoiceCheckout(
   const invoice = await findInvoiceForPayment(tx, scope);
   if (!invoice) return null;
   if (version && version !== await invoiceCheckoutVersion(tx, invoice)) throw new ConflictError('Invoice changed. Reload it before requesting a new payment.');
-  const { nextCharge } = await invoiceAmounts(tx, invoice);
-  if (!invoiceIsPayable(invoice) || !nextCharge.gt(0) || (invoice.orderId
+  const amounts = await invoiceAmounts(tx, invoice);
+  const service = await serviceCharge(tx, invoice, amounts.verified, amounts.due);
+  const nextCharge = service?.charge ?? amounts.nextCharge;
+  if (!invoiceIsPayable(invoice) || !nextCharge.gt(0) || (invoice.orderId || service
     ? !nextCharge.mul(100).eq(amountMinor) : nextCharge.mul(100).lt(amountMinor))) {
     throw new ConflictError('Payment request no longer matches the invoice balance');
   }

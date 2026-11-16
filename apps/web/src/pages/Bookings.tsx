@@ -15,6 +15,8 @@ import PageHeader from '@/components/shared/PageHeader';
 import { Panel, PanelHead } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { SkeletonRows } from '@/components/ui/Skeleton';
+import ServiceOperations from '@/components/bookings/ServiceOperations';
+import { getUserRole } from '@/hooks/useAuth';
 import { cn, formatCurrency } from '@/lib/utils';
 
 const EMPTY_SERVICE = {
@@ -25,7 +27,7 @@ const EMPTY_SERVICE = {
   price: '',
 };
 
-type Tab = 'diary' | 'services';
+type Tab = 'diary' | 'services' | 'operations';
 
 /**
  * The diary, and the things that can be booked into it.
@@ -41,7 +43,8 @@ type Tab = 'diary' | 'services';
  * must not see a diary shifted by an hour.
  */
 export default function BookingsPage(): React.JSX.Element {
-  const [tab, setTab] = useState<Tab>('diary');
+  const manager = getUserRole() !== 'OPERATIONS';
+  const [tab, setTab] = useState<Tab>(manager ? 'diary' : 'operations');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_SERVICE);
   const [previewServiceId, setPreviewServiceId] = useState<string | null>(null);
@@ -98,11 +101,12 @@ export default function BookingsPage(): React.JSX.Element {
         }
       />
 
-      <span className="flex items-center gap-1 border-b border-border" role="tablist">
+      <span className="flex flex-wrap items-center gap-1 border-b border-border" role="tablist">
         {(
           [
             ['diary', 'Diary'],
             ['services', 'What you offer'],
+            ['operations', 'Service operations'],
           ] as Array<[Tab, string]>
         ).map(([value, label]) => (
           <button
@@ -122,6 +126,8 @@ export default function BookingsPage(): React.JSX.Element {
           </button>
         ))}
       </span>
+
+      {tab === 'operations' && <ServiceOperations manager={manager} />}
 
       {tab === 'diary' && (
         <>

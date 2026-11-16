@@ -24,6 +24,7 @@ export const day = 1_440 * minute;
 export const terminal = new Set<WorkflowState>(['COMPLETED', 'FAILED', 'CANCELLED']);
 
 export type EventType =
+  | 'SERVICE_PROGRESS' | 'SERVICE_DONE'
   | 'COMMERCE_QUOTE' | 'COMMERCE_CASE' | 'COMMERCE_RESOLVED' | 'COMMERCE_INVOICE' | 'PICKUP_COMPLETED'
   | 'WHATSAPP_INBOUND' | 'PROCESSING' | 'SALES_QUOTE' | 'ORDER_LINKED'
   | 'PAYMENT_REQUEST' | 'PAYMENT_SETTLED' | 'DELIVERY_DISPATCHED'
@@ -48,6 +49,8 @@ const transitionsV1: Record<Exclude<EventType, 'WHATSAPP_INBOUND' | 'DEADLINE'>,
   from?: readonly State[]; to: readonly State[];
 }> = {
   PROCESSING: { from: ['CREATED'], to: ['RUNNING'] },
+  SERVICE_PROGRESS: { to: ['WAITING_CUSTOMER', 'WAITING_PROVIDER', 'WAITING_STAFF'] },
+  SERVICE_DONE: { to: ['COMPLETED'] },
   SALES_QUOTE: { from: ['RUNNING'], to: ['READY'] },
   ORDER_LINKED: { from: ['RUNNING', 'WAITING_STAFF', 'WAITING_CUSTOMER'], to: ['WAITING_STAFF'] },
   COMMERCE_QUOTE: { from: ['RUNNING', 'WAITING_STAFF', 'WAITING_CUSTOMER'], to: ['WAITING_STAFF', 'WAITING_CUSTOMER'] },
@@ -76,6 +79,7 @@ const definitions = new Map([
   [1, Object.freeze({ approvalWindowMs: day, transitions: transitionsV1 })],
   [2, Object.freeze({ approvalWindowMs: 12 * 60 * minute, transitions: transitionsV1 })],
   [3, Object.freeze({ approvalWindowMs: 12 * 60 * minute, transitions: transitionsV1 })],
+  [4, Object.freeze({ approvalWindowMs: 12 * 60 * minute, transitions: transitionsV1 })],
 ]);
 
 export function pinnedDefinition(key: string, version: number): { readonly approvalWindowMs: number } | undefined {
@@ -84,6 +88,7 @@ export function pinnedDefinition(key: string, version: number): { readonly appro
 
 export function allowsTransition(key: string, version: number, from: State, event: BusinessEvent): boolean {
   if (terminal.has(from) || event.type === 'WHATSAPP_INBOUND' || event.type === 'DEADLINE') return false;
+  if (version !== 4 && event.type.startsWith('SERVICE_')) return false;
   if (version < 3 && (event.type.startsWith('COMMERCE_') || event.type === 'PICKUP_COMPLETED' ||
       (event.type === 'ORDER_LINKED' && from !== 'RUNNING'))) return false;
   const rule = key === definition ? definitions.get(version)?.transitions[event.type] : undefined;

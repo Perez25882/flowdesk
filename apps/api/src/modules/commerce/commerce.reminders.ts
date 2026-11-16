@@ -13,7 +13,9 @@ const day = 86_400_000;
 export const PAYMENT_REMINDER_TEMPLATE = 'Invoice {{1}} has an outstanding balance of GHS {{2}}. Contact the shop if you need help. Reply STOP PAYMENT REMINDERS to opt out.';
 type ReminderSettings = Pick<CommerceReminderPolicy, 'enabled' | 'intervalDays' | 'maxReminders' | 'templateName' | 'templateLanguage'>;
 
-async function checkReminderTemplate(businessId: string, input: ReminderSettings): Promise<{
+export async function checkReminderTemplate(
+  businessId: string, input: Pick<ReminderSettings, 'enabled' | 'templateName' | 'templateLanguage'>, expectedBody = PAYMENT_REMINDER_TEMPLATE,
+): Promise<{
   approvedAt: Date | null; approvedWabaId: string | null; approvedPhoneId: string | null;
 }> {
   const business = await prisma.business.findUniqueOrThrow({ where: { id: businessId }, select: { waWabaId: true } });
@@ -32,7 +34,7 @@ async function checkReminderTemplate(businessId: string, input: ReminderSettings
           components?: Array<{ type: string; text?: string }> }> };
         approved = (result.data ?? []).some((item) => item.name === input.templateName && item.language === input.templateLanguage &&
           item.status === 'APPROVED' && item.category === 'UTILITY' && item.components?.length === 1 &&
-          item.components[0]?.type === 'BODY' && item.components[0].text === PAYMENT_REMINDER_TEMPLATE);
+          item.components[0]?.type === 'BODY' && item.components[0].text === expectedBody);
       }
     } catch {
       logger.warn({ businessId }, 'Unable to verify the payment reminder template');
@@ -71,7 +73,8 @@ async function refreshDueTemplates(now: Date): Promise<void> {
 
 const activeWindow = (date: Date | null, now: Date) => date !== null && +date <= +now && +date > +now - day;
 
-function reminderChannel(policy: CommerceReminderPolicy, customer: { lastInboundAt: Date | null; business: {
+export function reminderChannel(policy: Pick<CommerceReminderPolicy, 'approvedAt' | 'templateName' | 'templateLanguage' |
+  'approvedWabaId' | 'approvedPhoneId'>, customer: { lastInboundAt: Date | null; business: {
   waWabaId: string | null; waPhoneNumberId: string | null;
 } }, now: Date): 'TEXT' | 'TEMPLATE' | null {
   if (activeWindow(customer.lastInboundAt, now)) return 'TEXT';
@@ -93,6 +96,9 @@ export async function verifyReminderSend(tx: Tx, sendId: string, data: OutboundJ
   const reminder = await tx.commerceReminder.findFirst({ where: { id: auth.id, businessId: data.businessId, sendId, status: 'HANDED_OFF' },
     include: { invoice: { include: { order: { select: { status: true, totalAmount: true } } } } } });
   if (!reminder || reminder.invoice.customerId !== data.customerId) return 'REMINDER_INVALID';
+  if (await tx.serviceVisit.findFirst({ where: { invoiceId: reminder.invoiceId, state: { not: 'COMPLETED' } }, select: { appointmentId: true } })) {
+    return 'REMINDER_SERVICE_NOT_COMPLETED';
+  }
   const policy = await tx.commerceReminderPolicy.findUnique({ where: { businessId: data.businessId } });
   if (!policy?.enabled || policy.maxReminders < reminder.sequence) return 'REMINDER_DISABLED';
   const customer = await reminderCustomer(tx, data.businessId, data.customerId);
@@ -113,6 +119,7 @@ export async function recoverCommerceReminders(now = new Date(), probe?: Commerc
         OR s.state IN ('AUTHORIZED', 'QUEUED', 'SENDING', 'RETRY_PENDING', 'REVIEW_REQUIRED', 'PROVIDER_ACCEPTED')) AS paused
       FROM commerce_reminders r LEFT JOIN whatsapp_sends s ON s.id = r."sendId" WHERE r."invoiceId" = i.id) r ON true
     WHERE p.enabled AND i.status = 'ISSUED' AND i."dueAt" <= ${now} AND r.count < p."maxReminders"
+      AND NOT EXISTS (SELECT 1 FROM service_visits v WHERE v."invoiceId" = i.id AND v.state <> 'COMPLETED')
       AND NOT coalesce(r.paused, false) AND (r.latest IS NULL OR r.latest + make_interval(days => p."intervalDays") <= ${now})
     ORDER BY i."dueAt", i.id LIMIT 40
   `;
@@ -144,6 +151,9 @@ export async function recoverCommerceReminders(now = new Date(), probe?: Commerc
     await lockPaymentRelationship(tx, scope, true);
     const invoice = await findInvoiceForPayment(tx, scope);
     if (!invoice || !invoiceIsPayable(invoice)) return cancel('INVOICE_NOT_PAYABLE');
+    if (await tx.serviceVisit.findFirst({ where: { invoiceId, state: { not: 'COMPLETED' } }, select: { appointmentId: true } })) {
+      return cancel('INVOICE_NOT_PAYABLE');
+    }
     const { due: balance } = await invoiceAmounts(tx, invoice);
     if (!balance.gt(0)) return cancel('INVOICE_PAID');
     const policy = await tx.commerceReminderPolicy.findUnique({ where: { businessId } });

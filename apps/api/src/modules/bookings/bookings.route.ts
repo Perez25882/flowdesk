@@ -81,7 +81,7 @@ export default async function bookingRoutes(app: FastifyInstance): Promise<void>
       // a staff member holding another tenant's service id must get a 404, not
       // an edit.
       const result = await prisma.service.updateMany({
-        where: { id, businessId: request.business!.id, deletedAt: null },
+        where: { id, businessId: request.business!.id, deletedAt: null, bookingRules: { equals: Prisma.DbNull } },
         data: patch,
       });
 
@@ -103,7 +103,7 @@ export default async function bookingRoutes(app: FastifyInstance): Promise<void>
       // that has lost the name of what was booked is worse than one carrying a
       // service nobody offers any more.
       const result = await prisma.service.updateMany({
-        where: { id, businessId: request.business!.id, deletedAt: null },
+        where: { id, businessId: request.business!.id, deletedAt: null, bookingRules: { equals: Prisma.DbNull } },
         data: { deletedAt: new Date(), active: false },
       });
 

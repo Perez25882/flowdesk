@@ -93,7 +93,8 @@ export default async function commerceRoutes(app: FastifyInstance): Promise<void
     const actor = orderActor(request);
     const { orderId, standalone } = z.object({ orderId: z.string().min(1).max(100).optional(), standalone: z.literal('true').optional() }).strict().parse(request.query);
     await requirePaymentActor(prisma, actor.businessId, actor.staffId, 'payments.read');
-    const rows = await prisma.commerceInvoice.findMany({ where: { businessId: actor.businessId, ...(orderId ? { orderId } : standalone ? { orderId: null } : {}) },
+    const rows = await prisma.commerceInvoice.findMany({ where: { businessId: actor.businessId,
+      ...(orderId ? { orderId } : standalone ? { orderId: null, serviceVisit: null } : {}) },
       orderBy: { issuedAt: 'desc' }, take: 50, select: { id: true, orderId: true, reference: true, total: true, issuedAt: true, dueAt: true, status: true,
         customer: { select: { id: true, name: true } } } });
     return success(reply, rows);

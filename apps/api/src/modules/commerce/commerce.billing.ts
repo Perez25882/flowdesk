@@ -28,7 +28,7 @@ export async function createInvoiceDraft(tx: Tx, businessId: string, input: Invo
 }
 
 export async function standaloneInvoiceForMutation(tx: Tx, businessId: string, id: string): Promise<CommerceInvoice> {
-  const invoice = await tx.commerceInvoice.findFirst({ where: { id, businessId, orderId: null } });
+  const invoice = await tx.commerceInvoice.findFirst({ where: { id, businessId, orderId: null, serviceVisit: null } });
   if (!invoice) throw new NotFoundError('Standalone invoice not found');
   await lockPaymentRelationship(tx, invoice);
   return tx.commerceInvoice.findUniqueOrThrow({ where: { id_businessId: { id, businessId } } });

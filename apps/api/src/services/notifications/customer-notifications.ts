@@ -413,7 +413,7 @@ async function deliver(
 export async function deliverText(
   context: NotificationContext,
   text: string,
-  options: EvaluateDeliveryOptions & { requireQueueHandoff?: boolean } = {},
+  options: EvaluateDeliveryOptions & { requireQueueHandoff?: boolean; serviceCheckoutId?: string } = {},
 ): Promise<DeliveryDecision> {
   const decision = await evaluateDelivery(context, options);
 
@@ -438,6 +438,7 @@ export async function deliverText(
         customerId: context.customerId,
         to: context.customerWaNumber,
         body: text,
+        ...(options.serviceCheckoutId ? { serviceCheckoutId: options.serviceCheckoutId } : {}),
         // The template rides along only when the window has closed. Inside it,
         // free-form text carries the owner's own wording, which an approved
         // template cannot.

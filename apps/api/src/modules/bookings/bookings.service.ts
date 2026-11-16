@@ -58,7 +58,7 @@ export async function listServices(
   activeOnly = false,
 ): Promise<BookableService[]> {
   const rows = await prisma.service.findMany({
-    where: { businessId, deletedAt: null, ...(activeOnly ? { active: true } : {}) },
+    where: { businessId, deletedAt: null, bookingRules: { equals: Prisma.DbNull }, ...(activeOnly ? { active: true } : {}) },
     orderBy: { name: 'asc' },
     select: {
       id: true,
@@ -116,7 +116,7 @@ export async function findSlots(
 ): Promise<{ service: BookableService; slots: Slot[]; reason: string | null }> {
   const [service, business] = await Promise.all([
     prisma.service.findFirst({
-      where: { id: query.serviceId, businessId, deletedAt: null, active: true },
+      where: { id: query.serviceId, businessId, deletedAt: null, active: true, bookingRules: { equals: Prisma.DbNull } },
       select: {
         id: true,
         name: true,
@@ -210,7 +210,7 @@ async function bookInTransaction(tx: Prisma.TransactionClient, input: BookInput)
   await tx.$queryRaw`SELECT id FROM services WHERE id = ${serviceId} AND "businessId" = ${businessId} FOR SHARE`;
   const [service, business] = await Promise.all([
     tx.service.findFirst({
-      where: { id: input.serviceId, businessId: input.businessId, deletedAt: null, active: true },
+      where: { id: input.serviceId, businessId: input.businessId, deletedAt: null, active: true, bookingRules: { equals: Prisma.DbNull } },
       select: {
         id: true,
         name: true,
@@ -321,7 +321,7 @@ export async function cancelAppointment(
   // Conditional on still holding the slot, so cancelling twice is not an error
   // and cancelling something already completed does not rewrite history.
   const result = await prisma.appointment.updateMany({
-    where: { id, businessId, status: { in: ['BOOKED', 'CONFIRMED'] } },
+    where: { id, businessId, serviceVisit: null, status: { in: ['BOOKED', 'CONFIRMED'] } },
     data: { status: 'CANCELLED', cancelledAt: new Date(), cancelReason: reason },
   });
 
@@ -334,7 +334,7 @@ export async function setStatus(
   status: AppointmentStatus,
 ): Promise<void> {
   const result = await prisma.appointment.updateMany({
-    where: { id, businessId },
+    where: { id, businessId, serviceVisit: null },
     data: { status, ...(status === 'CANCELLED' ? { cancelledAt: new Date() } : {}) },
   });
 
@@ -361,6 +361,7 @@ export async function listAppointments(
   return prisma.appointment.findMany({
     where: {
       businessId,
+      serviceVisit: null,
       ...(filters.status ? { status: filters.status } : {}),
       ...(filters.from || filters.to
         ? {

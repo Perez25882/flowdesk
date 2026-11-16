@@ -14,6 +14,7 @@ import {
 } from '../modules/webhook/text-receipts.js';
 import { admitWorkflow } from '../modules/workflows/workflow.store.js';
 import { followupConsent, reminderConsent } from '../modules/commerce/commerce.contract.js';
+import { recordServicePreference } from '../modules/bookings/service.preferences.js';
 import {
   createIntentClassificationQueue,
   CLASSIFICATION_EFFECT_WAITING,
@@ -234,6 +235,7 @@ export async function materializeTextMessage(id: string, now: Date): Promise<boo
       data: { messageId: message.id },
     });
     if (receipt.kind === 'TEXT' && !existing) {
+      await recordServicePreference(tx, businessId, customer.id, message.id, receipt.body, receipt.sentAt);
       const reminders = reminderConsent(receipt.body);
       if (reminders !== undefined) {
         await tx.customer.updateMany({ where: { id: customer.id, businessId,
@@ -248,8 +250,10 @@ export async function materializeTextMessage(id: string, now: Date): Promise<boo
           commerceConsentAt: receipt.sentAt, commerceConsentId: message.id, commerceFollowup: false,
         } });
       }
-      await admitWorkflow(tx, { businessId, customerId: customer.id, messageId: message.id, receiptId: receipt.id,
+      const serviceWorkflow = await admitWorkflow(tx, { businessId, customerId: customer.id, messageId: message.id, receiptId: receipt.id,
         phoneNumberId: receipt.phoneNumberId, body: receipt.body, replyTo: receipt.replyToWaId }, now);
+      if (serviceWorkflow) await tx.message.update({ where: { id: message.id, businessId },
+        data: { processed: true, processedAt: now } });
     }
     if (echo) {
       await completeTextReceipt(tx, receipt, now);

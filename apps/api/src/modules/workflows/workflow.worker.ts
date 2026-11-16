@@ -8,6 +8,10 @@ import { observeCommerceCommands } from '../commerce/commerce.workflow.js';
 import { releasePreparation } from '../commerce/commerce.fulfillment.js';
 import { invoiceAmounts } from '../commerce/commerce.invoices.js';
 import type { CommerceRecoveryProbe } from '../commerce/commerce.recovery.js';
+import { recoverServiceVisits } from '../bookings/service.visits.js';
+import { observeServiceWorkflow } from '../bookings/service.workflow.js';
+import { recoverServiceNotices } from '../bookings/service.notices.js';
+import { manualServiceSource } from '../bookings/service.workflow-store.js';
 
 type Transaction = Prisma.TransactionClient;
 type Facts = Prisma.InputJsonObject;
@@ -216,10 +220,12 @@ async function advance(tx: Transaction, row: Workflow, now: Date, probe?: Commer
     deletedAt: null, deactivatedAt: null }, select: { id: true } });
   let event: BusinessEvent | null = null;
   if (!pinnedDefinition(row.definition, row.version)) event = review(row, 'DEFINITION_UNAVAILABLE');
-  else if (!active || !policy?.enabled || policy.revision !== row.policyRevision) event = review(row, 'BUSINESS_POLICY_CHANGED');
+  else if (!active || (!(row.version === 4 && row.sourceId.startsWith(manualServiceSource)) &&
+      (!policy?.enabled || policy.revision !== row.policyRevision))) event = review(row, 'BUSINESS_POLICY_CHANGED');
   else if (+row.deadlineAt <= +now) event = review(row, row.state === 'WAITING_OWNER_APPROVAL' ? 'APPROVAL_EXPIRED' : 'DEPENDENCY_DEADLINE_EXPIRED');
   else if (row.state === 'CREATED') event = next('PROCESSING', 'inbound:processing', 'RUNNING', 'CARE', 'INBOUND_PROCESSING');
-  else if (row.state !== 'WAITING_OWNER_APPROVAL') event = await reconcile(tx, row, policy, now, probe);
+  else if (row.state !== 'WAITING_OWNER_APPROVAL') event = row.version === 4
+    ? await observeServiceWorkflow(tx, row, now, probe) : await reconcile(tx, row, policy!, now, probe);
 
   const stop = event && ['REVIEW_REQUIRED', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(event.state);
   const waitingApproval = (event?.state ?? row.state) === 'WAITING_OWNER_APPROVAL';
@@ -229,6 +235,8 @@ async function advance(tx: Transaction, row: Workflow, now: Date, probe?: Commer
 }
 
 export async function recoverWorkflows(now = new Date(), probe?: CommerceRecoveryProbe): Promise<void> {
+  await recoverServiceVisits(now, probe);
+  await recoverServiceNotices(now, probe);
   await prisma.$executeRaw`
     UPDATE commerce_quotes SET state = 'EXPIRED'
     WHERE id IN (SELECT id FROM commerce_quotes WHERE state IN ('DRAFT', 'OFFERED') AND "expiresAt" <= ${now}

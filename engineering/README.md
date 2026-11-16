@@ -37,6 +37,8 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 3 completion register](batch-3/completion.md) | Closure workstreams and restartable checkpoints |
 | [Batch 3 completion contract](batch-3/closure-contract.md) | Invoicing, reminders, returns, checkout and operations |
 | [Batch 3 final completion report](batch-3/closure-report.md) | Final acceptance decision, test evidence and limits |
+| [Batch 4 service operations contract](batch-4/service-contract.md) | Lead, booking, payment, execution, communications and recovery |
+| [Batch 4 progress and handoff](batch-4/progress.md) | Baseline, verification checkpoint and next authorized work |
 
 ## Engineering conventions
 
