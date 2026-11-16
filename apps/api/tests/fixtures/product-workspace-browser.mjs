@@ -13,8 +13,18 @@ for (const name of ['DATABASE_URL', 'REDIS_URL']) {
   assert.ok(url.port && (name === 'DATABASE_URL' ? url.pathname.startsWith('/flowdesk_g1_') : url.port !== '6379'));
 }
 const localFetch = globalThis.fetch;
+const verificationCodes = new Map();
+process.env.RESEND_API_KEY = 'synthetic-browser-mail-token';
+process.env.RESEND_FROM_EMAIL = 'fixture@flowdesk.invalid';
 globalThis.fetch = (input, options) => {
   const url = new URL(input instanceof Request ? input.url : input);
+  if (url.origin === 'https://api.resend.com' && url.pathname === '/emails') {
+    const { to, subject } = JSON.parse(String(options?.body));
+    const code = /^(\d{6}) is your Flowdesk code$/.exec(subject)?.[1];
+    assert.ok(code && to.length === 1 && to[0].endsWith('@flowdesk.invalid'));
+    verificationCodes.set(to[0], code);
+    return Promise.resolve(Response.json({ id: 'synthetic-verification-mail' }));
+  }
   assert.equal(url.hostname, '127.0.0.1', 'Only disposable local transport is allowed');
   return localFetch(input, options);
 };
@@ -28,19 +38,6 @@ const localRequire = createRequire(pathToFileURL(resolve('apps/api/dist/app.js')
 const password = 'Local-fixture-product-browser!';
 const passwordHash = await localRequire('bcrypt').hash(password, 4);
 
-async function tenant(name, number) {
-  const email = `product-${randomUUID()}@flowdesk.invalid`;
-  const business = await prisma.business.create({ data: { name, ownerName: 'Fixture owner', email, passwordHash, emailVerifiedAt: new Date() } });
-  const customer = await prisma.customer.create({ data: { businessId: business.id, waNumber: number, name: name + ' customer', lastInboundAt: new Date() } });
-  return { email, business, customer };
-}
-
-const retail = await tenant('Retail fixture', '233209100001');
-const service = await tenant('Service fixture', '233209100002');
-const rider = await prisma.staff.create({ data: { businessId: retail.business.id, role: 'DELIVERY', name: 'Fixture rider',
-  phone: '233209100003', passwordHash, inviteAcceptedAt: new Date() } });
-const inbound = await prisma.message.create({ data: { businessId: retail.business.id, customerId: retail.customer.id,
-  waMessageId: 'fixture-' + randomUUID(), direction: 'INBOUND', body: 'Can you help with this order?', requiresReview: true } });
 const app = await createApp();
 const origin = new URL(await app.listen({ host: '127.0.0.1', port: 0 }));
 const gateway = releaseGateway(origin, resolve('apps/web/dist'));
@@ -72,6 +69,29 @@ async function login(page, identity, staff = false) {
   return (await response.json()).data.accessToken;
 }
 
+async function register(page, name) {
+  const email = `product-${randomUUID()}@flowdesk.invalid`;
+  await page.goto(base + '/register');
+  await page.locator('#businessName').fill(name);
+  await page.locator('#ownerName').fill('Fixture owner');
+  await page.locator('#email').fill(email);
+  await page.locator('#password').fill(password);
+  const created = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/register') && response.request().method() === 'POST');
+  const mailed = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/verify-email/request') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  const response = await created;
+  assert.equal(response.status(), 201);
+  assert.equal((await (await mailed).json()).data.delivered, true);
+  const code = verificationCodes.get(email);
+  assert.ok(code);
+  await page.getByLabel('Code', { exact: true }).fill(code);
+  await page.getByRole('button', { name: 'Verify', exact: true }).click();
+  await page.waitForURL('**/setup');
+  const business = await prisma.business.findUniqueOrThrow({ where: { email } });
+  assert.ok(business.emailVerifiedAt);
+  return { email, business, token: (await response.json()).data.accessToken };
+}
+
 async function noOverflow(page, route) {
   assert.ok(await page.evaluate(() => {
     const main = document.querySelector('main');
@@ -81,8 +101,13 @@ async function noOverflow(page, route) {
 
 try {
   const owner = await openPage();
-  const ownerToken = await login(owner, retail.email);
-  await owner.goto(base + '/setup');
+  const retail = await register(owner, 'Retail fixture');
+  const customer = await prisma.customer.create({ data: { businessId: retail.business.id, waNumber: '233209100001',
+    name: 'Retail fixture customer', lastInboundAt: new Date() } });
+  const rider = await prisma.staff.create({ data: { businessId: retail.business.id, role: 'DELIVERY', name: 'Fixture rider',
+    phone: '233209100003', passwordHash, inviteAcceptedAt: new Date() } });
+  const inbound = await prisma.message.create({ data: { businessId: retail.business.id, customerId: customer.id,
+    waMessageId: 'fixture-' + randomUUID(), direction: 'INBOUND', body: 'Can you help with this order?', requiresReview: true } });
   await owner.getByRole('heading', { name: 'Business setup' }).waitFor();
   await owner.getByRole('radio', { name: /Retail and online sales/ }).focus();
   await owner.keyboard.press('Space');
@@ -93,18 +118,17 @@ try {
   assert.equal(await owner.getByText('Connected and independently verified').count(), 0);
 
   const professional = await openPage();
-  const serviceToken = await login(professional, service.email);
-  await professional.goto(base + '/setup');
+  const service = await register(professional, 'Service fixture');
   await professional.getByRole('radio', { name: /Consultations and professional services/ }).check();
   await professional.getByRole('button', { name: 'Save business profile' }).click();
   await professional.getByText('Business profile saved.').waitFor();
   await professional.getByRole('link', { name: 'Open add services and prices' }).click();
   await professional.getByRole('heading', { name: 'Service setup' }).waitFor();
   assert.equal((await prisma.business.findUniqueOrThrow({ where: { id: service.business.id } })).bookingsEnabled, true);
-  const crossTenant = await professional.request.get(base + `/api/v1/conversations/${retail.customer.id}/context`,
-    { headers: { authorization: 'Bearer ' + serviceToken } });
+  const crossTenant = await professional.request.get(base + `/api/v1/conversations/${customer.id}/context`,
+    { headers: { authorization: 'Bearer ' + service.token } });
   assert.equal(crossTenant.status(), 404);
-  console.log('Retail and service setup persist across refresh. Cross-tenant inbox context returns 404.');
+  console.log('Retail and service accounts verify synthetic email and reach setup. Cross-tenant inbox context returns 404.');
 
   await owner.goto(base + '/dashboard');
   const tabs = owner.getByRole('tablist', { name: 'Overview workspace' });
@@ -113,7 +137,7 @@ try {
   await owner.waitForURL((url) => url.pathname === '/dashboard' && url.searchParams.get('view') === 'work');
   assert.equal(await tabs.getByRole('tab', { name: 'Work center' }).getAttribute('aria-selected'), 'true');
   assert.equal(await owner.locator(':focus').innerText(), 'Work center');
-  await owner.goto(base + `/messages?c=${retail.customer.id}`);
+  await owner.goto(base + `/messages?c=${customer.id}`);
   await owner.getByRole('region', { name: 'Conversation', exact: true }).getByText(inbound.body, { exact: true }).waitFor();
   console.log('Keyboard opens the work center and direct inbox navigation opens the tenant thread.');
 
@@ -130,7 +154,7 @@ try {
   await owner.goto(base + '/payments?view=invoices');
   await owner.getByRole('button', { name: 'New standalone invoice' }).click();
   const form = owner.getByRole('form', { name: 'New invoice' });
-  await form.getByLabel('Customer').selectOption(retail.customer.id);
+  await form.getByLabel('Customer').selectOption(customer.id);
   await form.getByLabel('Due date').fill(new Date(Date.now() + 86_400_000).toISOString().slice(0, 10));
   await form.getByLabel('Description').fill('Interrupted request fixture');
   await form.getByLabel('Unit price (GHS)').fill('12.35');
@@ -155,7 +179,7 @@ try {
   await owner.getByRole('button', { name: 'New order', exact: true }).click();
   const order = owner.getByRole('dialog', { name: 'New order' });
   await order.getByRole('radio', { name: 'Existing', exact: true }).click();
-  await order.getByLabel('Choose a customer').selectOption(retail.customer.id);
+  await order.getByLabel('Choose a customer').selectOption(customer.id);
   await order.getByRole('button', { name: 'Type it out', exact: true }).click();
   await order.getByLabel(/Item 1 description/i).fill('Interrupted manual order');
   let ordersPosted = 0;
@@ -210,7 +234,7 @@ try {
   await owner.locator('#password').fill(password);
   await owner.getByRole('button', { name: 'Sign in', exact: true }).click();
   await owner.waitForURL((url) => url.pathname === '/payments' && url.searchParams.get('view') === 'invoices');
-  const response = await owner.request.get(base + '/api/v1/dashboard/overview', { headers: { authorization: 'Bearer ' + ownerToken } });
+  const response = await owner.request.get(base + '/api/v1/dashboard/overview', { headers: { authorization: 'Bearer ' + retail.token } });
   assert.equal(response.status(), 200);
   console.log('Missing refresh session returns the browser to sign-in with its internal return route.');
 } catch (error) {
