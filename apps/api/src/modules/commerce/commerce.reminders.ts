@@ -61,7 +61,11 @@ async function refreshDueTemplates(now: Date): Promise<void> {
     const claimed = await prisma.commerceReminderPolicy.updateMany({ where: version, data: { templateCheckedAt: now } });
     if (!claimed.count) continue;
     const evidence = await checkReminderTemplate(policy.businessId, policy);
-    await prisma.commerceReminderPolicy.updateMany({ where: { ...version, templateCheckedAt: now }, data: evidence });
+    const saved = await prisma.commerceReminderPolicy.updateMany({ where: { ...version, templateCheckedAt: now }, data: evidence });
+    if (saved.count && evidence.approvedAt) await prisma.commerceReminder.updateMany({
+      where: { businessId: policy.businessId, status: 'WAITING', reason: 'APPROVED_TEMPLATE_REQUIRED' },
+      data: { nextCheckAt: now },
+    });
   }
 }
 

@@ -71,7 +71,7 @@ async function invoiceCheckoutVersion(tx: Tx, invoice: CommerceInvoice): Promise
 export async function invoiceView(tx: Tx, id: string, businessId: string): Promise<InvoiceView> {
   const invoice = await tx.commerceInvoice.findUnique({
     where: { id_businessId: { id, businessId } },
-    include: { order: { select: { referenceNumber: true, status: true } }, preparation: true },
+    include: { order: { select: { referenceNumber: true, status: true, totalAmount: true } }, preparation: true },
   });
   if (!invoice) throw new NotFoundError('Invoice not found');
   const amounts = await invoiceAmounts(tx, invoice);
@@ -86,9 +86,11 @@ export async function invoiceView(tx: Tx, id: string, businessId: string): Promi
     invoiceCheckoutVersion(tx, invoice),
   ]);
   const initializing = unresolved?.state === 'INITIALIZING' && +unresolved.createdAt > Date.now() - 60_000;
+  const changedOrderTotal = invoice.order && !invoice.order.totalAmount.eq(invoice.total);
+  const obsoleteRequest = request && (invoice.orderId ? !amounts.nextCharge.eq(request.amount) : amounts.nextCharge.lt(request.amount));
   const state = invoice.status === 'CANCELLED' || invoice.order?.status === 'CANCELLED' ? 'CANCELLED'
     : invoice.status === 'DRAFT' ? 'DRAFT'
-    : review || (unresolved && !initializing) ? 'REVIEW_REQUIRED'
+    : review || changedOrderTotal || obsoleteRequest || (unresolved && !initializing) ? 'REVIEW_REQUIRED'
       : initializing ? 'CHECKOUT_INITIALIZING'
       : amounts.verified.gte(invoice.total) ? 'VERIFIED_PAID'
         : amounts.due.lte(0) ? 'RECORDED_PAID'

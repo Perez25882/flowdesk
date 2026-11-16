@@ -248,6 +248,20 @@ fixtureOnly('Batch 3 completion with PostgreSQL, BullMQ and signed providers', (
     expect((await first.checkout(archived.id)).statusCode).toBe(404);
   }, 100_000);
 
+  it('withholds an order checkout link after a legitimate ledger credit makes its amount obsolete', async () => {
+    const fixture = await createShop();
+    const { order, invoice } = await seedOrder(fixture, 'CONFIRMED');
+    const request = await fixture.checkout(invoice.id);
+    expect(request.statusCode, request.body).toBe(200);
+    expect(await fixture.view(invoice.id)).toMatchObject({ state: 'PAYMENT_PENDING', checkout: { amount: '50' } });
+    const { writeManualPayment } = await import('../src/modules/payments/payments.repository.js');
+    await writeManualPayment({ customerId: fixture.customer.id, orderId: order.id, amount: 10,
+      method: 'CASH', direction: 'IN', attested: true }, fixture.business.id, null);
+    expect(await fixture.view(invoice.id)).toMatchObject({ state: 'REVIEW_REQUIRED', checkout: null, due: '40' });
+    expect((await fixture.checkout(invoice.id)).statusCode).toBe(409);
+    expect(await prisma.paymentRequest.count({ where: { invoiceId: invoice.id } })).toBe(1);
+  });
+
   async function interrupt(point: string, extraEnv: Record<string, string> = {}, during?: () => Promise<unknown>) {
     const child = fork('tests/fixtures/batch-commerce-recovery.mjs', [point], {
       env: { ...process.env, ...extraEnv }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
