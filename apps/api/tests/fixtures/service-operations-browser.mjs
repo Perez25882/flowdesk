@@ -97,7 +97,7 @@ try {
   await page.getByLabel('Resource name').fill('Workshop technician');
   await page.getByLabel('Staff member', { exact: true }).selectOption(staff.id);
   await page.getByRole('button', { name: 'Save resource' }).click();
-  await page.getByText('Workshop technician', { exact: true }).waitFor();
+  await page.locator('summary').getByText('Workshop technician', { exact: true }).waitFor();
   await page.getByText('Add a managed service', { exact: true }).click();
   await page.getByLabel('Service name').fill('Browser repair');
   await page.getByLabel('Service category').selectOption('REPAIR');
@@ -176,12 +176,15 @@ try {
   await worker.goto(url + '/bookings');
   await worker.getByText('Browser repair · Browser service customer', { exact: true }).waitFor();
   if (await worker.getByText('View invoice and deposit').count()) throw new Error('Assigned work disclosed payment controls');
-  for (const action of ['ACKNOWLEDGE', 'CHECK_IN', 'START', 'STAGE', 'COMPLETE']) {
+  for (const [action, outcome] of [['ACKNOWLEDGE', 'acknowledged'], ['CHECK_IN', 'checked in'], ['START', 'in progress'],
+    ['STAGE', 'in progress'], ['COMPLETE', 'completed']]) {
     const response = worker.waitForResponse((candidate) => candidate.url().endsWith('/actions') && candidate.request().method() === 'POST');
     await worker.getByLabel('Appointment action').selectOption(action);
     await worker.getByLabel('Evidence or staff notes').fill('Staff observed ' + action.toLowerCase());
     await worker.getByRole('button', { name: 'Record appointment action' }).click();
     if (!(await response).ok()) throw new Error('Staff operation failed at ' + action);
+    if (action === 'STAGE') await worker.getByRole('option', { name: 'complete', exact: true }).waitFor({ state: 'attached' });
+    else await worker.getByText(new RegExp(' · ' + outcome + '$')).waitFor();
   }
   await page.reload();
   await page.getByRole('tab', { name: 'Service operations' }).click();
