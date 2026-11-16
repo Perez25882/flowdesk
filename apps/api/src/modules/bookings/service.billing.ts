@@ -3,14 +3,18 @@ import type { ServiceRules } from './service.contract.js';
 
 type Tx = Prisma.TransactionClient;
 
-export function serviceAmounts(price: Prisma.Decimal | null, quantity: number, rule: ServiceRules['payment']) {
+export function serviceAmounts(price: Prisma.Decimal | null, quantity: number, rule: ServiceRules['payment']): {
+  total: Prisma.Decimal; deposit: Prisma.Decimal;
+} {
   const total = (price ?? new Prisma.Decimal(0)).mul(quantity);
   const deposit = rule.kind === 'AFTER_SERVICE' ? new Prisma.Decimal(0) : rule.kind === 'FULL' ? total
     : rule.kind === 'FIXED' ? new Prisma.Decimal(rule.amountMinor).div(100) : total.mul(rule.percent).div(100).toDecimalPlaces(2);
   return { total, deposit };
 }
 
-export async function serviceCharge(tx: Tx, invoice: CommerceInvoice, verified: Prisma.Decimal, due: Prisma.Decimal) {
+export async function serviceCharge(tx: Tx, invoice: CommerceInvoice, verified: Prisma.Decimal, due: Prisma.Decimal): Promise<{
+  charge: Prisma.Decimal; review: boolean; cancelled: boolean;
+} | null> {
   const visit = await tx.serviceVisit.findUnique({
     where: { invoiceId: invoice.id },
     select: { businessId: true, customerId: true, holdUntil: true, state: true, paymentReviewAt: true },

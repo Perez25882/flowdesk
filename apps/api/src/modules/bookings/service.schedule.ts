@@ -86,7 +86,13 @@ export async function requireManagedSlot(tx: Tx, businessId: string, serviceId: 
 }
 
 export async function managedSlots(tx: Tx, businessId: string, serviceId: string, from: Date, days: number, quantity: number,
-  now = new Date()) {
+  now = new Date()): Promise<{
+  slots: { startsAt: Date; endsAt: Date; localTime: string }[];
+  serviceRevision: number;
+  settingsRevision: number;
+  terms: { total: string; deposit: string; currency: 'GHS'; approvalRequired: boolean; paymentPolicy: ServiceRules['payment']['kind'];
+    quantity: number; durationMinutes: number };
+}> {
   const { service, settings, rules } = await managedService(tx, businessId, serviceId);
   const first = Math.max(+from, +now + rules.leadMinutes * minuteMs);
   const bound = first + days * dayMs;

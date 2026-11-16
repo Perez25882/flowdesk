@@ -83,6 +83,7 @@ try {
   await page.locator('#password').fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.waitForURL('**/dashboard');
+  console.log('Owner signed in');
   await page.goto(url + '/bookings');
   await page.getByRole('tab', { name: 'Service operations' }).click();
   await page.getByLabel('Business time zone').fill('Africa/Accra');
@@ -110,6 +111,7 @@ try {
   await page.getByLabel('Require manager approval').check();
   await page.getByRole('button', { name: 'Save service', exact: true }).click();
   const service = await waitFor(() => prisma.service.findFirst({ where: { businessId: business.id, name: 'Browser repair' } }), 'configured service');
+  console.log('Browser configured hours, staff and repair catalogue');
   const message = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'messages', value: {
     metadata: { phone_number_id: business.waPhoneNumberId }, messages: [{ id: 'wamid.' + randomUUID(), from: customer.waNumber,
       timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: 'SERVICE Browser repair | Customer confirmed faulty part' } }],
@@ -133,6 +135,7 @@ try {
   await times.selectOption({ index: 1 });
   await page.getByRole('button', { name: 'Reserve appointment' }).click();
   const created = await waitFor(() => prisma.serviceVisit.findFirst({ where: { businessId: business.id }, include: { appointment: true } }), 'reserved appointment');
+  console.log('Owner qualified a signed lead and held its booking');
   if (created.state !== 'HELD' || created.assignedStaffId !== staff.id) throw new Error('Expected held visit and current worker');
   await page.getByLabel('Appointment action').selectOption('APPROVE');
   await page.getByLabel('Evidence or staff notes').fill('Owner approved this repair');
@@ -159,6 +162,7 @@ try {
   await drainPaystackReceipts(business.id);
   await recoverWorkflows(new Date());
   await waitFor(async () => (await prisma.serviceVisit.findUnique({ where: { appointmentId: created.appointmentId } })).state === 'CONFIRMED', 'held deposit confirmed');
+  console.log('Exact signed settlement confirmed the booking');
 
   const worker = await browser.newPage({ viewport: { width: 390, height: 844 } });
   worker.setDefaultTimeout(22_000);
@@ -190,8 +194,12 @@ try {
   if (final.state !== 'COMPLETED' || final.stageIndex !== 1 || !final.history.some((event) => event.action === 'COMPLETE' && event.staffId === staff.id) ||
       await prisma.payment.count({ where: { invoiceId: created.invoiceId } }) !== 1) throw new Error('Browser workflow final evidence is incomplete');
   console.log('Mobile Chromium preserved one checkout across refresh, confirmed the exact deposit, and recorded assigned repair completion and owner history.');
+} catch (error) {
+  console.error(error);
+  throw error;
 } finally {
   await browser.close();
+  gateway.closeAllConnections();
   await new Promise((done) => gateway.close(done));
   await queue.close();
   await outboundWorker.close();
@@ -199,3 +207,4 @@ try {
   await prisma.$disconnect();
   await disconnectRedis();
 }
+process.exit(0);

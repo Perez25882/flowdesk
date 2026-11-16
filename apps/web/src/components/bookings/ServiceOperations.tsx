@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { cloneElement, useId, useState, type FormEvent, type ReactElement, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
@@ -28,7 +28,8 @@ type Visit = { appointmentId: string; assignedStaffId: string | null; revision: 
   history: { revision: number; action: string; evidence: string | null; createdAt: string }[];
   notices?: { kind: string; dueAt: string; reason: string | null; checkedAt: string | null; send: { state: string; reason: string | null } | null }[] };
 type Staff = { id: string; name: string };
-type Workbench = { visits: Visit[]; settings?: Settings | null; resources?: Resource[]; services?: Service[]; leads?: Lead[]; staff?: Staff[] };
+type Workbench = { visits: Visit[]; settings?: Settings | null; resources?: Resource[]; services?: Service[]; leads?: Lead[]; staff?: Staff[];
+  closedServiceRevenue?: string };
 type Options = { serviceRevision: number; settingsRevision: number; slots: { startsAt: string; localTime: string }[];
   terms: { total: string; deposit: string; approvalRequired: boolean } };
 type Save = (method: 'PUT' | 'POST' | 'PATCH', path: string, body: unknown) => Promise<void>;
@@ -44,8 +45,9 @@ const list = (text: string) => text.split(/[,\n]/).map((entry) => entry.trim()).
 const displayDate = (instant: string, timeZone: string) =>
   new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(instant));
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="grid gap-1 min-w-0">{label}{children}</label>;
+function Field({ label, children }: { label: string; children: ReactElement<{ id?: string }> }) {
+  const id = useId();
+  return <div className="grid gap-1 min-w-0"><label htmlFor={id}>{label}</label>{cloneElement(children, { id })}</div>;
 }
 
 function Form({ children, submit, onSubmit }: { children: ReactNode; submit: string; onSubmit: (form: FormData) => Promise<void> }) {
@@ -323,6 +325,28 @@ function BookingForm({ services, leads, save }: { services: Service[]; leads: Le
   </Form>;
 }
 
+function LeadForm({ services, save }: { services: Service[]; save: Save }) {
+  const customers = useCustomers();
+  return <details><summary className="cursor-pointer">Add a service inquiry</summary><div className="pt-2">
+    <Form submit="Save inquiry" onSubmit={(data) => save('POST', '/leads', {
+      customerId: value(data, 'customer'), requirements: value(data, 'requirements'),
+      ...(value(data, 'service') ? { serviceId: value(data, 'service') } : {}),
+      ...(value(data, 'budget') ? { budgetMinor: Math.round(number(data, 'budget') * 100) } : {}),
+      ...(value(data, 'preferred') ? { preferredAt: new Date(value(data, 'preferred')).toISOString() } : {}),
+    })}>
+      <Field label="Inquiry customer"><select name="customer" className={control} required>
+        <option value="">Choose customer</option>{customers.data?.map((customer) =>
+          <option key={customer.id} value={customer.id}>{customer.name ?? customer.waNumber}</option>)}</select></Field>
+      <Field label="Inquiry service"><select name="service" className={control}>
+        <option value="">Service to be determined</option>{services.filter((service) => service.active).map((service) =>
+          <option key={service.id} value={service.id}>{service.name}</option>)}</select></Field>
+      <Field label="Customer requirements"><textarea name="requirements" className={control} maxLength={600} required /></Field>
+      <Field label="Budget (GHS)"><input name="budget" type="number" min={0} step="0.01" className={control} /></Field>
+      <Field label="Preferred time (device time)"><input name="preferred" type="datetime-local" className={control} /></Field>
+    </Form>
+  </div></details>;
+}
+
 export default function ServiceOperations({ manager }: { manager: boolean }): React.JSX.Element {
   const client = useQueryClient();
   const work = useQuery({ queryKey: ['service-operations', 'workbench', manager], queryFn: () => apiFetch<Workbench>(root), refetchInterval: 10_000 });
@@ -334,7 +358,7 @@ export default function ServiceOperations({ manager }: { manager: boolean }): Re
   const save: Save = async (method, path, body) => { await mutation.mutateAsync({ method, path, body }); };
   if (work.isPending) return <p role="status">Loading service operations…</p>;
   if (!work.data) return <div role="alert"><p>Service operations could not load.</p><Button onClick={() => void work.refetch()}>Retry</Button></div>;
-  const { settings, services = [], resources = [], staff = [], leads = [], visits } = work.data;
+  const { settings, services = [], resources = [], staff = [], leads = [], visits, closedServiceRevenue } = work.data;
   return <div className="grid gap-4">
     {manager && <Panel><PanelHead title="Service setup" /><div className={padding}>
       <CalendarSettings key={settings?.revision ?? 0} settings={settings ?? null} save={save} />
@@ -347,6 +371,7 @@ export default function ServiceOperations({ manager }: { manager: boolean }): Re
     </div></Panel>}
     {manager && settings?.enabled && <>
       <Panel><PanelHead title="Service leads" /><div className={padding}>
+        <LeadForm services={services} save={save} />
         {leads.length === 0 && <p>Service inquiries will appear here.</p>}
         {leads.map((lead) => <details key={lead.id}><summary className="cursor-pointer">{lead.requirements || 'Service inquiry'} · {status(lead.status)}</summary>
           <div className="grid gap-2 pl-2 pt-2">
@@ -374,6 +399,7 @@ export default function ServiceOperations({ manager }: { manager: boolean }): Re
       <Panel><PanelHead title="Reserve a service" /><div className={padding}><BookingForm services={services} leads={leads} save={save} /></div></Panel>
     </>}
     <Panel><PanelHead title={manager ? 'Service appointments' : 'Assigned appointments'} />
+      {closedServiceRevenue && <p className="px-4 pt-3 text-sm">Verified receipts for completed services {formatCurrency(Number(closedServiceRevenue))}</p>}
       <ul className={padding}>{visits.length === 0 ? <li>No service appointments yet.</li> : visits.map((visit) =>
         <AppointmentCard key={visit.appointmentId} visit={visit} manager={manager} staff={staff} save={save} />)}</ul>
     </Panel>

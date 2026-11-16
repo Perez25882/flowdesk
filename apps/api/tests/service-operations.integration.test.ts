@@ -32,7 +32,10 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
   const posted: Record<string, unknown>[] = [];
 
   beforeAll(async () => {
-    if (![database, cache].every((url) => url && new URL(url).hostname === '127.0.0.1')) throw new Error('Use disposable loopback PostgreSQL and Redis');
+    if (![database, cache].every((url) => url && new URL(url).hostname === '127.0.0.1' && new URL(url).port) ||
+      !new URL(database!).pathname.startsWith('/flowdesk_g1_') || new URL(cache!).port === '6379') {
+      throw new Error('Use disposable loopback PostgreSQL and Redis');
+    }
     process.env.DATABASE_URL = database;
     const url = new URL(cache!);
     url.pathname = '/14';
@@ -294,7 +297,9 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     const initial = await f.visit(id);
     const link = await f.checkout(initial.invoiceId!);
     expect((await foreign.api('GET', '/commerce/invoices/' + initial.invoiceId)).statusCode).toBe(404);
-    await workflow.recoverWorkflows(initial.holdUntil!);
+    const prior = new Date(Date.now() - 2_000);
+    await prisma.serviceVisit.update({ where: { appointmentId: id }, data: { holdUntil: prior } });
+    await workflow.recoverWorkflows(new Date());
     expect(await f.visit(id)).toMatchObject({ state: 'EXPIRED', appointment: { status: 'CANCELLED' } });
     expectResponse(await f.reserve(service.id, time, f.second.id), 201);
     expect((await f.api('POST', '/commerce/invoices/' + initial.invoiceId + '/checkout', {})).statusCode).toBe(409);
@@ -349,6 +354,7 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     const list = expectResponse(await f.api('GET', root, undefined, b), 200);
     expect(list.visits[0]).not.toHaveProperty('invoiceId');
     expect(list.visits[0].service).not.toHaveProperty('totalMinor');
+    expect(list).not.toHaveProperty('closedServiceRevenue');
     await prisma.staff.update({ where: { id: b.id }, data: { role: 'DELIVERY' } });
     expect((await f.action(id, 'CHECK_IN', {}, b)).statusCode).toBe(403);
     await prisma.staff.update({ where: { id: b.id }, data: { role: 'OPERATIONS' } });
@@ -358,6 +364,41 @@ fixtures('Batch 4 service operations with signed ingress and PostgreSQL', () => 
     expect(await f.visit(id)).toMatchObject({ state: 'COMPLETED', stageIndex: 2 });
     expect((await f.checkout(first.invoiceId!)).amount.toFixed(2)).toBe('46.00');
   }, 60_000);
+
+  it('requires a currently approved template outside the window and suppresses stale consent and paid deposit reminders', async () => {
+    const f = await shop();
+    expectResponse(await f.api('PUT', root + '/settings', { ...f.settings, revision: 1,
+      templateName: 'fixture_service_notice', templateLanguage: 'en' }), 200);
+    await f.signed('START SERVICE UPDATES');
+    const service = await f.service({ approvalRequired: true, payment: { kind: 'FIXED', amountMinor: 3000 } }, { priceMinor: 4800 });
+    const heldId = expectResponse(await f.reserve(service.id, slot(2 * day), f.first.id, { settingsRevision: 2 }), 201).appointmentId;
+    const link = await f.checkout((await f.visit(heldId)).invoiceId!);
+    await f.settle(link.reference);
+    await workflow.recoverWorkflows(new Date(Date.now() + 6 * minute));
+    expect((await f.visit(heldId)).notices.find(({ kind }) => kind === 'DEPOSIT')).toMatchObject({
+      sendId: null, reason: 'DEPOSIT_ALREADY_PAID',
+    });
+    const next = await f.service();
+    const soon = slot(minute);
+    const id = expectResponse(await f.reserve(next.id, soon, f.first.id, { settingsRevision: 2 }), 201).appointmentId;
+    await prisma.customer.update({ where: { id: f.first.id }, data: { lastInboundAt: new Date(Date.now() - 2 * day) } });
+    const at = new Date(Math.max(Date.now(), +soon - 14 * minute));
+    await workflow.recoverWorkflows(at);
+    expect((await f.visit(id)).notices.find(({ kind }) => kind === 'UPCOMING')).toMatchObject({
+      sendId: null, reason: 'APPROVED_TEMPLATE_REQUIRED',
+    });
+    await workflow.recoverWorkflows(at);
+    const notice = (await f.visit(id)).notices.find(({ kind }) => kind === 'UPCOMING')!;
+    expect(notice.sendId).toBeTruthy();
+    expect((await prisma.whatsAppSend.findUniqueOrThrow({ where: { id: notice.sendId! } })).payload).toMatchObject({
+      template: { name: 'fixture_service_notice', language: 'en' },
+    });
+    await f.signed('STOP SERVICE UPDATES');
+    const sent = posted.length;
+    await outbound.processDurableOutbound(notice.sendId!);
+    expect(posted).toHaveLength(sent);
+    expect(await prisma.whatsAppSend.findUnique({ where: { id: notice.sendId! } })).toMatchObject({ state: 'FAILED', reason: 'NOTICE_CONSENT_REQUIRED' });
+  }, 65_000);
 
   it('cancels stale reminder before provider execution and accepts only authorized no-show evidence and care resolution', async () => {
     const f = await shop();

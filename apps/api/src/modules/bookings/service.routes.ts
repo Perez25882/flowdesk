@@ -11,6 +11,7 @@ import { actionInput, bookingInput, catalogueInput, leadInput, qualifyInput, res
 import { lockServiceBusiness, managedService, managedSlots } from './service.schedule.js';
 import { createServiceVisit, snapshotOf, updateServiceVisit } from './service.visits.js';
 import { recordManualServiceWorkflow } from './service.workflow-store.js';
+import { serviceAmounts } from './service.billing.js';
 
 type Tx = Prisma.TransactionClient;
 const idParam = z.object({ id: z.string().min(1).max(100) }).strict();
@@ -58,7 +59,7 @@ export default async function serviceRoutes(app: FastifyInstance): Promise<void>
     const where = { businessId, ...(!isManager(actor) && staffId ? { assignedStaffId: staffId } : {}) };
     const visits = await prisma.serviceVisit.findMany({ where, select: operationalVisit, orderBy: { appointment: { startsAt: 'desc' } }, take: 100 });
     if (!isManager(actor)) return success(reply, { visits: visits.map(operationalView) });
-    const [settings, services, resources, leads, staff, details] = await Promise.all([
+    const [settings, services, resources, leads, staff, details, revenue] = await Promise.all([
       prisma.serviceBusinessSettings.findUnique({ where: { businessId } }),
       prisma.service.findMany({ where: { businessId, deletedAt: null, bookingRules: { not: Prisma.DbNull } }, orderBy: { name: 'asc' }, take: 100 }),
       prisma.serviceResource.findMany({ where: { businessId }, orderBy: { name: 'asc' }, take: 200 }),
@@ -70,13 +71,20 @@ export default async function serviceRoutes(app: FastifyInstance): Promise<void>
         select: { appointmentId: true, leadId: true, customerId: true, holdUntil: true, approvalRequired: true, approvedAt: true,
           ...(orderActorHasCapability(actor, 'payments.read') ? { invoiceId: true, paymentReviewAt: true } : {}),
           notices: { select: { kind: true, dueAt: true, checkedAt: true, reason: true, sendId: true }, orderBy: { dueAt: 'asc' } } } }),
+      orderActorHasCapability(actor, 'revenue.read') ? prisma.payment.groupBy({ by: ['direction'], _sum: { amount: true },
+        where: { businessId, voidedAt: null, invoice: { serviceVisit: { businessId, state: 'COMPLETED' } },
+          OR: [{ direction: 'IN', confidence: 'GATEWAY_CONFIRMED', paystackSettlement: { isNot: null } },
+            { direction: 'OUT', confidence: { not: 'CLAIMED' } }] } }) : null,
     ]);
     const sendIds = details.flatMap(({ notices }) => notices.flatMap(({ sendId }) => sendId ? [sendId] : []));
     const sends = await prisma.whatsAppSend.findMany({ where: { businessId, id: { in: sendIds } }, select: { id: true, state: true, reason: true } });
     const byId = new Map(sends.map(({ id, ...send }) => [id, send]));
     const byAppointment = new Map(details.map((entry) => [entry.appointmentId, { ...entry,
       notices: entry.notices.map((notice) => ({ ...notice, send: notice.sendId ? byId.get(notice.sendId) ?? null : null })) }]));
+    const closedServiceRevenue = revenue?.reduce((total, { direction, _sum }) =>
+      direction === 'IN' ? total.plus(_sum.amount ?? 0) : total.minus(_sum.amount ?? 0), new Prisma.Decimal(0));
     return success(reply, { settings, services, resources, leads, staff,
+      ...(closedServiceRevenue ? { closedServiceRevenue: closedServiceRevenue.toFixed(2) } : {}),
       visits: visits.map((visit) => ({ ...operationalView(visit), ...byAppointment.get(visit.appointmentId) })) });
   });
 
@@ -115,10 +123,14 @@ export default async function serviceRoutes(app: FastifyInstance): Promise<void>
     await manager(tx, actor);
     if (!await tx.serviceBusinessSettings.findUnique({ where: { businessId: actor.businessId } })) throw new ConflictError('Configure business hours first');
     const { revision, priceMinor, rules, ...attributes } = input;
-    const deposit = rules.payment.kind === 'FIXED' ? rules.payment.amountMinor : rules.payment.kind === 'PERCENT'
-      ? Math.round(priceMinor * rules.payment.percent / 100) : rules.payment.kind === 'FULL' ? priceMinor : 0;
-    if ((priceMinor !== 0 && priceMinor < 100) || deposit > priceMinor ||
-      (rules.payment.kind !== 'AFTER_SERVICE' && deposit < 100)) throw new ConflictError('Service or deposit is below the supported payment minimum');
+    const price = new Prisma.Decimal(priceMinor).div(100);
+    const invalidTerms = Array.from({ length: rules.maximumQuantity }, (_, index) => index + 1).some((quantity) => {
+      const { total, deposit } = serviceAmounts(price, quantity, rules.payment);
+      const balance = total.minus(deposit);
+      return total.gt(1_000_000) || balance.lt(0) || (balance.gt(0) && balance.lt(1)) ||
+        (rules.payment.kind !== 'AFTER_SERVICE' && deposit.lt(1));
+    });
+    if (invalidTerms) throw new ConflictError('Service total, deposit and balance must fit the supported checkout amounts');
     const resources = await tx.serviceResource.findMany({ where: { businessId: actor.businessId, active: true,
       id: { in: [...rules.staff, ...rules.equipment.flat()] } }, select: { id: true, staffId: true } });
     if (rules.staff.some((key) => !resources.some((resource) => resource.id === key && resource.staffId)) ||
@@ -128,7 +140,7 @@ export default async function serviceRoutes(app: FastifyInstance): Promise<void>
     const duplicates = await tx.service.findMany({ where: { businessId: actor.businessId, deletedAt: null,
       bookingRules: { not: Prisma.DbNull }, name: { equals: input.name, mode: 'insensitive' }, ...(id ? { id: { not: id } } : {}) }, select: { id: true } });
     if (duplicates.length) throw new ConflictError('Use a distinct service name');
-    const data = { ...attributes, price: new Prisma.Decimal(priceMinor).div(100), bookingRules: rules };
+    const data = { ...attributes, price, bookingRules: rules };
     await tx.$queryRaw`SELECT set_config('flowdesk.service_write', 'on', true)`;
     if (!id && revision === 0) return tx.service.create({ data: { ...data, businessId: actor.businessId, bookingRevision: 1 } });
     const present = id && await tx.service.findFirst({ where: { id, businessId: actor.businessId, deletedAt: null, bookingRules: { not: Prisma.DbNull } } });

@@ -36,12 +36,12 @@ async function replyToService(tx: Tx, row: Workflow, source: Source, key: string
 
 async function observeReply(tx: Tx, row: Workflow, id: string | null, source: Pick<Source, 'id'>): Promise<BusinessEvent | null> {
   const send = id && await tx.whatsAppSend.findFirst({ where: { id, businessId: row.businessId }, select: {
-    state: true, deliveredAt: true, providerMessageId: true,
+    state: true, deliveredAt: true, readAt: true, providerMessageId: true,
   } });
   if (!send || ['FAILED', 'REVIEW_REQUIRED'].includes(send.state)) return {
     type: 'REVIEW', key: 'service:reply:review:' + source.id, reason: 'SERVICE_REPLY_REQUIRES_REVIEW', state: 'REVIEW_REQUIRED', operator: 'CARE',
   };
-  if (send.deliveredAt && send.providerMessageId) return done('service:reply:delivered:' + id,
+  if ((send.deliveredAt || send.readAt) && send.providerMessageId) return done('service:reply:delivered:' + id,
     'SERVICE_REPLY_DELIVERED', 'CARE', { sendId: id, sourceId: source.id });
   if (row.sendId === id) return null;
   const event = progress('service:reply:pending:' + id, 'SERVICE_REPLY_WAITING_FOR_PROVIDER', 'WAITING_PROVIDER', 'CARE', { sendId: id });
@@ -62,7 +62,9 @@ async function openServiceCase(tx: Tx, row: Workflow, source: Source, kind: Comm
     'CARE', { caseId: item.id, appointmentId, caseState: item.state });
 }
 
-async function reconciliation(tx: Tx, row: Workflow, lead: { id: string; revision: number; status: string; serviceId: string | null } | null, now: Date) {
+async function reconciliation(tx: Tx, row: Workflow, lead: {
+  id: string; revision: number; status: string; serviceId: string | null; followupAt: Date | null;
+} | null, now: Date) {
   const where = lead ? { leadId: lead.id } : row.appointmentId ? { appointmentId: row.appointmentId } : null;
   const visit = where && await tx.serviceVisit.findUnique({ where, include: { notices: true } });
   if (visit && visit.businessId === row.businessId && visit.customerId === row.customerId) {
@@ -75,8 +77,8 @@ async function reconciliation(tx: Tx, row: Workflow, lead: { id: string; revisio
       const completion = visit.notices.find((notice) => notice.kind === 'COMPLETE');
       if (completion?.sendId) {
         const result = await tx.whatsAppSend.findFirst({ where: { id: completion.sendId, businessId: row.businessId },
-          select: { state: true, deliveredAt: true, providerMessageId: true } });
-        if (result?.deliveredAt && result.providerMessageId) return done('service:completed:' + visit.appointmentId,
+          select: { state: true, deliveredAt: true, readAt: true, providerMessageId: true } });
+        if ((result?.deliveredAt || result?.readAt) && result.providerMessageId) return done('service:completed:' + visit.appointmentId,
           'SERVICE_COMPLETION_DELIVERED', 'CARE', { ...facts, sendId: completion.sendId });
         if (result && ['FAILED', 'REVIEW_REQUIRED'].includes(result.state)) return {
           type: 'REVIEW', state: 'REVIEW_REQUIRED', operator: 'CARE', reason: 'SERVICE_COMPLETION_NOTICE_REQUIRES_REVIEW',
@@ -97,6 +99,8 @@ async function reconciliation(tx: Tx, row: Workflow, lead: { id: string; revisio
   if (!lead) return { type: 'REVIEW', key: 'service:visit:missing:' + row.id, reason: 'SERVICE_VISIT_UNAVAILABLE',
     state: 'REVIEW_REQUIRED', operator: 'BOOKINGS' } satisfies BusinessEvent;
   if (['DECLINED', 'LOST', 'UNQUALIFIED'].includes(lead.status)) return done('service:lead:closed:' + lead.id, 'SERVICE_LEAD_' + lead.status, 'BOOKINGS', { leadId: lead.id });
+  if (lead.followupAt && lead.followupAt <= now) return progress('service:lead:followup:' + lead.id + ':' + lead.revision,
+    'SERVICE_LEAD_FOLLOWUP_DUE', 'WAITING_STAFF', 'BOOKINGS', { leadId: lead.id, followupAt: lead.followupAt.toISOString() });
   return progress('service:lead:' + lead.id + ':' + lead.revision, 'SERVICE_LEAD_' + lead.status,
     lead.status === 'QUALIFIED' ? 'WAITING_CUSTOMER' : 'WAITING_STAFF', 'BOOKINGS', { leadId: lead.id, serviceId: lead.serviceId });
 }
