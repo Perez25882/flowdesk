@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { Prisma } from '@prisma/client';
 import { logger } from '../../config/logger.js';
 import { acceptTextReceipts } from './text-receipts.js';
 import type { MetaWebhookPayload } from './webhook.types.js';
@@ -102,8 +103,19 @@ export default async function webhookRoutes(app: FastifyInstance): Promise<void>
       const interactions = messages.length - texts.length - mediaCount;
       try {
         await acceptTextReceipts(messages, echoes, statuses);
-      } catch {
-        logger.error({ eventCount: messages.length + echoes.length }, 'Could not commit WhatsApp receipts');
+      } catch (error) {
+        const databaseFailure = error instanceof Prisma.PrismaClientKnownRequestError || error instanceof Prisma.PrismaClientInitializationError;
+        const code = error instanceof Prisma.PrismaClientKnownRequestError ? error.code
+          : error instanceof Prisma.PrismaClientInitializationError ? error.errorCode : undefined;
+        const sqlState = error instanceof Prisma.PrismaClientKnownRequestError ? error.meta?.code : undefined;
+        const poolAcquisition = code === 'P2024' || (databaseFailure &&
+          /timed out fetching a new connection from the connection pool|unable to start a transaction in the given time/i.test(error.message));
+        logger.error({ eventCount: messages.length + echoes.length + statuses.length, mediaCount,
+          errorType: databaseFailure ? 'PRISMA' : 'UNKNOWN',
+          failure: poolAcquisition ? 'DATABASE_POOL_ACQUISITION' : 'RECEIPT_WRITE_FAILED',
+          prismaCode: code && /^P\d{4}$/.test(code) ? code : undefined,
+          sqlState: typeof sqlState === 'string' && /^[0-9A-Z]{5}$/.test(sqlState) ? sqlState : undefined,
+        }, 'Could not commit WhatsApp receipts');
         return reply.status(503).send({
           success: false,
           error: 'Could not accept WhatsApp events. Retry this delivery.',
