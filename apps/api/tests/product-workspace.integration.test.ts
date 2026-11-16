@@ -158,6 +158,24 @@ fixtures('Batch 5 product workspace on PostgreSQL and Redis', () => {
     const threadStarted = performance.now();
     const thread = data(await f.api('GET', `/conversations/${customer.id}`));
     const threadMs = performance.now() - threadStarted;
+    const reportStart = performance.now();
+    const report = data(await f.api('GET', '/reports?days=90'));
+    const reportMs = performance.now() - reportStart;
+    const exportStart = performance.now();
+    const exported = await f.api('GET', '/reports/export.csv?days=90');
+    const exportMs = performance.now() - exportStart;
+    const searchStart = performance.now();
+    const [firstPage, secondPage] = await Promise.all([
+      f.api('GET', '/customers?search=Synthetic&page=1&pageSize=25'),
+      f.api('GET', '/customers?search=Synthetic&page=2&pageSize=25'),
+    ]);
+    const searchMs = performance.now() - searchStart;
+    const firstIds = new Set(data(firstPage).map((row: { id: string }) => row.id));
+    expect(firstIds.size).toBe(25);
+    expect(data(secondPage).filter((row: { id: string }) => firstIds.has(row.id))).toHaveLength(0);
+    expect(report.orders).toBe(480);
+    expect(exported.statusCode).toBe(200);
+    expect(exported.body).toContain('"Total",0.00,480');
     expect(overview.orders.pending).toBe(480);
     expect(overview.visits.upcoming).toBe(360);
     expect(thread.messages).toHaveLength(200);
@@ -167,6 +185,7 @@ fixtures('Batch 5 product workspace on PostgreSQL and Redis', () => {
     expect(previous.messages.some(({ id }: { id: string }) => seen.has(id))).toBe(false);
     const other = await tenant();
     expect((await other.api('GET', `/conversations/${other.customer.id}?before=${thread.nextBefore}`)).statusCode).toBe(404);
-    console.info(`Batch 5 fixture timings overview=${overviewMs.toFixed(1)}ms thread=${threadMs.toFixed(1)}ms`);
+    console.info(`Batch 5 fixture timings overview=${overviewMs.toFixed(1)}ms thread=${threadMs.toFixed(1)}ms ` +
+      `report=${reportMs.toFixed(1)}ms csv=${exportMs.toFixed(1)}ms concurrentSearch=${searchMs.toFixed(1)}ms`);
   }, 30_000);
 });

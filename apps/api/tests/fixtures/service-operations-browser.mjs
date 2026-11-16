@@ -209,6 +209,43 @@ try {
   if (final.state !== 'COMPLETED' || final.stageIndex !== 1 || !final.history.some((event) => event.action === 'COMPLETE' && event.staffId === staff.id) ||
       await prisma.payment.count({ where: { invoiceId: created.invoiceId } }) !== 1) throw new Error('Browser workflow final evidence is incomplete');
   console.log('Mobile Chromium preserved one checkout across refresh, confirmed the exact deposit, and recorded assigned repair completion and owner history.');
+
+  await page.goto(url + '/bookings?view=operations');
+  await page.getByLabel('Service to book').selectOption(service.id);
+  await page.getByLabel('Customer', { exact: true }).selectOption(customer.id);
+  await page.getByRole('button', { name: 'Find available times' }).click();
+  await page.getByLabel('Available times').selectOption({ index: 1 });
+  await page.unroute('**/api/v1/service-operations/visits');
+  let competing;
+  await page.route('**/api/v1/service-operations/visits', async (route) => {
+    const winner = await route.fetch({ postData: { ...route.request().postDataJSON(), requestKey: randomUUID() } });
+    if (winner.status() !== 201) return route.fulfill({ response: winner });
+    competing = (await winner.json()).data.appointmentId;
+    return route.continue();
+  }, { times: 1 });
+  const conflicted = page.waitForResponse((candidate) => candidate.url().endsWith('/service-operations/visits') && candidate.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Reserve appointment', exact: true }).click();
+  if ((await conflicted).status() !== 409 || !competing) throw new Error('A stale browser slot was not rejected');
+  await page.locator('main').getByRole('alert').waitFor();
+  await page.goto(url + '/bookings?view=operations&visit=' + competing);
+  await page.getByLabel('Appointment action').selectOption('CANCEL');
+  await page.getByLabel('Evidence or staff notes').fill('Customer requested cancellation');
+  await page.route('**/api/v1/service-operations/visits/*/actions', async (route) => {
+    const winner = await route.fetch({ postData: { ...route.request().postDataJSON(), action: 'APPROVE', evidence: 'Second browser approved current hold' } });
+    if (!winner.ok()) return route.fulfill({ response: winner });
+    return route.continue();
+  }, { times: 1 });
+  const stale = page.waitForResponse((candidate) => candidate.url().endsWith('/actions') && candidate.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Record appointment action' }).click();
+  if ((await stale).status() !== 409) throw new Error('A stale appointment decision was not fenced');
+  if ((await prisma.serviceVisit.findUniqueOrThrow({ where: { appointmentId: competing } })).state !== 'HELD') throw new Error('The stale cancellation mutated the hold');
+  await page.reload();
+  await page.getByLabel('Appointment action').selectOption('CANCEL');
+  await page.getByLabel('Evidence or staff notes').fill('Customer requested cancellation');
+  await page.getByRole('button', { name: 'Record appointment action' }).click();
+  await waitFor(async () => (await prisma.serviceVisit.findUniqueOrThrow({ where: { appointmentId: competing } })).state === 'CANCELLED', 'current cancellation');
+  if (await prisma.serviceReservation.count({ where: { appointmentId: competing, releasedAt: null } })) throw new Error('Cancellation retained a capacity claim');
+  console.log('Browser rejected competing capacity and a stale decision, then cancelled the refreshed hold and released capacity.');
 } catch (error) {
   console.error(error);
   throw error;

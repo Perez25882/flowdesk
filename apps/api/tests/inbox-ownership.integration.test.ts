@@ -214,7 +214,8 @@ const cache = process.env.G1_BATCH_REDIS_URL;
     const fixed = new Date(60_000);
     const makeWorkflow = (scope: typeof f) => ({ businessId: scope.businessId, customerId: scope.customerId, sourceId: randomUUID(),
       correlationKey: randomUUID(), definition: 'whatsapp-business', version: 3, policyRevision: 1,
-      operator: 'CARE' as const, state: 'WAITING_OWNER_APPROVAL' as const, reason: 'Scope fixture', createdAt: fixed });
+      operator: 'CARE' as const, state: 'WAITING_OWNER_APPROVAL' as const, reason: 'Scope fixture', createdAt: fixed,
+      deadlineAt: new Date(Date.now() + 60_000) });
     await db.workflow.createMany({ data: Array.from({ length: 55 }, () => makeWorkflow(f)) });
     const secondTenant = await db.workflow.create({ data: makeWorkflow(foreign) });
     const first = data(await f.api('GET', '/workflows?state=WAITING_OWNER_APPROVAL'));

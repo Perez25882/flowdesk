@@ -129,7 +129,7 @@ export async function listCustomers(
 
   const customers = await prisma.customer.findMany({
     where,
-    orderBy: { lastInteractionAt: 'desc' },
+    orderBy: [{ lastInteractionAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }],
     skip: (filters.page - 1) * filters.pageSize,
     take: filters.pageSize,
   });

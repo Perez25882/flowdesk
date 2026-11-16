@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -79,12 +79,16 @@ async function register(page, name) {
   await page.locator('#ownerName').fill('Fixture owner');
   await page.locator('#email').fill(email);
   await page.locator('#password').fill(password);
-  const created = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/register') && response.request().method() === 'POST');
-  const mailed = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/verify-email/request') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Create account', exact: true }).click();
-  const response = await created;
+  const [response, mail] = await Promise.all([
+    page.waitForResponse((result) => new URL(result.url()).pathname === '/api/v1/auth/register' && result.request().method() === 'POST', { timeout: 45000 }),
+    page.waitForResponse((result) => new URL(result.url()).pathname === '/api/v1/auth/verify-email/request' && result.request().method() === 'POST', { timeout: 45000 }),
+    page.getByRole('button', { name: 'Create account', exact: true }).click(),
+  ]).catch(async (error) => {
+    console.error('Registration page ' + new URL(page.url()).pathname + ' alerts ' + JSON.stringify(await page.getByRole('alert').allTextContents()));
+    throw error;
+  });
   assert.equal(response.status(), 201);
-  assert.equal((await (await mailed).json()).data.delivered, true);
+  assert.equal((await mail.json()).data.delivered, true);
   const code = verificationCodes.get(email);
   assert.ok(code);
   await page.getByLabel('Code', { exact: true }).fill(code);
@@ -249,6 +253,21 @@ try {
   assert.equal(await prisma.order.count({ where: { businessId: retail.business.id } }), 1);
   console.log('Lost manual order response and refresh recover the one committed order.');
 
+  for (const [page, expected] of [[owner, 1], [professional, 0]]) {
+    await page.goto(base + '/reports');
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
+    const data = await readFile(await (await download).path(), 'utf8');
+    assert.ok(data.includes(`"Total",0.00,${expected}`), 'The report download disagrees with current tenant orders');
+    assert.ok(!data.includes(customer.waNumber), 'A report exposed a customer number');
+  }
+  await actor.goto(base + '/reports');
+  await actor.getByRole('heading', { name: 'Access restricted' }).waitFor();
+  assert.equal((await actor.request.get(base + '/api/v1/reports/export.csv?days=30', {
+    headers: { authorization: 'Bearer ' + riderToken },
+  })).status(), 403);
+  console.log('Two actual CSV exports contained only their tenant totals. A delivery session could not open or export reports.');
+
   await owner.route('**/api/v1/dashboard/overview', (route) => route.fulfill({ status: 503, body: '{}' }));
   await owner.goto(base + '/dashboard');
   await owner.getByText('The latest business figures could not load.').waitFor();
@@ -290,24 +309,33 @@ try {
         [owner, '/staff'], [owner, '/reports'], [owner, '/settings?section=assistant'],
       ];
       for (const [page, path] of routes) {
-        await page.setViewportSize({ width, height });
-        await page.goto(base + path);
-        await page.locator('h1').first().waitFor();
-        await noOverflow(page, path);
-        const state = await page.evaluate(() => [...document.querySelectorAll('main button, main a[href], main input, main select, main textarea, main summary')]
+        const sample = { width, path: path.replace(customer.id, '<customer>'), role: page === publicPage ? 'public' : 'owner',
+          profile: page === professional ? 'PROFESSIONAL_SERVICES' : page === owner ? 'ONLINE_RETAIL' : null };
+        try {
+          await page.setViewportSize({ width, height });
+          await page.goto(base + path);
+          const heading = page.locator('h1').first();
+          await heading.waitFor({ state: 'attached', timeout: 8000 });
+          const headingVisible = await heading.isVisible();
+          const overflow = await noOverflow(page, path).then(() => false, () => true);
+          const state = await page.evaluate(() => [...(document.querySelector('main') ?? document).querySelectorAll('button, a[href], input, select, textarea, summary')]
           .filter((element) => element.getClientRects().length && !element.closest('details:not([open]) > :not(summary)')).map((element) => ({
             element: element.localName, label: element.getAttribute('aria-label') ?? element.labels?.[0]?.textContent?.trim() ?? element.textContent.trim().replace(/\s+/g, ' '),
-            enabled: !element.matches(':disabled,[aria-disabled="true"]'), disposition: element.matches(':disabled,[aria-disabled="true"]') ? 'INTENTIONALLY DISABLED' : 'BLOCKED',
+            enabled: !element.matches(':disabled,[aria-disabled="true"]'), disposition: 'BLOCKED',
           })));
-        if (process.env.B5_AXE) await page.addScriptTag({ path: process.env.B5_AXE });
-        const violations = process.env.B5_AXE ? await page.evaluate(async () => (await window.axe.run({ runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] })).violations
-          .map(({ id, impact, nodes }) => ({ id, impact, targets: nodes.map((node) => node.target) }))) : [];
-        scans.push({ width, path: path.replace(customer.id, '<customer>'), role: page === publicPage ? 'public' : 'owner', controls: state, violations });
+          if (process.env.B5_AXE) await page.addScriptTag({ path: process.env.B5_AXE });
+          const violations = process.env.B5_AXE ? await page.evaluate(async () => (await window.axe.run({ runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] })).violations
+            .map(({ id, impact, nodes }) => ({ id, impact, targets: nodes.map((node) => node.target) }))) : [];
+          scans.push({ ...sample, headingVisible, overflow, controls: state, violations });
+        } catch (error) {
+          scans.push({ ...sample, error: error.name, controls: [], violations: [] });
+        }
+        await writeFile(process.env.B5_CONTROL_AUDIT, JSON.stringify(scans, null, 2) + '\n');
       }
     }
     await writeFile(process.env.B5_CONTROL_AUDIT, JSON.stringify(scans, null, 2) + '\n');
-    const failures = scans.filter((sample) => sample.violations.length);
-    console.log(`Control audit ${scans.length} route/viewport samples, ${failures.length} samples with Axe violations`);
+    const failures = scans.filter((sample) => sample.violations.length || sample.overflow || !sample.headingVisible || sample.error);
+    console.log(`Control audit ${scans.length} route/viewport samples, ${failures.length} samples with layout, Axe or navigation findings`);
     if (failures.length) process.exitCode = 1;
     await publicPage.close();
     await owner.goto(base + '/payments?view=invoices');
