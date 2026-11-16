@@ -97,7 +97,7 @@ try {
   await page.getByLabel('Resource name').fill('Workshop technician');
   await page.getByLabel('Staff member', { exact: true }).selectOption(staff.id);
   await page.getByRole('button', { name: 'Save resource' }).click();
-  await page.locator('summary').getByText('Workshop technician', { exact: true }).waitFor();
+  await page.locator('summary').filter({ hasText: /^Workshop technician$/ }).waitFor();
   await page.getByText('Add a managed service', { exact: true }).click();
   await page.getByLabel('Service name').fill('Browser repair');
   await page.getByLabel('Service category').selectOption('REPAIR');
@@ -183,7 +183,7 @@ try {
     await worker.getByLabel('Evidence or staff notes').fill('Staff observed ' + action.toLowerCase());
     await worker.getByRole('button', { name: 'Record appointment action' }).click();
     if (!(await response).ok()) throw new Error('Staff operation failed at ' + action);
-    if (action === 'STAGE') await worker.getByRole('option', { name: 'complete', exact: true }).waitFor({ state: 'attached' });
+    if (action === 'STAGE') await worker.locator('option[value="COMPLETE"]').waitFor({ state: 'attached' });
     else await worker.getByText(new RegExp(' · ' + outcome + '$')).waitFor();
   }
   await page.reload();
