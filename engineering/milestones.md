@@ -81,3 +81,7 @@ The founder authorized G1-00 and G1-07 through G1-10 as one integration branch. 
 ### Batch 4 service-business operations
 
 **Recommendation — PASS for verified local Batch 4 acceptance.** The founder approved Batch 3's verified local scope and authorized Batch 4. Tested source `98f0022acffa1af3b007e9a2e20f8bd3b1547224` passed 435 previous-platform regressions, 12 service tests in each of two fresh runs, 994 general tests and 53 smoke checks. Mobile owner and staff, migrations, backup and restore, and the gated Batch 3 rollback and roll-forward passed. Founder review is pending. See the [acceptance report](batch-4/report.md), [progress register](batch-4/progress.md), [service contract](batch-4/service-contract.md) and [architecture decision](adr/0011-managed-service-reservations.md).
+
+### Batch 5 unified product workspace
+
+**Recommendation — BLOCKED for full Batch 5 sign-off.** The founder approved Batch 4 for the documented local scope and authorized Batch 5. The unified workspace passed the clean build, typecheck, lint, general tests, 453 integration and regression checks, and 53 smoke checks. General conversation assignment and read state, complete feature traversal, and the full accessibility and tenant export browser coverage remain open. The [acceptance report](batch-5/report.md) records the exact tested runtime, command results and journey matrix. Start local follow-up from the [continuity file](batch-5/progress.md) and [product contract](batch-5/contract.md). Batch 6 provider and hosted verification require separate founder authorization.

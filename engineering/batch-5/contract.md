@@ -41,9 +41,13 @@
 ## Shared design and accessibility
 
 - Use existing CSS tokens and Tailwind design primitives for surfaces, labels, status, spacing and typography. Page headings use `PageHeader`, grouped records use `Panel`, and inputs have associated labels or legends. Provide status text alongside icon and colour. Financial values use the shared GHS formatter and tabular figures.
+- `globals.css` sets Plus Jakarta Sans and JetBrains Mono. Use the 21px page title, 18px panel title, 15px body, 13px dense row and 12px supporting metadata roles. Standard panel padding is 16px, with 12–20px gaps between sections and related cards. Use the light neutral page background, white record surfaces, and visible border tokens for groups and fields.
+- Keep one primary action at a decision point. Use secondary buttons for alongside actions, underlined links for navigation and danger styling for destructive actions. Standard buttons are 44px high. Compact 32px buttons serve dense groups. Panels and lists are the mobile default. Keep long record sets within their own scroll panes and use one record detail sheet or dialog at a time.
 - On small screens show the primary tasks in bottom navigation, full coverage in the menu, and overflow inside record panes. Sheet and dialog controls use Radix focus handling. Tabs implement roving focus, arrow keys and Home/End. The shell has a skip link and visible keyboard focus. The global reduced-motion media rules are retained.
 - The acceptance record includes browser dimensions, focus and keyboard probes, automated Axe results when run, API timing from synthetic data and any pending manual accessibility checks.
 
 ## Data compatibility and recovery
 
 Batch 5 introduces no database migration. Profile, invoice, approval, receipt, tenant, and audit writes use existing models. A runtime rollback should be done with request admission and workers quiesced. Preserve the database and queue state and reconcile in-flight outbound and checkout work using existing documented runbooks. Batch 5 draft URLs and work center links require the Batch 5 web build paired with its API.
+
+After a lost invoice, order or booking response, reopen the existing form URL to check the current saved record. A completed lookup leads to the authoritative record. Keep the original request key until the action is resolved. Checkout review remains separate from creating a new request. Resolve ambiguous provider evidence through the existing reconciliation procedures before reissuing a payment request.
