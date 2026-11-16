@@ -231,7 +231,7 @@ try {
   async function showInvoices() { await page.getByRole('button', { name: 'Standalone invoices', exact: true }).click(); }
   async function createInvoice(description) {
     await page.getByRole('button', { name: 'New standalone invoice' }).click();
-    await page.getByLabel('Customer', { exact: true }).selectOption(customer.id);
+    await page.getByRole('form', { name: 'New invoice' }).getByRole('combobox').selectOption(customer.id);
     await page.getByLabel('Due date').fill(new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10));
     await page.getByLabel('Description').fill(description);
     await page.getByLabel('Unit price (GHS)').fill('50');
