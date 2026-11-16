@@ -1,6 +1,6 @@
 # ADR 0011 – Managed service reservations
 
-**Status** Integration candidate. Local sign-off is tracked in the [Batch 4 register](../batch-4/progress.md).
+**Status** Locally verified. Founder review is tracked in the [Batch 4 register](../batch-4/progress.md).
 
 ## Context
 

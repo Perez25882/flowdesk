@@ -12,6 +12,6 @@
 | [0008 Shared workflow execution](0008-shared-workflow-execution.md) | Integration candidate | 2026-11-15 |
 | [0009 Commerce records and authority](0009-commerce-authority.md) | Integration candidate | 2026-11-15 |
 | [0010 Invoice allocation and return custody](0010-invoice-allocation-and-return-custody.md) | Locally verified | 2026-11-16 |
-| [0011 Managed service reservations](0011-managed-service-reservations.md) | Integration candidate | 2026-11-16 |
+| [0011 Managed service reservations](0011-managed-service-reservations.md) | Locally verified | 2026-11-16 |
 
 Each record captures the context, decision, alternatives and consequences. Preserve previous records when a decision changes and link its replacement.
