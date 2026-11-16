@@ -47,6 +47,11 @@ async function startServer(): Promise<void> {
   await prisma.$queryRaw`SELECT 1 FROM workflow_evidence LIMIT 0`;
   await prisma.$queryRaw`SELECT 1 FROM workflow_approvals LIMIT 0`;
   await prisma.$queryRaw`SELECT 1 FROM commerce_quotes LIMIT 0`;
+  const [inbox] = await prisma.$queryRaw<{ enabled: boolean }[]>`SELECT EXISTS (
+    SELECT 1 FROM pg_trigger WHERE tgrelid = 'messages'::regclass AND tgname = 'inbox_count_inbound_after_insert'
+      AND tgenabled IN ('O', 'A') AND NOT tgisinternal
+  ) AS enabled`;
+  if (!inbox?.enabled) throw new Error('Inbox schema is missing the inbound position trigger');
   const workers = [outboundWorker, insightsWorker, intentClassifierWorker, ...(env.NODE_ENV === 'test'
     ? [] : [messageProcessorWorker, deadLetterWorker])];
   for (const worker of workers) {

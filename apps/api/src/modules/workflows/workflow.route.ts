@@ -47,14 +47,20 @@ export default async function workflowRoutes(app: FastifyInstance): Promise<void
   const owner = { preHandler: requireOwner };
 
   app.get('/workflows', owner, async (request, reply) => {
-    const { state, before } = z.object({
+    const { state, before, afterId } = z.object({
       state: z.enum(['CREATED', 'READY', 'RUNNING', 'WAITING_CUSTOMER', 'WAITING_OWNER_APPROVAL', 'WAITING_STAFF',
         'WAITING_PROVIDER', 'RETRY_SCHEDULED', 'REVIEW_REQUIRED', 'COMPLETED', 'FAILED', 'CANCELLED']).optional(),
       before: z.string().datetime().optional(),
+      afterId: z.string().min(1).max(100).optional(),
     }).strict().parse(request.query);
+    const businessId = request.business!.id;
+    const anchor = afterId ? await prisma.workflow.findUnique({ where: { id_businessId: { id: afterId, businessId } },
+      select: { id: true, createdAt: true } }) : null;
+    if (afterId && !anchor) throw new NotFoundError('Workflow page not found');
     const rows = await prisma.workflow.findMany({
-      where: { businessId: request.business!.id, ...(state ? { state } : {}),
-        ...(before ? { createdAt: { lt: new Date(before) } } : {}) },
+      where: { businessId, ...(state ? { state } : {}),
+        ...(anchor ? { OR: [{ createdAt: { lt: anchor.createdAt } }, { createdAt: anchor.createdAt, id: { lt: anchor.id } }] }
+          : before ? { createdAt: { lt: new Date(before) } } : {}) },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 50,
       include: { customer: { select: { name: true } } },
     });

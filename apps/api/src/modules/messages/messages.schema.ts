@@ -45,10 +45,12 @@ export const SendReplySchema = z.object({
  * customer table.
  */
 export const ListConversationsQuerySchema = z.object({
-  filter: z.enum(['all', 'needs_you']).default('all'),
+  filter: z.enum(['all', 'needs_you', 'unread']).default('all'),
+  assignment: z.enum(['all', 'assigned', 'unassigned', 'mine']).default('all'),
   q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(40),
   before: z.coerce.date().optional(),
+  cursor: z.string().max(300).optional(),
 });
 
 export type UpdateMessageIntentInput = z.infer<typeof UpdateMessageIntentSchema>;

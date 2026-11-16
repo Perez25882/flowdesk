@@ -1,5 +1,8 @@
+import { Prisma } from '@prisma/client';
+import { z } from 'zod';
 import { prisma } from '../../config/database.js';
-import { NotFoundError } from '../../utils/errors.js';
+import { NotFoundError, ValidationError } from '../../utils/errors.js';
+import { inboxReaderKey, inboxStates, type InboxActor, type InboxState } from './inbox-state.js';
 
 /**
  * The inbox, one row per customer.
@@ -32,18 +35,12 @@ interface LatestMessage {
   body: string | null;
   direction: string;
   createdAt: Date;
-  sentFromApp: boolean;
-  sentByStaffId: string | null;
 }
 
-export interface SummariseInput {
+export type SummariseInput = {
   customer: { id: string; name: string | null; waNumber: string; lastInteractionAt: Date | null };
   latest: LatestMessage | null;
-  /** When the shop last said anything to this customer, by any route. */
-  lastOutboundAt: Date | null;
-  /** When each customer message flagged for review arrived. */
-  flaggedInboundAt: Date[];
-}
+} & ({ waiting: number } | { lastOutboundAt: Date | null; flaggedInboundAt: Date[] });
 
 /**
  * One inbox row, and whether it needs the owner.
@@ -57,11 +54,8 @@ export interface SummariseInput {
  * own phone, or the assistant — with nothing having to remember to clear it.
  */
 export function summariseConversation(input: SummariseInput): Conversation {
-  const { customer, latest, lastOutboundAt, flaggedInboundAt } = input;
-
-  const waiting = flaggedInboundAt.filter(
-    (at) => lastOutboundAt === null || at.getTime() > lastOutboundAt.getTime(),
-  ).length;
+  const { customer, latest } = input;
+  const waiting = 'waiting' in input ? input.waiting : input.flaggedInboundAt.filter((at) => !input.lastOutboundAt || at > input.lastOutboundAt).length;
 
   return {
     customerId: customer.id,
@@ -78,7 +72,7 @@ export function summariseConversation(input: SummariseInput): Conversation {
   };
 }
 
-export type ConversationFilter = 'all' | 'needs_you';
+export type ConversationFilter = 'all' | 'needs_you' | 'unread';
 
 export interface ListConversationsInput {
   filter: ConversationFilter;
@@ -86,7 +80,13 @@ export interface ListConversationsInput {
   limit: number;
   /** The `lastActivityAt` of the last row already shown, for the next page. */
   before?: Date | undefined;
+  cursor?: string | undefined;
+  assignment: 'all' | 'assigned' | 'unassigned' | 'mine';
 }
+
+const needsReply = Prisma.sql`pending.direction = 'INBOUND' AND pending."requiresReview"
+  AND NOT EXISTS (SELECT 1 FROM messages replied WHERE replied."businessId" = pending."businessId"
+    AND replied."customerId" = pending."customerId" AND replied.direction = 'OUTBOUND' AND replied."createdAt" >= pending."createdAt")`;
 
 /**
  * A page of conversations, most recent activity first.
@@ -100,99 +100,74 @@ export interface ListConversationsInput {
  * every day a shop stays on the product.
  */
 export async function listConversations(
-  businessId: string,
+  actor: InboxActor,
   input: ListConversationsInput,
-): Promise<{ conversations: Conversation[]; nextBefore: Date | null }> {
+): Promise<{ conversations: (Conversation & { inbox: InboxState | null })[]; nextBefore: Date | null; nextCursor: string | null }> {
+  const { businessId } = actor;
   const search = input.q?.trim();
   const digits = search?.replace(/\D/g, '') ?? '';
-
-  const customers = await prisma.customer.findMany({
-    where: {
-      businessId,
-      deletedAt: null,
-      messages: { some: {} },
-      ...(input.before ? { lastInteractionAt: { lt: input.before } } : {}),
-      ...(input.filter === 'needs_you'
-        ? { AND: [{ messages: { some: { direction: 'INBOUND', requiresReview: true } } }] }
-        : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' as const } },
-              ...(digits.length >= 3 ? [{ waNumber: { contains: digits } }] : []),
-            ],
-          }
-        : {}),
-    },
-    // NULLS LAST explicitly: Postgres puts nulls FIRST in a descending sort, so
-    // customers with no recorded activity would otherwise sit at the top of the
-    // inbox above everyone who messaged today.
-    orderBy: [{ lastInteractionAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }],
-    // One extra to learn whether another page exists without a count query.
-    take: input.limit + 1,
-    select: { id: true, name: true, waNumber: true, lastInteractionAt: true },
-  });
+  let cursor: { at: string | null; id: string } | null = null;
+  if (input.cursor) {
+    try {
+      cursor = z.object({ at: z.string().datetime().nullable(), id: z.string().min(1).max(100) })
+        .parse(JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')));
+    } catch { throw new ValidationError('Invalid conversation cursor'); }
+  }
+  const date = cursor?.at ? new Date(cursor.at) : null;
+  const position = cursor ? (date ? Prisma.sql`AND (c."lastInteractionAt" < ${date} OR c."lastInteractionAt" IS NULL
+    OR (c."lastInteractionAt" = ${date} AND c.id < ${cursor.id}))` : Prisma.sql`AND c."lastInteractionAt" IS NULL AND c.id < ${cursor.id}`)
+    : input.before ? Prisma.sql`AND c."lastInteractionAt" < ${input.before}` : Prisma.empty;
+  const assignment = {
+    all: Prisma.empty, assigned: Prisma.sql`AND s.id IS NOT NULL`, unassigned: Prisma.sql`AND s.id IS NULL`,
+    mine: Prisma.sql`AND s.id = ${actor.staffId ?? ''}`,
+  }[input.assignment];
+  const filter = input.filter === 'unread' ? Prisma.sql`AND (t."inboundPosition" > coalesce(r.position, 0) OR r."manualUnread")`
+    : input.filter === 'needs_you' ? Prisma.sql`AND EXISTS (SELECT 1 FROM messages pending WHERE pending."businessId" = c."businessId"
+      AND pending."customerId" = c.id AND ${needsReply})` : Prisma.empty;
+  const term = search ? Prisma.sql`AND (strpos(lower(c.name), lower(${search})) > 0
+    ${digits.length >= 3 ? Prisma.sql`OR strpos(c."waNumber", ${digits}) > 0` : Prisma.empty})` : Prisma.empty;
+  const customers = await prisma.$queryRaw<SummariseInput['customer'][]>`SELECT c.id, c.name, c."waNumber", c."lastInteractionAt"
+    FROM customers c LEFT JOIN inbox_threads t ON t."businessId" = c."businessId" AND t."customerId" = c.id
+    LEFT JOIN staff s ON s.id = t."assignedStaffId" AND s."businessId" = c."businessId" AND s.active
+      AND s."inviteAcceptedAt" IS NOT NULL AND s.role IN ('MANAGER','OPERATIONS')
+    LEFT JOIN inbox_readers r ON r."businessId" = c."businessId" AND r."customerId" = c.id AND r.reader = ${inboxReaderKey(actor)}
+    WHERE c."businessId" = ${businessId} AND c."deletedAt" IS NULL
+      AND EXISTS (SELECT 1 FROM messages m WHERE m."businessId" = c."businessId" AND m."customerId" = c.id)
+      ${position} ${term} ${assignment} ${filter}
+    ORDER BY c."lastInteractionAt" DESC NULLS LAST, c.id DESC LIMIT ${input.limit + 1}`;
 
   const page = customers.slice(0, input.limit);
   const ids = page.map((customer) => customer.id);
 
-  if (ids.length === 0) return { conversations: [], nextBefore: null };
+  if (ids.length === 0) return { conversations: [], nextBefore: null, nextCursor: null };
 
-  const [latestRows, outboundRows, flaggedRows] = await Promise.all([
-    // DISTINCT ON through Prisma: the newest message per customer.
-    prisma.message.findMany({
-      where: { businessId, customerId: { in: ids } },
-      orderBy: [{ customerId: 'asc' }, { createdAt: 'desc' }],
-      distinct: ['customerId'],
-      select: {
-        customerId: true,
-        body: true,
-        direction: true,
-        createdAt: true,
-        sentFromApp: true,
-        sentByStaffId: true,
-      },
-    }),
-    prisma.message.groupBy({
-      by: ['customerId'],
-      where: { businessId, customerId: { in: ids }, direction: 'OUTBOUND' },
-      _max: { createdAt: true },
-    }),
-    prisma.message.findMany({
-      where: { businessId, customerId: { in: ids }, direction: 'INBOUND', requiresReview: true },
-      select: { customerId: true, createdAt: true },
-    }),
+  const [latestRows, pending, states] = await Promise.all([
+    prisma.$queryRaw<(LatestMessage & { customerId: string })[]>`SELECT DISTINCT ON ("customerId")
+      "customerId", body, direction::text, "createdAt" FROM messages
+      WHERE "businessId" = ${businessId} AND "customerId" IN (${Prisma.join(ids)})
+      ORDER BY "customerId", "createdAt" DESC, id DESC`,
+    prisma.$queryRaw<{ customerId: string; count: bigint }[]>`SELECT pending."customerId", count(*) FROM messages pending
+      WHERE pending."businessId" = ${businessId} AND pending."customerId" IN (${Prisma.join(ids)}) AND ${needsReply}
+      GROUP BY pending."customerId"`,
+    inboxStates(actor, ids),
   ]);
 
   const latestBy = new Map(latestRows.map((row) => [row.customerId, row]));
-  const outboundBy = new Map(outboundRows.map((row) => [row.customerId, row._max.createdAt]));
-  const flaggedBy = new Map<string, Date[]>();
-  for (const row of flaggedRows) {
-    if (!row.customerId) continue;
-    const list = flaggedBy.get(row.customerId) ?? [];
-    list.push(row.createdAt);
-    flaggedBy.set(row.customerId, list);
-  }
+  const waitingBy = new Map(pending.map((row) => [row.customerId, Number(row.count)]));
 
-  const conversations = page.map((customer) =>
-    summariseConversation({
+  const conversations = page.map((customer) => ({
+    ...summariseConversation({
       customer,
       latest: latestBy.get(customer.id) ?? null,
-      lastOutboundAt: outboundBy.get(customer.id) ?? null,
-      flaggedInboundAt: flaggedBy.get(customer.id) ?? [],
-    }),
-  );
+      waiting: waitingBy.get(customer.id) ?? 0,
+    }), inbox: states.get(customer.id) ?? null,
+  }));
 
-  // The needs_you filter above is only a candidate set: a customer with any
-  // flagged message ever. Whether it is still unanswered is known only once
-  // the reply times are in, so the final cut happens here.
-  const filtered =
-    input.filter === 'needs_you' ? conversations.filter((row) => row.needsYou) : conversations;
-
-  const last = page[page.length - 1];
+  const last = customers.length > input.limit ? page.at(-1) : undefined;
   return {
-    conversations: filtered,
-    nextBefore: customers.length > input.limit && last ? last.lastInteractionAt : null,
+    conversations,
+    nextBefore: last?.lastInteractionAt ?? null,
+    nextCursor: last ? Buffer.from(JSON.stringify({ at: last.lastInteractionAt, id: last.id })).toString('base64url') : null,
   };
 }
 
@@ -209,39 +184,10 @@ export async function listConversations(
  * is one person to get back to.
  */
 export async function countConversationsNeedingYou(businessId: string): Promise<number> {
-  const flagged = await prisma.message.findMany({
-    where: { businessId, direction: 'INBOUND', requiresReview: true, customerId: { not: null } },
-    select: { customerId: true, createdAt: true },
-  });
-
-  if (flagged.length === 0) return 0;
-
-  const flaggedBy = new Map<string, Date[]>();
-  for (const row of flagged) {
-    if (!row.customerId) continue;
-    const list = flaggedBy.get(row.customerId) ?? [];
-    list.push(row.createdAt);
-    flaggedBy.set(row.customerId, list);
-  }
-
-  const replies = await prisma.message.groupBy({
-    by: ['customerId'],
-    where: { businessId, direction: 'OUTBOUND', customerId: { in: [...flaggedBy.keys()] } },
-    _max: { createdAt: true },
-  });
-  const lastReplyBy = new Map(replies.map((row) => [row.customerId, row._max.createdAt]));
-
-  let waiting = 0;
-  for (const [customerId, flaggedInboundAt] of flaggedBy) {
-    const row = summariseConversation({
-      customer: { id: customerId, name: null, waNumber: '', lastInteractionAt: null },
-      latest: null,
-      lastOutboundAt: lastReplyBy.get(customerId) ?? null,
-      flaggedInboundAt,
-    });
-    if (row.needsYou) waiting += 1;
-  }
-  return waiting;
+  const [row] = await prisma.$queryRaw<{ count: bigint }[]>`SELECT count(DISTINCT pending."customerId") FROM messages pending
+    JOIN customers c ON c."businessId" = pending."businessId" AND c.id = pending."customerId" AND c."deletedAt" IS NULL
+    WHERE pending."businessId" = ${businessId} AND ${needsReply}`;
+  return Number(row?.count ?? 0n);
 }
 
 export interface ThreadMessage {

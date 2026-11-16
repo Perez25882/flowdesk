@@ -276,6 +276,6 @@ export function reportToCsv(report: ReportSummary): string {
  * prefix is not shown to whoever opens the file.
  */
 function csvField(value: string): string {
-  const defused = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  const defused = /^(?:[\t\r\n]|\s*[=+\-@＝＋－＠])/.test(value) ? `'${value}` : value;
   return `"${defused.replace(/"/g, '""')}"`;
 }

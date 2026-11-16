@@ -8,6 +8,7 @@ export interface DashboardBadges {
   pendingOrders: number;
   reviewMessages: number;
   lowStockProducts: number;
+  unreadConversations: number;
 }
 
 export const BADGES_QUERY_KEY = ['dashboard', 'badges'] as const;

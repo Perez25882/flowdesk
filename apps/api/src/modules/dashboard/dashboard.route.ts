@@ -7,11 +7,13 @@ import { success } from '../../utils/response.js';
 import { prisma } from '../../config/database.js';
 import { buildReport, reportToCsv, type ReportWindow } from './reports.service.js';
 import { countConversationsNeedingYou } from '../messages/conversations.js';
+import { unreadConversationCount } from '../messages/inbox-state.js';
 
 export interface DashboardBadges {
   pendingOrders: number;
   reviewMessages: number;
   lowStockProducts: number;
+  unreadConversations: number;
 }
 
 export default async function dashboardRoutes(app: FastifyInstance): Promise<void> {
@@ -49,8 +51,10 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
       const scopedStaffId = assignedStaffScope(request);
       const canReadMessages = hasCapability(role, 'messages.read');
       const canReadProducts = hasCapability(role, 'products.read');
+      const actor = orderActor(request);
+      if (canReadMessages) await requireStaffMembership(prisma, actor);
 
-      const [pendingOrders, reviewMessages, lowStockCount] = await Promise.all([
+      const [pendingOrders, reviewMessages, lowStockCount, unreadConversations] = await Promise.all([
         prisma.order.count({
           where: {
             businessId,
@@ -75,12 +79,14 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
                   rows.filter((r) => Number(r.stockQuantity) <= Number(r.reorderThreshold)).length,
               )
           : Promise.resolve(0),
+        canReadMessages ? unreadConversationCount(actor) : Promise.resolve(0),
       ]);
 
       const badges: DashboardBadges = {
         pendingOrders,
         reviewMessages,
         lowStockProducts: lowStockCount,
+        unreadConversations,
       };
       return success(reply, badges);
     },
@@ -96,6 +102,7 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
     '/reports',
     { preHandler: requireCapability('revenue.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      await requireStaffMembership(prisma, orderActor(request));
       const { days } = request.query as { days?: string };
       return success(reply, await buildReport(request.business!.id, parseWindow(days)));
     },
@@ -113,6 +120,7 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
     '/reports/export.csv',
     { preHandler: requireCapability('revenue.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      await requireStaffMembership(prisma, orderActor(request));
       const { days } = request.query as { days?: string };
       const report = await buildReport(request.business!.id, parseWindow(days));
 

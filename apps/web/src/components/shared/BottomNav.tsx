@@ -73,7 +73,7 @@ export default function BottomNav(): React.JSX.Element {
   const logout = useLogout();
 
   const overflowBadgeCount = overflowItems.reduce((sum, item) => {
-    if (item.badge === 'reviewMessages') return sum + (badges?.reviewMessages ?? 0);
+    if (item.badge === 'reviewMessages') return sum + (badges?.unreadConversations ?? 0);
     if (item.badge === 'pendingOrders') return sum + (badges?.pendingOrders ?? 0);
     return sum;
   }, 0);
@@ -99,7 +99,7 @@ export default function BottomNav(): React.JSX.Element {
             item.badge === 'pendingOrders'
               ? (badges?.pendingOrders ?? 0)
               : item.badge === 'reviewMessages'
-                ? (badges?.reviewMessages ?? 0)
+                ? (badges?.unreadConversations ?? 0)
                 : 0;
 
           return (
@@ -171,7 +171,7 @@ export default function BottomNav(): React.JSX.Element {
                 const Icon = iconMap[item.icon] ?? Circle;
                 const isActive = location.pathname.startsWith(item.path);
                 const badgeCount =
-                  item.badge === 'reviewMessages' ? (badges?.reviewMessages ?? 0) : 0;
+                  item.badge === 'reviewMessages' ? (badges?.unreadConversations ?? 0) : 0;
 
                 return (
                   <SheetClose asChild key={item.path}>

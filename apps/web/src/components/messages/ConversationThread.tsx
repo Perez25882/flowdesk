@@ -6,6 +6,7 @@ import type { Thread, ThreadMessage } from '@/hooks/useConversations';
 import { useSendReply, useDismissDraft } from '@/hooks/useMessages';
 import { apiFetch, apiFetchBlob } from '@/lib/api';
 import { Button } from '@/components/ui/Button';
+import InboxControls from './InboxControls';
 import { cn, customerLabel, formatPhone } from '@/lib/utils';
 
 /**
@@ -67,6 +68,7 @@ export default function ConversationThread({
           Customer profile
         </Link>
       </header>
+      {thread.inbox && <InboxControls customerId={thread.customer.id} inbox={thread.inbox} />}
       <CustomerWork customerId={thread.customer.id} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
@@ -112,15 +114,18 @@ function CustomerWork({ customerId }: { customerId: string }): React.JSX.Element
       orders: { id: string; referenceNumber: string; status: string }[];
       visits: { appointmentId: string; state: string; appointment: { reference: string } }[];
       invoices: { id: string; reference: string }[];
+      cases: { id: string; kind: string; state: string }[];
     }>('/conversations/' + encodeURIComponent(customerId) + '/context') });
   const rows = context.data && [
     ...context.data.orders.map((item) => ({ ref: item.referenceNumber, status: item.status, href: '/orders?order=' + encodeURIComponent(item.id) })),
     ...context.data.visits.map((item) => ({ ref: item.appointment.reference, status: item.state,
       href: '/bookings?view=operations&visit=' + encodeURIComponent(item.appointmentId) })),
     ...context.data.invoices.map((item) => ({ ref: item.reference, status: '', href: '/payments?view=invoices&invoice=' + encodeURIComponent(item.id) })),
+    ...context.data.cases.map((item) => ({ ref: item.kind.charAt(0) + item.kind.slice(1).toLowerCase() + ' case', status: item.state,
+      href: '/messages?view=cases&case=' + encodeURIComponent(item.id) })),
   ];
   return <details className="max-h-40 overflow-y-auto border-b border-border px-4 py-2 text-sm" onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary className="min-h-8 cursor-pointer font-medium">Customer orders, bookings and invoices</summary>
+    <summary className="min-h-8 cursor-pointer font-medium">Customer orders, bookings, invoices and cases</summary>
     {open && context.isPending && <p role="status">Loading linked work…</p>}
     {context.isError && <p role="alert">Linked work could not load. <button className="underline" onClick={() => void context.refetch()}>Try again</button></p>}
     {rows?.length === 0 && <p>No linked work.</p>}

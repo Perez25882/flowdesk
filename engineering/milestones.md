@@ -3,8 +3,12 @@
 | Milestone                | Status                                               | Exit gate                                                                                                                                                                          |
 | ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G0 Engineering kickoff   | Complete                                             | Preserved source inventory, executed baseline, five operator traces, prioritized defects and founder review package.                                                               |
-| G1 Execution reliability | G1-01 through G1-05 approved for verified local scope. G1-06 local PASS recommended, founder sign-off pending. | Repair P0 ingress, authorization and cash invariants. Prove retries, crash recovery and role/tenant isolation on synthetic data. Record mitigation or remaining scope for each P1. |
-| Operator delivery        | Unscheduled                                          | Sequence operator increments against the shared workflow contract and owner interface after the G1 reliability gate.                                                               |
+| [G1 execution reliability](g1/final-stabilization-report.md) | Founder-approved local acceptance at `84c92ac0c5c70bad0b6c9d28e7ea15688ef33d4d` | Durable ingress and outbound execution, authorization, financial evidence and recovery. |
+| [Batch 2 shared execution](batch-2/report.md) | Founder-approved local acceptance at `c4d702666902229327c2db25651db80b803efe82` | Shared operator workflows and accountable approvals. |
+| [Batch 3 commerce](batch-3/closure-report.md) | Founder-approved local acceptance at `c95d50a15308def0ad2d6e9f80faa85f41bbfbac` | Commerce, settlement, custody and customer care. |
+| [Batch 4 service operations](batch-4/report.md) | Founder-approved local acceptance at `98f0022acffa1af3b007e9a2e20f8bd3b1547224` | Appointments, deposits, assigned execution and service recovery. |
+| [Batch 5 unified product](batch-5/completion.md) | Completion in progress | Product, security, browser and accessibility evidence on the final source. |
+| Batch 6 provider and hosted assurance | Requires separate authorization | Live-provider assurance and hosted verification. |
 
 ## Exact first assignment for approval
 

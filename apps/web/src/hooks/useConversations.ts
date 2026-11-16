@@ -14,11 +14,22 @@ export interface ConversationRow {
   waiting: number;
   needsYou: boolean;
   lastActivityAt: string;
+  inbox: InboxState | null;
+}
+
+export interface InboxState {
+  assignee: { id: string; name: string } | null;
+  revision: number;
+  unread: number;
+  manuallyUnread: boolean;
+  inboundPosition: string;
+  readPosition: string;
+  readRevision: number;
 }
 
 interface ConversationPage {
   conversations: ConversationRow[];
-  nextBefore: string | null;
+  nextCursor: string | null;
 }
 
 export interface ThreadMessage {
@@ -40,9 +51,11 @@ export interface Thread {
   customer: { id: string; name: string | null; waNumber: string };
   messages: ThreadMessage[];
   nextBefore: string | null;
+  inbox?: InboxState;
 }
 
-export type InboxFilter = 'all' | 'needs_you';
+export type InboxFilter = 'all' | 'needs_you' | 'unread';
+export type AssignmentFilter = 'all' | 'assigned' | 'unassigned' | 'mine';
 
 /** Rows fetched per page. Enough to fill a tall screen without paging on load. */
 const PAGE_SIZE = 40;
@@ -61,17 +74,18 @@ const POLL_MS = 15_000;
 export function useConversations(
   filter: InboxFilter,
   q: string,
+  assignment: AssignmentFilter,
 ): UseInfiniteQueryResult<InfiniteData<ConversationPage>, Error> {
   return useInfiniteQuery({
-    queryKey: ['conversations', filter, q],
+    queryKey: ['conversations', filter, q, assignment],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => {
-      const params = new URLSearchParams({ filter, limit: String(PAGE_SIZE) });
+      const params = new URLSearchParams({ filter, assignment, limit: String(PAGE_SIZE) });
       if (q.trim()) params.set('q', q.trim());
-      if (pageParam) params.set('before', pageParam);
+      if (pageParam) params.set('cursor', pageParam);
       return apiFetch<ConversationPage>(`/conversations?${params.toString()}`);
     },
-    getNextPageParam: (last) => last.nextBefore,
+    getNextPageParam: (last) => last.nextCursor,
     refetchInterval: POLL_MS,
     staleTime: 5_000,
   });
@@ -98,7 +112,7 @@ export function useInboxRealtime(): void {
 
   useEffect(() => {
     const unsubscribe = sseEventBus.subscribe((event) => {
-      if (event.type === 'message.flagged') {
+      if (event.type === 'message.flagged' || event.type === 'inbox.changed') {
         void qc.invalidateQueries({ queryKey: ['conversations'] });
         void qc.invalidateQueries({ queryKey: ['dashboard', 'badges'] });
       }

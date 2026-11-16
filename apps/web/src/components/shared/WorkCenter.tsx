@@ -113,6 +113,7 @@ function Setup({ settings }: { settings: Settings | null }) {
 export default function WorkCenter(): React.JSX.Element {
   const [params, setParams] = useSearchParams();
   const selected = params.get('work');
+  const pageAfter = params.get('after');
   const specified = params.get('state') ?? '';
   const filter = Object.hasOwn(states, specified) ? specified : '';
   const select = (id: string | null) => setParams((current) => {
@@ -122,8 +123,9 @@ export default function WorkCenter(): React.JSX.Element {
   });
   const client = useQueryClient();
   const rows = useQuery({
-    queryKey: ['workflows', filter],
-    queryFn: () => apiFetch<Workflow[]>('/workflows' + (filter ? '?state=' + filter : '')),
+    queryKey: ['workflows', filter, pageAfter],
+    queryFn: () => apiFetch<Workflow[]>('/workflows?' + new URLSearchParams({ ...(filter ? { state: filter } : {}),
+      ...(pageAfter ? { afterId: pageAfter } : {}) })),
     refetchInterval: 5_000,
   });
   const settings = useQuery({
@@ -158,6 +160,7 @@ export default function WorkCenter(): React.JSX.Element {
             const next = new URLSearchParams(current);
             if (event.target.value) next.set('state', event.target.value); else next.delete('state');
             next.delete('work');
+            next.delete('after');
             return next;
           })}>
           <option value="">Recent work</option>
@@ -179,6 +182,14 @@ export default function WorkCenter(): React.JSX.Element {
           </Row>
         ))}
       </RowList>
+      {(pageAfter || rows.data?.length === 50) && <div className="flex flex-wrap gap-2 px-4 py-3">
+        {pageAfter && <Button size="sm" variant="secondary" onClick={() => setParams((current) => {
+          const next = new URLSearchParams(current); next.delete('after'); return next;
+        })}>Newest work</Button>}
+        {rows.data?.length === 50 && <Button size="sm" variant="secondary" onClick={() => setParams((current) => {
+          const next = new URLSearchParams(current); next.set('after', rows.data!.at(-1)!.id); return next;
+        })}>Older work</Button>}
+      </div>}
       {detail.isError && <p role="alert" className="px-4 py-3 text-sm">Work details could not be loaded.</p>}
       {current && (
         <section className="border-t px-4 py-3" aria-label="Work details">

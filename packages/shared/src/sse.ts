@@ -14,6 +14,7 @@ export const SSE_EVENT_TYPES = [
   'order.created',
   'order.updated',
   'message.flagged',
+  'inbox.changed',
   'stock.alert',
   'payment.confirmed',
 ] as const;
@@ -79,6 +80,7 @@ export interface SSEEventPayloadMap {
   'order.created': OrderCreatedPayload;
   'order.updated': OrderUpdatedPayload;
   'message.flagged': MessageFlaggedPayload;
+  'inbox.changed': Record<string, never>;
   'stock.alert': StockAlertPayload;
   'payment.confirmed': PaymentConfirmedPayload;
 }

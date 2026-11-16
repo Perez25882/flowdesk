@@ -203,7 +203,7 @@ export default function Sidebar({
     for (const group of groups) {
       for (const item of group.items) {
         if (item.badge === 'pendingOrders') map[item.path] = badges?.pendingOrders ?? 0;
-        if (item.badge === 'reviewMessages') map[item.path] = badges?.reviewMessages ?? 0;
+        if (item.badge === 'reviewMessages') map[item.path] = badges?.unreadConversations ?? 0;
       }
     }
     return map;

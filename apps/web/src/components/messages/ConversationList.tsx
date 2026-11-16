@@ -108,6 +108,11 @@ function ConversationItem({
             </span>
           )}
         </span>
+        {row.inbox && <span className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-text-secondary">
+          <span className="break-words">{row.inbox.assignee?.name ?? 'Unassigned'}</span>
+          {row.inbox.unread > 0 && <strong>{row.inbox.unread} unread</strong>}
+          {row.inbox.unread === 0 && row.inbox.manuallyUnread && <strong>Marked unread</strong>}
+        </span>}
       </span>
     </button>
   );

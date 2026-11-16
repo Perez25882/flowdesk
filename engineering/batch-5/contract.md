@@ -20,7 +20,7 @@
 | Invoices and ledger | Read, create, confirm, void and owner actions | Existing read/create/confirm/void rights | Existing read/create rights | Unavailable |
 | Setup and consequential workflow decisions | Owner-only | Unavailable | Unavailable | Unavailable |
 | Managed service operations | Tenant configuration and visits | Tenant configuration and visits | Assigned visits and permitted actions | Unavailable |
-| Inbox and case work | Messaging rights, can assign | Messaging rights, can assign | Messaging rights, can self-assign available cases | Unavailable |
+| Inbox and case work | Messaging rights and may assign | Messaging rights and may assign | Messaging rights, may claim an available conversation and return their own conversation | Unavailable |
 | Business settings and team | Owner controls | Delegated settings and staff rights | Read-only business settings presentation | Unavailable |
 
 `GET /dashboard/overview` applies the existing delivery assignment and reporting permissions. `GET /conversations/:id/context` discloses bounded linked references only when the corresponding capability is present. `GET /conversations/:id?before=<message-id>` resolves the cursor within the tenant and customer and orders by timestamp and ID. The authenticated media endpoint remains the source of attachment bytes. Managed service visit lookups continue to use tenant and assignment constraints. The legacy diary retains its existing authorization contract and excludes managed visits.
@@ -48,6 +48,6 @@
 
 ## Data compatibility and recovery
 
-Batch 5 introduces no database migration. Profile, invoice, approval, receipt, tenant, and audit writes use existing models. A runtime rollback should be done with request admission and workers quiesced. Preserve the database and queue state and reconcile in-flight outbound and checkout work using existing documented runbooks. Batch 5 draft URLs and work center links require the Batch 5 web build paired with its API.
+The completion adds a conversation-state migration and retains the existing profile, invoice, approval, receipt and customer identities. The [inbox contract](conversation-ownership.md) defines per-account read positions and assignment. The [migration decision](../adr/0012-conversation-state.md) records rollout and rollback compatibility. Preserve the database and queue state and reconcile in-flight outbound and checkout work using existing runbooks. Batch 5 draft URLs and work center links require the Batch 5 web build paired with its API.
 
 After a lost invoice, order or booking response, reopen the existing form URL to check the current saved record. A completed lookup leads to the authoritative record. Keep the original request key until the action is resolved. Checkout review remains separate from creating a new request. Resolve ambiguous provider evidence through the existing reconciliation procedures before reissuing a payment request.

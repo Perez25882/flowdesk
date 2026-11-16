@@ -14,16 +14,20 @@ import {
   useInboxRealtime,
   useThread,
   type ConversationRow,
+  type AssignmentFilter,
   type InboxFilter,
   type Thread,
 } from '@/hooks/useConversations';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { cn } from '@/lib/utils';
 import CommercePanel from '@/components/shared/CommercePanel';
+import { isOwner } from '@/hooks/useAuth';
+import { ApiError } from '@/lib/api';
 
 const FILTERS: readonly TabOption<InboxFilter>[] = [
   { value: 'all', label: 'All' },
   { value: 'needs_you', label: 'Needs you' },
+  { value: 'unread', label: 'Unread' },
 ];
 
 /**
@@ -53,17 +57,18 @@ export default function MessagesPage(): React.JSX.Element {
 function Conversations(): React.JSX.Element {
   const [params, setParams] = useSearchParams();
   const [filter, setFilter] = useState<InboxFilter>('all');
+  const [assignment, setAssignment] = useState<AssignmentFilter>('all');
   const [search, setSearch] = useState('');
   const query = useDebouncedValue(search, 250);
 
   const selectedId = params.get('c');
 
   useInboxRealtime();
-  const list = useConversations(filter, query);
+  const list = useConversations(filter, query, assignment);
   const thread = useThread(selectedId);
 
   const rows = useMemo(
-    () => list.data?.pages.flatMap((page) => page.conversations) ?? [],
+    () => [...new Map(list.data?.pages.flatMap((page) => page.conversations.map((row) => [row.customerId, row] as const)) ?? []).values()],
     [list.data],
   );
 
@@ -108,11 +113,21 @@ function Conversations(): React.JSX.Element {
               onChange={setFilter}
               label="Filter conversations"
             />
+            <label className="flex flex-wrap items-center gap-2 pb-2 text-sm">
+              Assignment
+              <select aria-label="Filter by assignment" className="fd-input fd-input-compact w-auto max-w-full" value={assignment} onChange={(event) => setAssignment(event.target.value as AssignmentFilter)}>
+                <option value="all">All conversations</option>
+                <option value="assigned">Assigned</option>
+                <option value="unassigned">Unassigned</option>
+                {!isOwner() && <option value="mine">Assigned to me</option>}
+              </select>
+            </label>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ListBody
               filter={filter}
+              assignment={assignment}
               query={query}
               isLoading={list.isLoading}
               error={list.error}
@@ -172,6 +187,7 @@ function LoadError({ what, onRetry }: { what: string; onRetry: () => void }): Re
 
 function ListBody({
   filter,
+  assignment,
   query,
   isLoading,
   error,
@@ -181,6 +197,7 @@ function ListBody({
   onSelect,
 }: {
   filter: InboxFilter;
+  assignment: AssignmentFilter;
   query: string;
   isLoading: boolean;
   error: Error | null;
@@ -200,6 +217,7 @@ function ListBody({
         </p>
       );
     }
+    if (assignment !== 'all' || filter === 'unread') return <p className="p-4 text-sm text-text-secondary">No conversations match these filters.</p>;
     return filter === 'needs_you' ? (
       <EmptyState
         icon={MessagesSquare}
@@ -242,6 +260,11 @@ function ThreadBody({
   }
 
   if (isLoading) return <SkeletonRows count={5} className="p-4" />;
+  if (error instanceof ApiError && error.status === 403) {
+    return <p role="alert" className="m-4 rounded-md border border-danger/25 px-3 py-2.5 text-sm">
+      Your current role cannot open this conversation.
+    </p>;
+  }
   if (error || !data) return <LoadError what="This conversation" onRetry={onRetry} />;
 
   return <ConversationThread key={data.customer.id} thread={data} onBack={onBack} />;

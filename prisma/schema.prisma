@@ -276,6 +276,7 @@ model Session {
 
 /// Auto-created on first inbound message. No manual entry required.
 model Customer {
+  inboxThreads InboxThread[]
   serviceUpdatesId String?
   serviceUpdatesAt DateTime?
   serviceUpdates Boolean @default(false)
@@ -344,6 +345,49 @@ model Customer {
   @@index([businessId, outstandingBalance])
   @@index([businessId, blacklisted])
   @@map("customers")
+}
+
+model InboxThread {
+  businessId      String
+  customerId      String @unique
+  inboundPosition BigInt @default(0)
+  assignedStaffId String?
+  revision        Int @default(0)
+  customer        Customer @relation(fields: [customerId, businessId], references: [id, businessId], onDelete: Cascade)
+  readers         InboxReader[]
+  history         InboxAssignmentEvent[]
+
+  @@id([businessId, customerId])
+  @@index([businessId, assignedStaffId])
+  @@map("inbox_threads")
+}
+
+model InboxReader {
+  businessId   String
+  customerId   String
+  reader       String
+  position     BigInt @default(0)
+  manualUnread Boolean @default(false)
+  revision     Int @default(0)
+  thread       InboxThread @relation(fields: [businessId, customerId], references: [businessId, customerId], onDelete: Cascade)
+
+  @@id([businessId, customerId, reader])
+  @@index([businessId, reader])
+  @@map("inbox_readers")
+}
+
+model InboxAssignmentEvent {
+  businessId     String
+  customerId     String
+  revision       Int
+  actorStaffId   String?
+  previousStaffId String?
+  assignedStaffId String?
+  createdAt      DateTime @default(now())
+  thread         InboxThread @relation(fields: [businessId, customerId], references: [businessId, customerId], onDelete: Cascade)
+
+  @@id([businessId, customerId, revision])
+  @@map("inbox_assignment_events")
 }
 
 /// Created automatically from ORDER-intent messages or manually by owner.

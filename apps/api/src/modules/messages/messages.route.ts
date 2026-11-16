@@ -13,6 +13,11 @@ import {
 } from './messages.schema.js';
 import * as service from './messages.service.js';
 import { getThread, listConversations } from './conversations.js';
+import { assignConversation, inboxAssignees, inboxStates, recordInboxRead, requireInboxRead } from './inbox-state.js';
+import { SSEManager } from '../../services/sse/sse.manager.js';
+
+const threadParams = z.object({ customerId: z.string().min(1).max(100) });
+const revision = z.number().int().nonnegative();
 
 export default async function messageRoutes(app: FastifyInstance): Promise<void> {
   // The inbox: one row per customer rather than one per message. Same
@@ -22,7 +27,9 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
     { preHandler: requireCapability('messages.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const query = ListConversationsQuerySchema.parse(request.query);
-      return success(reply, await listConversations(request.business!.id, query));
+      const actor = orderActor(request);
+      await requireInboxRead(actor);
+      return success(reply, await listConversations(actor, query));
     },
   );
 
@@ -30,11 +37,44 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
     '/conversations/:customerId',
     { preHandler: requireCapability('messages.read') },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { customerId } = request.params as { customerId: string };
+      const { customerId } = threadParams.parse(request.params);
       const { before } = z.object({ before: z.string().min(1).max(100).optional() }).strict().parse(request.query);
-      return success(reply, await getThread(request.business!.id, customerId, before));
+      const actor = orderActor(request);
+      await requireInboxRead(actor);
+      const inbox = (await inboxStates(actor, [customerId])).get(customerId);
+      return success(reply, { ...(await getThread(actor.businessId, customerId, before)), inbox });
     },
   );
+
+  app.get('/conversations/assignees', { preHandler: requireCapability('staff.manage') }, async (request, reply) =>
+    success(reply, await inboxAssignees(orderActor(request))));
+
+  app.put('/conversations/:customerId/assignment', { preHandler: requireCapability('messages.send') }, async (request, reply) => {
+    const { customerId } = threadParams.parse(request.params);
+    const input = z.object({ staffId: z.string().min(1).max(100).nullable(), revision }).strict().parse(request.body);
+    const actor = orderActor(request);
+    if (await assignConversation(actor, customerId, input.staffId, input.revision)) {
+      SSEManager.getInstance().broadcast(actor.businessId, { type: 'inbox.changed', payload: {} });
+    }
+    return success(reply, (await inboxStates(actor, [customerId])).get(customerId));
+  });
+
+  app.put('/conversations/:customerId/read-state', { preHandler: requireCapability('messages.read') }, async (request, reply) => {
+    const { customerId } = threadParams.parse(request.params);
+    const input = z.object({ through: z.string().regex(/^\d{1,19}$/).nullable(), revision }).strict().parse(request.body);
+    const actor = orderActor(request);
+    await recordInboxRead(actor, customerId, input.through === null ? null : BigInt(input.through), input.revision);
+    return success(reply, (await inboxStates(actor, [customerId])).get(customerId));
+  });
+
+  app.get('/conversations/:customerId/assignment-history', { preHandler: requireCapability('messages.read') }, async (request, reply) => {
+    const { customerId } = threadParams.parse(request.params);
+    const actor = orderActor(request);
+    await requireInboxRead(actor);
+    if (!(await inboxStates(actor, [customerId])).has(customerId)) throw new NotFoundError('Conversation not found');
+    return success(reply, await prisma.inboxAssignmentEvent.findMany({ where: { businessId: actor.businessId, customerId },
+      orderBy: { revision: 'desc' }, take: 50 }));
+  });
 
   app.get('/conversations/:customerId/context', { preHandler: requireCapability('messages.read') }, async (request, reply) => {
     const { customerId } = request.params as { customerId: string };
@@ -44,7 +84,7 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
     if (!await prisma.customer.findFirst({ where: { id: customerId, businessId: scope.businessId, deletedAt: null }, select: { id: true } })) {
       throw new NotFoundError('Conversation not found');
     }
-    const [orders, visits, invoices] = await Promise.all([
+    const [orders, visits, invoices, cases] = await Promise.all([
       callerHasCapability(request, 'orders.read') ? prisma.order.findMany({ where: { ...scope, deletedAt: null },
         orderBy: { createdAt: 'desc' }, take: 4, select: { id: true, referenceNumber: true, status: true } }) : [],
       callerHasCapability(request, 'orders.create') ? prisma.serviceVisit.findMany({
@@ -53,8 +93,11 @@ export default async function messageRoutes(app: FastifyInstance): Promise<void>
           appointment: { select: { reference: true } } } }) : [],
       callerHasCapability(request, 'payments.read') ? prisma.commerceInvoice.findMany({ where: scope, orderBy: { issuedAt: 'desc' }, take: 4,
         select: { id: true, reference: true } }) : [],
+      prisma.commerceCase.findMany({ where: { ...scope, ...(actor.role === 'OPERATIONS' ? { OR: [
+        { assignedStaffId: actor.staffId }, { assignedStaffId: null },
+      ] } : {}) }, orderBy: { updatedAt: 'desc' }, take: 4, select: { id: true, kind: true, state: true } }),
     ]);
-    return success(reply, { orders, visits, invoices });
+    return success(reply, { orders, visits, invoices, cases });
   });
 
   app.get(

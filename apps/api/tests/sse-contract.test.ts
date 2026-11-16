@@ -47,6 +47,7 @@ describe('SSE wire contract', () => {
       'order.created',
       'order.updated',
       'message.flagged',
+      'inbox.changed',
       'stock.alert',
       'payment.confirmed',
     ]);

@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
+import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-setTimeout(() => process.exit(1), 240_000).unref();
+setTimeout(() => process.exit(1), 360_000).unref();
 for (const name of ['DATABASE_URL', 'REDIS_URL']) {
   const url = new URL(process.env[name]);
   assert.equal(url.hostname, '127.0.0.1');
@@ -33,12 +34,14 @@ const { chromium } = await load(process.env.B2_PLAYWRIGHT);
 const { prisma } = await load('apps/api/dist/config/database.js');
 const { disconnectRedis } = await load('apps/api/dist/config/redis.js');
 const { createApp } = await load('apps/api/dist/app.js');
+const { startSSEFanout, stopSSEFanout } = await load('apps/api/dist/services/sse/sse.manager.js');
 const { releaseGateway } = await load('apps/api/scripts/release-gateway.mjs');
 const localRequire = createRequire(pathToFileURL(resolve('apps/api/dist/app.js')));
 const password = 'Local-fixture-product-browser!';
 const passwordHash = await localRequire('bcrypt').hash(password, 4);
 
 const app = await createApp();
+await startSSEFanout();
 const origin = new URL(await app.listen({ host: '127.0.0.1', port: 0 }));
 const gateway = releaseGateway(origin, resolve('apps/web/dist'));
 gateway.listen(0, '127.0.0.1');
@@ -106,6 +109,8 @@ try {
     name: 'Retail fixture customer', lastInboundAt: new Date() } });
   const rider = await prisma.staff.create({ data: { businessId: retail.business.id, role: 'DELIVERY', name: 'Fixture rider',
     phone: '233209100003', passwordHash, inviteAcceptedAt: new Date() } });
+  const operator = await prisma.staff.create({ data: { businessId: retail.business.id, role: 'OPERATIONS', name: 'Fixture inbox operator',
+    phone: '233209100004', passwordHash, inviteAcceptedAt: new Date() } });
   const inbound = await prisma.message.create({ data: { businessId: retail.business.id, customerId: customer.id,
     waMessageId: 'fixture-' + randomUUID(), direction: 'INBOUND', body: 'Can you help with this order?', requiresReview: true } });
   await owner.getByRole('heading', { name: 'Business setup' }).waitFor();
@@ -140,6 +145,40 @@ try {
   await owner.goto(base + `/messages?c=${customer.id}`);
   await owner.getByRole('region', { name: 'Conversation', exact: true }).getByText(inbound.body, { exact: true }).waitFor();
   console.log('Keyboard opens the work center and direct inbox navigation opens the tenant thread.');
+
+  const staffPage = await openPage(1366, 768);
+  await login(staffPage, operator.phone, true);
+  await staffPage.goto(base + `/messages?c=${customer.id}`);
+  await staffPage.getByRole('button', { name: 'Claim conversation' }).waitFor();
+  await staffPage.getByText('Live', { exact: true }).waitFor();
+  const ownership = owner.getByRole('region', { name: 'Conversation assignment and read state' });
+  await owner.getByText('Manage assignment', { exact: true }).click();
+  await owner.getByLabel('Responsible staff member').selectOption(operator.id);
+  await owner.getByRole('button', { name: 'Save assignment' }).click();
+  await staffPage.getByText('Assigned to Fixture inbox operator', { exact: true }).waitFor({ timeout: 8000 });
+  await staffPage.getByLabel('Filter by assignment', { exact: true }).selectOption('mine');
+  await staffPage.getByRole('complementary', { name: 'Conversations' }).getByRole('button', { name: /Retail fixture customer/ }).waitFor();
+  await ownership.getByRole('button', { name: 'Mark read', exact: true }).focus();
+  await owner.keyboard.press('Enter');
+  await ownership.getByRole('button', { name: 'Mark unread', exact: true }).waitFor();
+  await staffPage.getByRole('button', { name: 'Mark read', exact: true }).waitFor();
+  await owner.reload();
+  await ownership.getByRole('button', { name: 'Mark unread', exact: true }).click();
+  await ownership.getByText('Marked unread', { exact: true }).waitFor();
+  await staffPage.getByRole('button', { name: 'Return to shared queue' }).click();
+  await ownership.getByText('Unassigned', { exact: true }).waitFor({ timeout: 8000 });
+  await staffPage.getByRole('button', { name: 'Claim conversation' }).waitFor();
+  await staffPage.route('**/api/v1/conversations/*/assignment', async (route) => {
+    await prisma.staff.update({ where: { id: operator.id }, data: { role: 'DELIVERY' } });
+    await route.continue();
+  });
+  const revoked = staffPage.waitForResponse((response) => response.url().endsWith('/assignment') && response.request().method() === 'PUT');
+  await staffPage.getByRole('button', { name: 'Claim conversation' }).click();
+  assert.equal((await revoked).status(), 403);
+  await staffPage.getByRole('region', { name: 'Conversation', exact: true }).getByRole('alert').waitFor();
+  assert.equal((await prisma.inboxThread.findUniqueOrThrow({ where: { customerId: customer.id } })).assignedStaffId, null);
+  await staffPage.close();
+  console.log('Inbox assignment and individual read positions survived refresh. SSE refreshed both sessions. Role revocation prevented a pending claim.');
 
   const actor = await openPage();
   const riderToken = await login(actor, rider.phone, true);
@@ -176,8 +215,19 @@ try {
   console.log('Lost invoice response, duplicate click and browser refresh recover the one committed draft.');
 
   await owner.goto(base + '/orders');
-  await owner.getByRole('button', { name: 'New order', exact: true }).click();
+  const newOrder = owner.getByRole('button', { name: 'New order', exact: true });
+  await newOrder.focus();
+  await owner.keyboard.press('Enter');
   const order = owner.getByRole('dialog', { name: 'New order' });
+  await order.waitFor();
+  for (let tab = 0; tab < 10; tab++) {
+    await owner.keyboard.press('Tab');
+    assert.ok(await owner.evaluate(() => Boolean(document.activeElement?.closest('[role=dialog]'))), 'Dialog focus escaped');
+  }
+  await owner.keyboard.press('Escape');
+  await order.waitFor({ state: 'hidden' });
+  assert.ok(await newOrder.evaluate((node) => node === document.activeElement), 'Order dialog did not restore focus');
+  await owner.keyboard.press('Enter');
   await order.getByRole('radio', { name: 'Existing', exact: true }).click();
   await order.getByLabel('Choose a customer').selectOption(customer.id);
   await order.getByRole('button', { name: 'Type it out', exact: true }).click();
@@ -227,6 +277,42 @@ try {
     }
   }
 
+  if (process.env.B5_CONTROL_AUDIT) {
+    const scans = [];
+    const publicPage = await openPage();
+    for (const [width, height] of [[390, 844], [768, 1024], [1366, 768]]) {
+      const routes = [
+        [publicPage, '/register'], [publicPage, '/login'], [publicPage, '/forgot-password'],
+        [owner, '/setup'], [owner, '/dashboard'], [owner, '/dashboard?view=work'], [owner, '/messages'],
+        [owner, '/messages?view=cases'], [owner, '/messages?c=' + customer.id], [owner, '/customers'],
+        [owner, '/customers/' + customer.id], [owner, '/products'], [owner, '/orders'], [owner, '/orders?workspace=quotes'],
+        [owner, '/payments?view=invoices'], [professional, '/bookings?view=operations&calendar=week'],
+        [owner, '/staff'], [owner, '/reports'], [owner, '/settings?section=assistant'],
+      ];
+      for (const [page, path] of routes) {
+        await page.setViewportSize({ width, height });
+        await page.goto(base + path);
+        await page.locator('h1').first().waitFor();
+        await noOverflow(page, path);
+        const state = await page.evaluate(() => [...document.querySelectorAll('main button, main a[href], main input, main select, main textarea, main summary')]
+          .filter((element) => element.getClientRects().length && !element.closest('details:not([open]) > :not(summary)')).map((element) => ({
+            element: element.localName, label: element.getAttribute('aria-label') ?? element.labels?.[0]?.textContent?.trim() ?? element.textContent.trim().replace(/\s+/g, ' '),
+            enabled: !element.matches(':disabled,[aria-disabled="true"]'), disposition: element.matches(':disabled,[aria-disabled="true"]') ? 'INTENTIONALLY DISABLED' : 'BLOCKED',
+          })));
+        if (process.env.B5_AXE) await page.addScriptTag({ path: process.env.B5_AXE });
+        const violations = process.env.B5_AXE ? await page.evaluate(async () => (await window.axe.run({ runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] })).violations
+          .map(({ id, impact, nodes }) => ({ id, impact, targets: nodes.map((node) => node.target) }))) : [];
+        scans.push({ width, path: path.replace(customer.id, '<customer>'), role: page === publicPage ? 'public' : 'owner', controls: state, violations });
+      }
+    }
+    await writeFile(process.env.B5_CONTROL_AUDIT, JSON.stringify(scans, null, 2) + '\n');
+    const failures = scans.filter((sample) => sample.violations.length);
+    console.log(`Control audit ${scans.length} route/viewport samples, ${failures.length} samples with Axe violations`);
+    if (failures.length) process.exitCode = 1;
+    await publicPage.close();
+    await owner.goto(base + '/payments?view=invoices');
+  }
+
   await owner.context().clearCookies();
   await owner.reload();
   await owner.waitForURL('**/login');
@@ -251,6 +337,7 @@ try {
   await app.close();
   await outboundMessagesQueue.close();
   await prisma.$disconnect();
+  await stopSSEFanout();
   await disconnectRedis();
 }
 

@@ -32,6 +32,7 @@ const EVENT_CAPABILITIES: Record<string, Capability> = {
   'order.created': 'orders.read',
   'order.updated': 'orders.read',
   'message.flagged': 'messages.read',
+  'inbox.changed': 'messages.read',
   'stock.alert': 'products.read',
   'payment.confirmed': 'payments.read',
 };

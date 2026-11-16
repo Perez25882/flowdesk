@@ -283,6 +283,16 @@ try {
   await settle(standCharges[1], 950002);
   await page.getByText(/Verified payment · Due/).waitFor();
   if (await prisma.payment.count({ where: { invoiceId: standalone.id, confidence: 'GATEWAY_CONFIRMED' } }) !== 2) throw new Error('Browser payment ledger count disagrees');
+  await standalonePanel.getByText('Record a financial adjustment', { exact: true }).click();
+  await standalonePanel.getByLabel('Returned amount (GHS)').fill('5');
+  await standalonePanel.getByLabel('Adjustment reference').fill('TEST-RETURN-005');
+  await standalonePanel.getByLabel('Evidence and reason').fill('Synthetic fixture evidence for money already returned');
+  await standalonePanel.getByRole('button', { name: 'Record adjustment', exact: true }).click();
+  await standalonePanel.getByText('Adjustment recorded in the ledger.').waitFor();
+  const adjustment = await prisma.payment.findFirstOrThrow({ where: { businessId: business.id, invoiceId: standalone.id,
+    reference: 'TEST-RETURN-005', direction: 'OUT' } });
+  if (!adjustment.amount.eq(5) || adjustment.confidence !== 'SELLER_ATTESTED') throw new Error('Adjustment evidence disagrees with the browser');
+  if (initializations.length !== 2) throw new Error('A recorded adjustment unexpectedly created a checkout');
 
   const orderInvoice = await prisma.commerceInvoice.create({ data: { ...scope, orderId: manualOrder.id,
     reference: 'INV-BROWSER-REOPEN', dueAt: new Date(Date.now() + 86_400_000), total: manualOrder.totalAmount,
