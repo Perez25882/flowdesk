@@ -63,7 +63,8 @@ async function login(page, identity, staff = false) {
   if (staff) await page.getByRole('tab', { name: 'Staff member' }).click();
   await page.locator(staff ? '#phone' : '#email').fill(identity);
   await page.locator('#password').fill(password);
-  const responsePromise = page.waitForResponse((response) => /\/auth\/(login|staff-login|staff\/login)$/.test(response.url()) && response.request().method() === 'POST');
+  const loginPath = staff ? '/api/v1/staff/login' : '/api/v1/auth/login';
+  const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === loginPath && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   const response = await responsePromise;
   assert.ok(response.ok(), `Login HTTP ${response.status()}`);
@@ -217,11 +218,16 @@ try {
   throw error;
 } finally {
   await browser.close();
-  gateway.closeAllConnections();
-  await new Promise((done) => gateway.close(done));
+  await new Promise((done) => {
+    gateway.close(done);
+    gateway.closeAllConnections();
+  });
   const { outboundMessagesQueue } = await load('apps/api/dist/queues/outbound.queue.js');
-  await outboundMessagesQueue.close();
+  app.server.closeAllConnections();
   await app.close();
+  await outboundMessagesQueue.close();
   await prisma.$disconnect();
   await disconnectRedis();
 }
+
+process.exit(process.exitCode ?? 0);

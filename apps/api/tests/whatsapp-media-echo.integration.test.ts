@@ -568,6 +568,12 @@ describe.skipIf(!databaseUrl || !redisUrl)(
         }
         if (phase === 'object-written') samples.delete(mediaId);
         expect((await signed(changes)).statusCode).toBe(200);
+        // A killed client can exit before PostgreSQL has rolled back its transaction.
+        // Wait for the locks on this receipt to be released before running SKIP LOCKED recovery.
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+          await tx.$queryRaw`SELECT id FROM whatsapp_text_receipts WHERE id = ${interrupted.id} FOR UPDATE`;
+        }, { timeout: 7_500 });
         await run(business.id);
         expect((await receipt(phone, event.id)).status).toBe('COMPLETED');
         expect(await prisma.message.count({ where: { waMessageId: event.id } })).toBe(1);

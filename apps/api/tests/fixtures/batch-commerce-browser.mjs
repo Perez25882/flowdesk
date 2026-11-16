@@ -292,13 +292,12 @@ try {
   await page.getByRole('button', { name: 'Send payment link' }).click();
   await page.getByRole('link', { name: 'Open existing payment link' }).waitFor();
   await page.reload();
-  await page.getByText(manualOrder.referenceNumber, { exact: true }).first().click();
+  await page.getByRole('dialog').getByText(manualOrder.referenceNumber, { exact: true }).waitFor();
   await page.getByRole('link', { name: 'Open existing payment link' }).waitFor();
   await page.getByRole('button', { name: 'Send payment link' }).click();
   await page.getByText('Payment link is ready.').waitFor();
   const orderCharges = initializations.filter((entry) => entry.metadata.flowdeskInvoiceId === orderInvoice.id);
   if (orderCharges.length !== 1 || orderCharges[0].metadata.flowdeskOrderId !== manualOrder.id) throw new Error('Order drawer created a new provider request after refresh');
-  await page.goto(base + '/dashboard');
   await showInvoices();
 
   await page.getByText('Payment reminder settings', { exact: true }).click();
@@ -340,6 +339,7 @@ try {
   await page.locator('#email').fill(secondEmail);
   await page.locator('#password').fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.waitForURL('**/dashboard');
   await showInvoices();
   await page.getByText('No standalone invoices yet.').waitFor();
   const isolated = await page.request.get(base + '/api/v1/commerce/invoices/' + standalone.id, { headers: { authorization } });
