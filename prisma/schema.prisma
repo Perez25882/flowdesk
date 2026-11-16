@@ -23,6 +23,7 @@ datasource db {
 /// are the login credentials. Meta OAuth is used solely to attach a WhatsApp
 /// number (`metaUserId` / `waPhoneNumberId`), never as the identity provider.
 model Business {
+  commerceReminderPolicy CommerceReminderPolicy?
   whatsAppSends WhatsAppSend[]
   fulfillmentTasks FulfillmentTask[]
   id                 String             @id @default(cuid())
@@ -274,6 +275,10 @@ model Session {
 
 /// Auto-created on first inbound message. No manual entry required.
 model Customer {
+  commerceInvoices CommerceInvoice[]
+  reminderConsentId String?
+  reminderConsentAt DateTime?
+  reminderConsent Boolean @default(false)
   commerceFollowup Boolean @default(false)
   commerceConsentId String?
   commerceConsentAt DateTime?
@@ -336,6 +341,7 @@ model Customer {
 
 /// Created automatically from ORDER-intent messages or manually by owner.
 model Order {
+  commerceReturns CommerceReturn[]
   inboundSourceMessageId String? @unique
   id              String               @id @default(cuid())
   businessId      String
@@ -407,6 +413,7 @@ model Order {
 /// Individual line items within an order.
 /// Matched items have productId and pricing. Unmatched are description-only.
 model OrderItem {
+  commerceReturnLines CommerceReturnLine[]
   id              String   @id @default(cuid())
   orderId         String
   productId       String?
@@ -421,6 +428,7 @@ model OrderItem {
   product         Product? @relation(fields: [productId], references: [id])
 
   @@index([orderId])
+  @@unique([id, orderId])
   @@index([productId])
   @@map("order_items")
 }
@@ -553,6 +561,7 @@ model ProductImage {
 /// Immutable record of every stock change.
 /// Enables full inventory audit trail.
 model StockMovement {
+  commerceReturnLine CommerceReturnLine?
   id           String            @id @default(cuid())
   businessId   String
   productId    String
@@ -574,6 +583,10 @@ model StockMovement {
 
 /// Every payment logged against a customer or order.
 model Payment {
+  commerceReturnResolution CommerceReturn?
+  invoiceId String?
+  invoice CommerceInvoice? @relation(fields: [invoiceId, businessId, customerId], references: [id, businessId, customerId], onDelete: Restrict)
+  @@index([businessId, invoiceId])
   manualRequestKey String?
   manualRequestHash String?
   id            String        @id @default(cuid())
@@ -637,6 +650,9 @@ model Payment {
 /// that Payment is written with `GATEWAY_CONFIRMED` — the one confidence level
 /// nobody has to take anyone's word for.
 model PaymentRequest {
+  invoiceId String?
+  invoice CommerceInvoice? @relation(fields: [invoiceId, businessId, customerId], references: [id, businessId, customerId], onDelete: Restrict)
+  @@index([businessId, invoiceId])
   id            String               @id @default(cuid())
   businessId    String
   customerId    String
@@ -758,6 +774,9 @@ model PaystackSettlement {
 }
 
 model PaystackInitialization {
+  invoiceId String?
+  invoice CommerceInvoice? @relation(fields: [invoiceId, businessId, customerId], references: [id, businessId, customerId], onDelete: Restrict)
+  @@index([businessId, invoiceId, state])
   reference      String @id
   businessId     String
   customerId     String
@@ -1003,6 +1022,7 @@ enum WhatsAppSendState {
 }
 
 model WhatsAppSend {
+  commerceReminder CommerceReminder?
   id String @id @default(uuid())
   businessId String
   business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -1784,8 +1804,9 @@ model CommerceInvoice {
   id String @id @default(uuid())
   businessId String
   customerId String
-  orderId String @unique
-  order Order @relation(fields: [orderId, businessId, customerId], references: [id, businessId, customerId], onDelete: Restrict)
+  customer Customer @relation(fields: [customerId, businessId], references: [id, businessId], onDelete: Restrict)
+  orderId String? @unique
+  order Order? @relation(fields: [orderId, businessId, customerId], references: [id, businessId, customerId], onDelete: Restrict)
   reference String
   currency String @default("GHS")
   receiptLines Json
@@ -1794,12 +1815,60 @@ model CommerceInvoice {
   releaseThreshold Decimal @db.Decimal(12, 2)
   dueAt DateTime
   issuedAt DateTime @default(now())
+  status CommerceInvoiceStatus @default(ISSUED)
+  terms String?
+  payments Payment[]
+  requests PaymentRequest[]
+  initializations PaystackInitialization[]
+  reminders CommerceReminder[]
   preparation CommercePreparation?
 
   @@unique([businessId, reference])
   @@unique([orderId, businessId, customerId])
   @@unique([id, businessId])
+  @@unique([id, businessId, customerId])
   @@map("commerce_invoices")
+}
+
+enum CommerceInvoiceStatus {
+  DRAFT
+  ISSUED
+  CANCELLED
+}
+
+model CommerceReminderPolicy {
+  businessId String @id
+  business Business @relation(fields: [businessId], references: [id], onDelete: Restrict)
+  enabled Boolean @default(false)
+  intervalDays Int @default(3)
+  maxReminders Int @default(2)
+  templateName String?
+  templateLanguage String?
+  approvedWabaId String?
+  approvedPhoneId String?
+  approvedAt DateTime?
+  templateCheckedAt DateTime?
+
+  @@map("commerce_reminder_policies")
+}
+
+model CommerceReminder {
+  id String @id @default(uuid())
+  invoiceId String
+  businessId String
+  invoice CommerceInvoice @relation(fields: [invoiceId, businessId], references: [id, businessId], onDelete: Restrict)
+  sequence Int
+  sendId String? @unique
+  send WhatsAppSend? @relation(fields: [sendId], references: [id], onDelete: Restrict)
+  status String @default("WAITING")
+  reason String?
+  dueAt DateTime
+  nextCheckAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@unique([invoiceId, sequence])
+  @@index([status, nextCheckAt])
+  @@map("commerce_reminders")
 }
 
 model CommercePreparation {
@@ -1820,6 +1889,7 @@ model CommercePreparation {
 }
 
 model CommerceCase {
+  returns CommerceReturn[]
   id String @id @default(uuid())
   businessId String
   customerId String
@@ -1839,6 +1909,7 @@ model CommerceCase {
   @@unique([businessId, sourceId])
   @@unique([id, businessId])
   @@index([businessId, state, createdAt])
+  @@unique([id, businessId, customerId, orderId])
   @@map("commerce_cases")
 }
 
@@ -1855,4 +1926,48 @@ model CommerceCaseEvent {
 
   @@id([caseId, revision])
   @@map("commerce_case_events")
+}
+
+model CommerceReturn {
+  id String @id @default(uuid())
+  businessId String
+  customerId String
+  caseId String
+  supportCase CommerceCase @relation(fields: [caseId, businessId, customerId, orderId], references: [id, businessId, customerId, orderId], onDelete: Restrict)
+  orderId String
+  order Order @relation(fields: [orderId, businessId, customerId], references: [id, businessId, customerId], onDelete: Restrict)
+  requestKey String
+  requestHash String
+  verifiedBy String?
+  approvedAt DateTime?
+  rejectedAt DateTime?
+  resolvedAt DateTime?
+  resolutionPaymentId String? @unique
+  resolutionPayment Payment? @relation(fields: [resolutionPaymentId], references: [id], onDelete: Restrict)
+  obligation String
+  evidence String
+  lines CommerceReturnLine[]
+  noticeId String?
+  createdAt DateTime @default(now())
+
+  @@unique([businessId, requestKey])
+  @@unique([id, orderId])
+  @@index([orderId])
+  @@map("commerce_returns")
+}
+
+model CommerceReturnLine {
+  returnId String
+  orderId String
+  orderItemId String
+  returned CommerceReturn @relation(fields: [returnId, orderId], references: [id, orderId], onDelete: Restrict)
+  orderItem OrderItem @relation(fields: [orderItemId, orderId], references: [id, orderId], onDelete: Restrict)
+  quantity Int
+  condition String
+  movementId String? @unique
+  movement StockMovement? @relation(fields: [movementId], references: [id], onDelete: Restrict)
+
+  @@id([returnId, orderItemId])
+  @@index([orderItemId])
+  @@map("commerce_return_lines")
 }

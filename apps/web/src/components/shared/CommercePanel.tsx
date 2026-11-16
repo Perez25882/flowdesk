@@ -4,6 +4,8 @@ import { Panel, PanelHead, Row, RowList } from '@/components/ui/Panel';
 import { Button } from '@/components/ui/Button';
 import { apiFetch } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
+import { CommerceInvoices } from './CommerceInvoices';
+import { ReturnCaseContents, type ReturnCase } from '@/components/orders/OrderReturns';
 
 type Policy = { enabled: boolean; allowPickup: boolean; allowDelivery: boolean; quoteMinutes: number;
   invoiceDays: number; depositPercent: number; releaseOnDeposit: boolean; allowFollowup: boolean; revision: number };
@@ -11,7 +13,7 @@ type Quote = { id: string; state: string; total: string; specification?: string;
   lines: { productId: string; itemName: string; quantity: number }[] };
 type Case = { id: string; kind: string; state: string; revision: number;
   customer?: { name: string | null }; order?: { referenceNumber: string; status: string } };
-type CaseDetail = Case & { customerConfirmationId: string | null; canReceiveReturn: boolean; history: { resolution: string | null }[] };
+type CaseDetail = ReturnCase & { canReceiveReturn: boolean; history: { resolution: string | null }[] };
 
 function PolicyForm({ policy }: { policy: Policy | null }) {
   const client = useQueryClient();
@@ -69,6 +71,7 @@ const states: Record<string, string> = {
 export default function CommercePanel(): React.JSX.Element {
   const client = useQueryClient();
   const [tab, setTab] = useState<'quotes' | 'cases'>('quotes');
+  const [showInvoices, setShowInvoices] = useState(false);
   const [selected, select] = useState<Case | null>(null);
   const policy = useQuery({ queryKey: ['commerce', 'policy'], queryFn: () => apiFetch<Policy | null>('/commerce/policy') });
   const quotes = useQuery({ queryKey: ['commerce', 'quotes'], queryFn: () => apiFetch<Quote[]>('/commerce/quotes'),
@@ -98,7 +101,10 @@ export default function CommercePanel(): React.JSX.Element {
       {policy.isPending && <p className="px-4 py-3 text-sm">Loading commerce…</p>}
       {policy.isError && <p role="alert" className="px-4 py-3 text-sm">Commerce settings could not be loaded.</p>}
       {policy.isSuccess && <PolicyForm key={policy.data?.revision ?? 0} policy={policy.data} />}
-      {policy.data?.enabled && <>
+      <div className="px-4 py-2"><Button size="sm" variant="secondary" aria-expanded={showInvoices}
+        onClick={() => setShowInvoices(!showInvoices)}>Standalone invoices</Button></div>
+      {showInvoices && <CommerceInvoices />}
+      {policy.data?.enabled && !showInvoices && <>
         <div className="flex gap-2 px-4 py-2">
           <Button size="sm" variant={tab === 'quotes' ? 'primary' : 'secondary'} onClick={() => setTab('quotes')}>Quotes</Button>
           <Button size="sm" variant={tab === 'cases' ? 'primary' : 'secondary'} onClick={() => setTab('cases')}>Customer cases</Button>
@@ -136,6 +142,7 @@ export default function CommercePanel(): React.JSX.Element {
             <p className="font-medium">{caseNames[detail.data.kind]} · {states[detail.data.state]}</p>
             {detail.data.customerConfirmationId && <p>Customer confirmed the resolution.</p>}
             {detail.data.history.some((event) => event.resolution === 'RETURN_RECEIVED_TO_STOCK') && <p>Returned goods were received into stock.</p>}
+            <ReturnCaseContents key={detail.data.id} item={detail.data} refresh={() => { void detail.refetch(); }} />
             {detail.data.state !== 'RESOLVED' && <div className="mt-2 flex flex-wrap gap-2">
               <Button size="sm" variant="secondary" disabled={caseAction.isPending} onClick={() => caseAction.mutate('WAITING')}>Wait for customer</Button>
               <Button size="sm" variant="secondary" disabled={caseAction.isPending} onClick={() => caseAction.mutate('ESCALATED')}>Move to review</Button>

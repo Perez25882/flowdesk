@@ -1,5 +1,7 @@
 # Batch 3 commerce contract
 
+The [completion contract](closure-contract.md) documents standalone allocation, reminder recovery, partial returns and browser checkout recovery added after the original verified revision.
+
 ## Composition and workflow versions
 
 The existing Fastify API and PostgreSQL/BullMQ runtime owns all commerce work. The G1 receipt dispatcher admits authenticated WhatsApp text, and it links the admitted workflow and message in one transaction. A retail or custom-order profile with commerce enabled admits workflow definition version 3. Earlier definitions retain their established transitions.

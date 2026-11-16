@@ -12,6 +12,7 @@ import {
 } from '../whatsapp/client.js';
 import { formatAmount } from '../templates/template-engine.js';
 import { deliverText, loadNotificationContext } from './customer-notifications.js';
+import { invoiceAmounts } from '../../modules/commerce/commerce.invoices.js';
 
 /**
  * The receipt a customer gets when their payment lands.
@@ -45,6 +46,7 @@ export interface ReceiptLines {
   amount: number;
   reference: string | null;
   orderReference: string | null;
+  invoiceReference?: string;
   method: string;
   paidAt: Date;
   /** What is still owed on the order, when this did not clear it. */
@@ -90,6 +92,7 @@ export function composeReceipt(receipt: ReceiptLines): string {
   lines.push(`Date: ${formatReceiptDate(receipt.paidAt)}`);
 
   if (receipt.orderReference) lines.push(`Order: ${receipt.orderReference}`);
+  if (receipt.invoiceReference) lines.push(`Invoice: ${receipt.invoiceReference}`);
 
   // Stated only when there is one, and stated plainly. A customer who still
   // owes money and is not told finds out in an argument later.
@@ -143,6 +146,7 @@ export async function sendPaymentReceipt(paymentId: string): Promise<'HANDED_OFF
       voidedAt: true,
       businessId: true,
       customerId: true,
+      invoice: true,
       business: { select: { name: true, receiptsEnabled: true } },
       order: {
         select: {
@@ -159,15 +163,17 @@ export async function sendPaymentReceipt(paymentId: string): Promise<'HANDED_OFF
 
   const context = await loadNotificationContext(payment.businessId, payment.customerId);
   if (!context) return 'SUPPRESSED';
+  const standalone = payment.invoice && !payment.invoice.orderId ? payment.invoice : null;
 
   const text = composeReceipt({
     businessName: payment.business.name,
     amount: Number(payment.amount),
     reference: payment.reference,
     orderReference: payment.order?.referenceNumber ?? null,
+    ...(standalone ? { invoiceReference: standalone.reference } : {}),
     method: payment.method,
     paidAt: payment.attestedAt ?? payment.createdAt,
-    balance: payment.order
+    balance: standalone ? Number((await invoiceAmounts(prisma, standalone)).due) : payment.order
       ? Math.max(Number(payment.order.totalAmount) - Number(payment.order.amountPaid), 0)
       : null,
     items:

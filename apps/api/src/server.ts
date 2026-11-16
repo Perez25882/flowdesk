@@ -15,6 +15,7 @@ import { startTextReceiptWorker } from './workers/text-receipt.worker.js';
 import { startPaystackSettlementWorker } from './workers/paystack-settlement.worker.js';
 import { startFulfillmentRecovery } from './workers/fulfillment-recovery.js';
 import { startWorkflowRecovery } from './modules/workflows/workflow.worker.js';
+import { startCommerceReminderRecovery } from './modules/commerce/commerce.reminders.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -72,6 +73,7 @@ async function startServer(): Promise<void> {
   const stopOutbound = startDurableOutboundRecovery();
   const stopFulfillment = startFulfillmentRecovery();
   const stopWorkflows = startWorkflowRecovery();
+  const stopReminders = startCommerceReminderRecovery();
   let isShuttingDown = false;
 
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -94,6 +96,7 @@ async function startServer(): Promise<void> {
       await stopOutbound();
       await stopFulfillment();
       await stopWorkflows();
+      await stopReminders();
       await drainQueues();
       await stopSSEFanout();
       await disconnectRedis();

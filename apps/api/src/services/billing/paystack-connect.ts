@@ -266,6 +266,7 @@ export interface VerifiedCharge {
   businessId: string | null;
   customerId: string | null;
   orderId: string | null;
+  invoiceId?: string | null;
 }
 
 function nonnegativeMinor(value: unknown): number | null {
@@ -312,6 +313,7 @@ export async function verifyCharge(reference: string): Promise<VerifiedCharge | 
       businessId: evidenceText(metadata.flowdeskBusinessId),
       customerId: evidenceText(metadata.flowdeskCustomerId),
       orderId: evidenceText(metadata.flowdeskOrderId),
+      ...(evidenceText(metadata.flowdeskInvoiceId) ? { invoiceId: evidenceText(metadata.flowdeskInvoiceId) } : {}),
     };
   } catch (error: unknown) {
     logger.warn({ errorType: error instanceof Error ? error.name : 'Unknown', reference }, 'Could not verify a Paystack charge');

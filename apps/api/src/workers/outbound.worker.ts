@@ -24,6 +24,8 @@ import {
 import { moveToDeadLetter } from './dead-letter.worker.js';
 import { normalizeGhanaPhone } from '../utils/phone.js';
 import { shouldSendAutoReply } from '../services/templates/template-engine.js';
+import { verifyReminderSend } from '../modules/commerce/commerce.reminders.js';
+import type { CommerceRecoveryProbe } from '../modules/commerce/commerce.recovery.js';
 
 /**
  * Delivers queued outbound messages through each tenant's own WhatsApp number.
@@ -216,6 +218,7 @@ export async function processDurableOutbound(id: string): Promise<void> {
           customer: { commerceFollowup: true, commerceConsentId: data.commerceFollowupConsentId },
           business: { commercePolicy: { enabled: true, allowFollowup: true } },
         }, select: { id: true } }))) reason = 'ORDER_FOLLOWUP_CONSENT_STALE';
+    if (!reason && data.commerceReminder) reason = await verifyReminderSend(tx, id, data);
     if (!reason && data.sentByStaffId) {
       const [staff] = await tx.$queryRaw<Array<{ role: 'MANAGER' | 'OPERATIONS' | 'DELIVERY' }>>`
         SELECT role::text FROM staff WHERE id = ${data.sentByStaffId} AND "businessId" = ${candidate.businessId} AND active FOR SHARE
@@ -238,6 +241,14 @@ export async function processDurableOutbound(id: string): Promise<void> {
     await prisma.whatsAppSend.updateMany({ where: { id, state: 'SENDING', leaseUntil: lease },
       data: { state: 'FAILED', reason: 'OWNER_TAKEOVER', leaseUntil: null } });
     return;
+  }
+  if (data.commerceReminder) {
+    const current = await verifyReminderSend(prisma, id, data);
+    if (current) {
+      await prisma.whatsAppSend.updateMany({ where: { id, state: 'SENDING', leaseUntil: lease },
+        data: { state: 'FAILED', reason: current, leaseUntil: null } });
+      return;
+    }
   }
   let result: Awaited<ReturnType<typeof send>>;
   try {
@@ -303,7 +314,7 @@ export async function applyDeliveryReceipts(
   });
 }
 
-export async function recoverDurableOutbound(): Promise<void> {
+export async function recoverDurableOutbound(probe?: CommerceRecoveryProbe): Promise<void> {
   const now = new Date();
   await prisma.$executeRaw`
     UPDATE whatsapp_sends SET state = 'REVIEW_REQUIRED', reason = 'SEND_WORKER_INTERRUPTED',
@@ -316,6 +327,7 @@ export async function recoverDurableOutbound(): Promise<void> {
     where: { state: { in: ['AUTHORIZED', 'QUEUED', 'RETRY_PENDING'] }, nextAttemptAt: { lte: now } },
     orderBy: { nextAttemptAt: 'asc' }, take: 20,
   });
+  if (pending.length) await probe?.('after-outbound-intent');
   await Promise.allSettled(pending.map((row) => scheduleOutbound(row.id, row.payload as unknown as OutboundJobData)));
   const receipts = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT s.id FROM whatsapp_sends s WHERE EXISTS (

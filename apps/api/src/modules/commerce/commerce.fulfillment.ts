@@ -17,7 +17,7 @@ export async function releasePreparation(tx: Tx, businessId: string, orderId: st
   `;
   if (!order) return null;
   const invoice = await preparationForOrder(tx, businessId, orderId);
-  if (!invoice || invoice.order.status === 'CANCELLED' || !invoice.order.commerceQuote) return null;
+  if (!invoice?.order?.commerceQuote || invoice.order.status === 'CANCELLED') return null;
   if (!(await invoiceAmounts(tx, invoice)).verified.gte(invoice.releaseThreshold)) return null;
   await tx.commercePreparation.createMany({
     data: { invoiceId: invoice.id, businessId,
@@ -41,7 +41,7 @@ export async function prepareForDelivery(
 ): Promise<void> {
   const invoice = await preparationForOrder(tx, actor.businessId, orderId);
   if (!invoice) return;
-  if (!invoice.order.commerceQuote || !invoice.preparation || invoice.preparation.state !== 'READY' ||
+  if (!invoice.order?.commerceQuote || !invoice.preparation || invoice.preparation.state !== 'READY' ||
       !(await invoiceAmounts(tx, invoice)).verified.gte(invoice.releaseThreshold)) {
     throw new ConflictError('Verified payment and completed preparation are required');
   }
@@ -66,7 +66,7 @@ export async function updatePreparation(
   `;
   if (!locked) throw new NotFoundError('Order not found');
   const invoice = await preparationForOrder(tx, actor.businessId, orderId);
-  if (!invoice?.preparation || invoice.order.status !== 'PROCESSING' ||
+  if (!invoice?.preparation || invoice.order?.status !== 'PROCESSING' ||
       !['PREPARING', 'READY'].includes(invoice.preparation.state) ||
       !(await invoiceAmounts(tx, invoice)).verified.gte(invoice.releaseThreshold)) {
     throw new ConflictError('This order cannot be prepared now');

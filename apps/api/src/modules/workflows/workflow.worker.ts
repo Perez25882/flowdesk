@@ -7,6 +7,7 @@ import { advanceSupport, supportRequest } from './workflow.support.js';
 import { observeCommerceCommands } from '../commerce/commerce.workflow.js';
 import { releasePreparation } from '../commerce/commerce.fulfillment.js';
 import { invoiceAmounts } from '../commerce/commerce.invoices.js';
+import type { CommerceRecoveryProbe } from '../commerce/commerce.recovery.js';
 
 type Transaction = Prisma.TransactionClient;
 type Facts = Prisma.InputJsonObject;
@@ -52,7 +53,7 @@ async function observeSend(tx: Transaction, row: Workflow, eventKey: string, now
   return null;
 }
 
-async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now: Date): Promise<BusinessEvent | null> {
+async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now: Date, probe?: CommerceRecoveryProbe): Promise<BusinessEvent | null> {
   const scope = { businessId: row.businessId, customerId: row.customerId };
   const sourceId = row.actionSourceId ?? row.sourceId;
   const order = await tx.order.findFirst({ where: { id: orderId, ...scope, deletedAt: null,
@@ -75,7 +76,7 @@ async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now
       request: { ...scope, orderId, status: 'PAID' },
       payment: { ...scope, orderId, confidence: 'GATEWAY_CONFIRMED', direction: 'IN', voidedAt: null },
     },
-    orderBy: { id: 'asc' },
+    orderBy: [{ payment: { attestedAt: 'desc' } }, { id: 'asc' }],
     select: { id: true, requestId: true, paymentId: true },
   });
   const paid = settlement && (order.commerceInvoice
@@ -98,7 +99,11 @@ async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now
       { orderId, requestId: settlement.requestId });
   }
   if (row.operator === 'PAYMENTS') {
-    if (order.commerceInvoice && !await releasePreparation(tx, row.businessId, orderId)) return review(row, 'PREPARATION_NOT_RELEASED');
+    if (order.commerceInvoice) {
+      await probe?.('before-preparation');
+      if (!await releasePreparation(tx, row.businessId, orderId)) return review(row, 'PREPARATION_NOT_RELEASED');
+      await probe?.('after-preparation-write');
+    }
     return next('PAYMENT_SETTLED', 'settlement:' + settlement.id, 'WAITING_STAFF', 'FULFILLMENT', 'READY_FOR_FULFILLMENT',
       { orderId, ...settlement, ...(order.commerceInvoice ? { invoiceId: order.commerceInvoice.id } : {}) });
   }
@@ -130,7 +135,7 @@ async function observeOrder(tx: Transaction, row: Workflow, orderId: string, now
   return observeSend(tx, row, 'order-status-' + orderId + '-FULFILLED', now);
 }
 
-async function reconcile(tx: Transaction, row: Workflow, policy: WorkflowSettings, now: Date): Promise<BusinessEvent | null> {
+async function reconcile(tx: Transaction, row: Workflow, policy: WorkflowSettings, now: Date, probe?: CommerceRecoveryProbe): Promise<BusinessEvent | null> {
   const customer = { businessId: row.businessId, customerId: row.customerId };
   const source = await tx.message.findFirst({
     where: { id: row.actionSourceId ?? row.sourceId, ...customer, direction: 'INBOUND', type: 'TEXT',
@@ -164,7 +169,7 @@ async function reconcile(tx: Transaction, row: Workflow, policy: WorkflowSetting
   const flows = presets[policy.profile as keyof typeof presets] as readonly string[] | undefined;
   const order = await tx.order.findFirst({ where: { ...customer, deletedAt: null,
     OR: [{ inboundSourceMessageId: source.id }, { commerceQuote: { sourceId: source.id } }] }, select: { id: true } });
-  if (order) return flows?.includes('commerce') ? observeOrder(tx, row, order.id, now) : review(row, 'COMMERCE_PRESET_UNAVAILABLE');
+  if (order) return flows?.includes('commerce') ? observeOrder(tx, row, order.id, now, probe) : review(row, 'COMMERCE_PRESET_UNAVAILABLE');
   if (row.orderId) return review(row, 'ORDER_EVIDENCE_UNAVAILABLE');
 
   const appointment = await tx.appointment.findFirst({ where: { assistantMessageId: source.id, ...customer,
@@ -203,7 +208,7 @@ async function reconcile(tx: Transaction, row: Workflow, policy: WorkflowSetting
   return review(row, 'SUPPORTED_OUTCOME_UNAVAILABLE');
 }
 
-async function advance(tx: Transaction, row: Workflow, now: Date): Promise<void> {
+async function advance(tx: Transaction, row: Workflow, now: Date, probe?: CommerceRecoveryProbe): Promise<void> {
   const policy = (await tx.$queryRaw<WorkflowSettings[]>`
     SELECT * FROM workflow_settings WHERE "businessId" = ${row.businessId} FOR SHARE
   `)[0];
@@ -214,7 +219,7 @@ async function advance(tx: Transaction, row: Workflow, now: Date): Promise<void>
   else if (!active || !policy?.enabled || policy.revision !== row.policyRevision) event = review(row, 'BUSINESS_POLICY_CHANGED');
   else if (+row.deadlineAt <= +now) event = review(row, row.state === 'WAITING_OWNER_APPROVAL' ? 'APPROVAL_EXPIRED' : 'DEPENDENCY_DEADLINE_EXPIRED');
   else if (row.state === 'CREATED') event = next('PROCESSING', 'inbound:processing', 'RUNNING', 'CARE', 'INBOUND_PROCESSING');
-  else if (row.state !== 'WAITING_OWNER_APPROVAL') event = await reconcile(tx, row, policy, now);
+  else if (row.state !== 'WAITING_OWNER_APPROVAL') event = await reconcile(tx, row, policy, now, probe);
 
   const stop = event && ['REVIEW_REQUIRED', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(event.state);
   const waitingApproval = (event?.state ?? row.state) === 'WAITING_OWNER_APPROVAL';
@@ -223,14 +228,15 @@ async function advance(tx: Transaction, row: Workflow, now: Date): Promise<void>
   else await tx.workflow.update({ where: { id: row.id }, data: { dueAt } });
 }
 
-export async function recoverWorkflows(now = new Date()): Promise<void> {
+export async function recoverWorkflows(now = new Date(), probe?: CommerceRecoveryProbe): Promise<void> {
   await prisma.$executeRaw`
     UPDATE commerce_quotes SET state = 'EXPIRED'
     WHERE id IN (SELECT id FROM commerce_quotes WHERE state IN ('DRAFT', 'OFFERED') AND "expiresAt" <= ${now}
       ORDER BY "expiresAt", id LIMIT 12 FOR UPDATE SKIP LOCKED)
   `;
   for (let count = 0; count < 12; count++) {
-    if (!await runDueWorkflow(now, advance)) return;
+    if (!await runDueWorkflow(now, (tx, row, tick) => advance(tx, row, tick, probe))) return;
+    await probe?.('after-workflow-commit');
   }
 }
 

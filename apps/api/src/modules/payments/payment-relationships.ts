@@ -7,6 +7,7 @@ export interface PaymentRelationship {
   businessId: string;
   customerId: string;
   orderId?: string | null | undefined;
+  invoiceId?: string | null | undefined;
 }
 
 /** Lock the customer before the order to serialize payment and balance writes. */

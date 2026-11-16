@@ -2,9 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { apiFetch } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
+import { InvoiceCheckout, type InvoiceCheckoutView } from './InvoiceCheckout';
 
 type Summary = { id: string };
-type Invoice = Summary & { reference: string; total: string; deposit: string; paid: string; due: string; nextCharge: string;
+type Invoice = Summary & InvoiceCheckoutView & { reference: string; total: string; deposit: string; paid: string; due: string; nextCharge: string;
   state: string; dueAt: string; order: { status: string }; followupAvailable: boolean;
   preparation: { state: string; assignedStaffId: string | null; madeToOrder: boolean } | null;
   receiptLines: { name: string; quantity: number; unitPrice: string; subtotal: string }[] };
@@ -12,6 +13,7 @@ type Invoice = Summary & { reference: string; total: string; deposit: string; pa
 const names: Record<string, string> = {
   ISSUED: 'Issued', PAYMENT_PENDING: 'Waiting for payment', PARTIALLY_PAID: 'Partially paid',
   VERIFIED_PAID: 'Verified payment', RECORDED_PAID: 'Payment recorded', CANCELLED: 'Cancelled', REVIEW_REQUIRED: 'Needs payment review',
+  CHECKOUT_INITIALIZING: 'Preparing payment request',
 };
 
 export default function OrderInvoice({ orderId, status }: { orderId: string; status: string }): React.JSX.Element | null {
@@ -22,8 +24,7 @@ export default function OrderInvoice({ orderId, status }: { orderId: string; sta
   const details = useQuery({ queryKey: ['commerce-invoice-detail', id], enabled: Boolean(id), refetchInterval: 5_000,
     queryFn: () => apiFetch<Invoice>('/commerce/invoices/' + id) });
   const action = useMutation({
-    mutationFn: (kind: 'checkout' | 'ready' | 'followup') => {
-      if (kind === 'checkout') return apiFetch('/commerce/invoices/' + id + '/checkout', { method: 'POST', body: { send: true } });
+    mutationFn: (kind: 'ready' | 'followup') => {
       if (kind === 'followup') return apiFetch('/commerce/orders/' + orderId + '/followup', { method: 'POST', body: {} });
       return apiFetch('/commerce/orders/' + orderId + '/preparation', { method: 'PATCH', body: {
         state: 'READY', assignedStaffId: details.data?.preparation?.assignedStaffId ?? null,
@@ -49,8 +50,7 @@ export default function OrderInvoice({ orderId, status }: { orderId: string; sta
       {invoice.preparation && <p>{invoice.preparation.madeToOrder ? 'Production' : 'Packing'} · {
         ({ PREPARING: 'Awaiting staff completion', READY: 'Ready', COLLECTED: 'Collected', CANCELLED: 'Cancelled' } as Record<string, string>)[invoice.preparation.state]}</p>}
       <div className="flex flex-wrap gap-2">
-        {Number(invoice.nextCharge) > 0 && !['CANCELLED', 'REVIEW_REQUIRED'].includes(invoice.state) &&
-          <Button size="sm" variant="secondary" disabled={action.isPending} onClick={() => action.mutate('checkout')}>Send payment link</Button>}
+        <InvoiceCheckout invoice={invoice} onChange={() => { void details.refetch(); }} />
         {status === 'PROCESSING' && invoice.preparation?.state === 'PREPARING' &&
           <Button size="sm" disabled={action.isPending} onClick={() => action.mutate('ready')}>Mark preparation complete</Button>}
         {invoice.followupAvailable &&

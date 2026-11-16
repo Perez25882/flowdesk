@@ -154,6 +154,8 @@ async function requirePayoutReady(businessId: string, tx: Prisma.TransactionClie
 export interface CreateLinkInput {
   customerId: string;
   orderId?: string | null | undefined;
+  invoiceId?: string | null | undefined;
+  checkoutVersion?: string | undefined;
   amount: number;
   /** Send the link to the customer on WhatsApp straight away. */
   send?: boolean | undefined;
@@ -214,7 +216,7 @@ export async function createPaymentLink(
   const prepared = await prisma.$transaction(async (tx) => {
     await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
     await lockPaymentRelationship(tx, { ...input, businessId });
-    await requireInvoiceCheckout(tx, businessId, input.customerId, input.orderId, amountMinor);
+    const invoiceId = await requireInvoiceCheckout(tx, { ...input, businessId }, amountMinor, input.checkoutVersion);
     await verifyAssistantCheckout(tx, businessId, normalized);
     const business = await requirePayoutReady(businessId, tx);
     if (input.orderId) {
@@ -222,17 +224,23 @@ export async function createPaymentLink(
         businessId, input.orderId, normalized.amount, input.customerId, tx,
       );
       if (existing) return { kind: 'existing' as const, row: existing };
+    } else if (invoiceId) {
+      const existing = await tx.paymentRequest.findFirst({ where: {
+        businessId, customerId: input.customerId, invoiceId, orderId: null,
+        status: 'PENDING', expiresAt: { gt: new Date() }, amount: normalized.amount,
+      } });
+      if (existing) return { kind: 'existing' as const, row: existing };
     }
     const scope = { businessId, customerId: input.customerId, orderId: input.orderId ?? null, amountMinor };
     const unresolved = await tx.paystackInitialization.findFirst({
-      where: { ...scope, state: { in: ['INITIALIZING', 'REVIEW'] } },
+      where: { ...scope, ...(!input.orderId ? { invoiceId } : {}), state: { in: ['INITIALIZING', 'REVIEW'] } },
       orderBy: { createdAt: 'asc' },
     });
     if (unresolved) return { kind: 'waiting' as const, reference: unresolved.reference };
 
     const intent = await tx.paystackInitialization.create({
       data: {
-        ...scope, reference: newReference(), subaccountCode: business.paystackSubaccountCode,
+        ...scope, invoiceId, reference: newReference(), subaccountCode: business.paystackSubaccountCode,
         expiresAt: new Date(Date.now() + LINK_TTL_MS),
       },
     });
@@ -248,7 +256,8 @@ export async function createPaymentLink(
       row = await prisma.$transaction(async (tx) => {
         await requirePaymentActor(tx, businessId, staffId ?? null, 'payments.create');
         await lockPaymentRelationship(tx, { ...normalized, businessId });
-        await requireInvoiceCheckout(tx, businessId, input.customerId, input.orderId, amountMinor);
+        const liveInvoiceId = await requireInvoiceCheckout(tx, { ...input, invoiceId: intent.invoiceId, businessId }, amountMinor, input.checkoutVersion);
+        if (liveInvoiceId !== intent.invoiceId) throw new ConflictError('Invoice changed during checkout initialization');
         await verifyAssistantCheckout(tx, businessId, normalized);
         await tx.$queryRaw`SELECT id FROM businesses WHERE id = ${businessId} FOR SHARE`;
         const business = await requirePayoutReady(businessId, tx);
@@ -260,7 +269,7 @@ export async function createPaymentLink(
             AND "businessId" = ${businessId} AND state = 'INITIALIZING' FOR UPDATE
         `;
         if (!owned) throw new ConflictError('Checkout initialization is no longer eligible');
-        const created = await initializePaymentRequest(tx, business, normalized, staffId ?? null, intent.reference, intent.expiresAt);
+        const created = await initializePaymentRequest(tx, business, { ...normalized, invoiceId: intent.invoiceId }, staffId ?? null, intent.reference, intent.expiresAt);
         await tx.paystackInitialization.update({
           where: { reference: intent.reference, businessId, state: 'INITIALIZING' },
           data: { state: 'CREATED', requestId: created.id },
@@ -328,6 +337,7 @@ async function initializePaymentRequest(
       flowdeskBusinessId: businessId,
       flowdeskCustomerId: input.customerId,
       ...(input.orderId ? { flowdeskOrderId: input.orderId } : {}),
+      ...(input.invoiceId ? { flowdeskInvoiceId: input.invoiceId } : {}),
       custom_fields: [
         { display_name: 'Shop', variable_name: 'shop', value: business.name },
       ],
@@ -338,6 +348,7 @@ async function initializePaymentRequest(
     businessId,
     customerId: input.customerId,
     orderId: input.orderId ?? null,
+    invoiceId: input.invoiceId ?? null,
     amount: input.amount,
     reference,
     authorizationUrl: charge.authorizationUrl,
@@ -388,7 +399,7 @@ async function sendLinkToCustomer(
     ...(assistantCheckout ? {
       idempotencyKey: `assistant-checkout-${assistantCheckout.messageId ?? row.id}`,
       requireQueueHandoff: true,
-    } : {}),
+    } : row.invoiceId ? { idempotencyKey: `invoice-checkout-${row.id}` } : {}),
     // One send per request per call. Repeating a reminder is a legitimate thing
     // for an owner to do, so the key is not the request id alone — see the note
     // on `EnqueueOptions.idempotencyKey`.

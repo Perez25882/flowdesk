@@ -1,6 +1,7 @@
 import { Prisma, type PaystackReceipt, type PaymentRequest } from '@prisma/client';
 import { prisma } from '../../config/database.js';
-import { invoiceAmounts } from '../commerce/commerce.invoices.js';
+import { findInvoiceForPayment, invoiceAmounts, invoiceIsPayable } from '../commerce/commerce.invoices.js';
+import type { CommerceRecoveryProbe } from '../commerce/commerce.recovery.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { verifyCharge, type VerifiedCharge } from '../../services/billing/paystack-connect.js';
@@ -30,7 +31,8 @@ function validateCharge(
   if (subaccountCode !== request.subaccountCode) return 'MERCHANT_MISMATCH';
   if ((verified.businessId && verified.businessId !== request.businessId) ||
       (verified.customerId && verified.customerId !== request.customerId) ||
-      (verified.orderId && verified.orderId !== request.orderId)) return 'VERIFIED_RELATIONSHIP_MISMATCH';
+      (verified.orderId && verified.orderId !== request.orderId) ||
+      (verified.invoiceId ?? null) !== (request.invoiceId ?? null)) return 'VERIFIED_RELATIONSHIP_MISMATCH';
   if (currency !== 'GHS' || currency !== request.currency) return 'CURRENCY_MISMATCH';
   if (amountMinor === null || amountMinor <= 0) return 'AMOUNT_UNPROVEN';
   const expected = request.amount.mul(100);
@@ -56,7 +58,7 @@ async function finishReceipt(
   });
 }
 
-async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedCharge): Promise<void> {
+async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedCharge, probe?: CommerceRecoveryProbe): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const [owned] = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM paystack_receipts WHERE id = ${receipt.id} AND state = 'PROCESSING'
@@ -105,7 +107,7 @@ async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedC
     await tx.$queryRaw`SELECT id FROM payment_requests WHERE id = ${snapshot.id} FOR UPDATE`;
     const request = await tx.paymentRequest.findUnique({ where: { id: snapshot.id } });
     if (!request || request.businessId !== businessId || request.customerId !== snapshot.customerId ||
-        request.orderId !== snapshot.orderId || request.reference !== receipt.reference) {
+        request.orderId !== snapshot.orderId || request.invoiceId !== snapshot.invoiceId || request.reference !== receipt.reference) {
       return review('LOCAL_RELATIONSHIP_CHANGED');
     }
 
@@ -131,7 +133,7 @@ async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedC
       }
       const payment = await tx.payment.findUnique({ where: { id: request.paymentId } });
       if (!payment || payment.businessId !== businessId || payment.customerId !== request.customerId ||
-          payment.orderId !== request.orderId || payment.reference !== request.reference ||
+          payment.orderId !== request.orderId || payment.invoiceId !== request.invoiceId || payment.reference !== request.reference ||
           payment.direction !== 'IN' || payment.confidence !== 'GATEWAY_CONFIRMED' ||
           !payment.amount.mul(100).eq(amountMinor)) return review('CONFLICTING_LEDGER');
       if (payment.voidedAt) return review('VOIDED_LEDGER');
@@ -157,11 +159,9 @@ async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedC
       return review(request.status === 'CANCELLED' ? 'REQUEST_CANCELLED' : 'REQUEST_NOT_PAYABLE');
     }
     if (paidAt >= request.expiresAt) return review('LATE_PAYMENT');
-    if (request.orderId) {
-      const invoice = await tx.commerceInvoice.findFirst({ where: { businessId, customerId: request.customerId, orderId: request.orderId },
-        include: { order: { select: { status: true, totalAmount: true } } } });
-      if (invoice && (invoice.order.status === 'CANCELLED' || !invoice.order.totalAmount.eq(invoice.total) ||
-          (await invoiceAmounts(tx, invoice)).due.mul(100).lt(amountMinor))) return review('INVOICE_RECONCILIATION_REQUIRED');
+    const invoice = await findInvoiceForPayment(tx, request);
+    if (invoice && (!invoiceIsPayable(invoice) || (await invoiceAmounts(tx, invoice)).due.mul(100).lt(amountMinor))) {
+      return review('INVOICE_RECONCILIATION_REQUIRED');
     }
     const unlinked = await tx.payment.findFirst({
       where: { reference: request.reference, OR: [{ businessId }, { confidence: 'GATEWAY_CONFIRMED' }] }, select: { id: true },
@@ -169,7 +169,7 @@ async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedC
     if (unlinked) return review('UNLINKED_LEDGER');
 
     const payment = await createGatewayPayment(tx, businessId, {
-      customerId: request.customerId, orderId: request.orderId, amount: amountMinor / 100,
+      customerId: request.customerId, orderId: request.orderId, invoiceId: request.invoiceId, amount: amountMinor / 100,
       method: methodFromCharge(verified.channel, verified.bank), reference: request.reference,
       notes: 'Paid through a FlowDesk payment link', paidAt,
     });
@@ -185,13 +185,16 @@ async function applyVerifiedCharge(receipt: PaystackReceipt, verified: VerifiedC
       data: { transactionId, requestId: request.id, paymentId: payment.id, receiptId: receipt.id, notificationNextAt: new Date() },
     });
     await finishReceipt(tx, receipt.id, businessId, 'SETTLED', null);
+    await probe?.('before-settlement-commit');
   });
+  await probe?.('after-settlement-commit');
 }
 
-export async function processPaystackReceipt(receipt: PaystackReceipt): Promise<void> {
+export async function processPaystackReceipt(receipt: PaystackReceipt, probe?: CommerceRecoveryProbe): Promise<void> {
   if (receipt.state !== 'PROCESSING' || !receipt.leaseToken) return;
   try {
     if (!(await preflightLocalRequest(receipt))) return;
+    await probe?.('before-verification');
     const verified = await verifyCharge(receipt.reference);
     if (!verified) return await waitForPaystackRetry(receipt, 'VERIFICATION_UNAVAILABLE');
     const saved = await prisma.paystackReceipt.updateMany({
@@ -204,7 +207,8 @@ export async function processPaystackReceipt(receipt: PaystackReceipt): Promise<
       await waitForPaystackRetry(receipt, 'PROVIDER_PENDING');
       return;
     }
-    await applyVerifiedCharge(receipt, verified);
+    await probe?.('after-verification');
+    await applyVerifiedCharge(receipt, verified, probe);
   } catch (error: unknown) {
     logger.warn({ receiptId: receipt.id, errorType: error instanceof Error ? error.name : 'Unknown' }, 'Paystack processing will retry');
     await waitForPaystackRetry(receipt, 'LOCAL_WRITE_FAILED');
@@ -236,12 +240,12 @@ async function preflightLocalRequest(receipt: PaystackReceipt): Promise<boolean>
   return false;
 }
 
-export async function drainPaystackReceipts(businessId?: string): Promise<number> {
+export async function drainPaystackReceipts(businessId?: string, probe?: CommerceRecoveryProbe): Promise<number> {
   let count = 0;
   for (; count < 10; count += 1) {
     const receipt = await claimPaystackReceipt(businessId);
     if (!receipt) break;
-    await processPaystackReceipt(receipt);
+    await processPaystackReceipt(receipt, probe);
   }
   return count;
 }

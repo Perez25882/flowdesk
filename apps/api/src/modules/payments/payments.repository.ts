@@ -7,6 +7,7 @@ import { lockCustomerForTotals, recalculateCustomerTotals } from '../customers/c
 import type { ConfirmPaymentInput } from './payments.schema.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors.js';
 import { logActivity } from '../staff/staff-activity.repository.js';
+import { findInvoiceForPayment, invoiceAmounts } from '../commerce/commerce.invoices.js';
 import { lockPaymentRelationship, requirePaymentActor, type PaymentRelationship } from './payment-relationships.js';
 
 /**
@@ -52,6 +53,7 @@ export async function writeManualPayment(
   businessId: string,
   loggedById: string | null,
   requestKey?: string,
+  invoiceId?: string,
 ): Promise<{ payment: PaymentWithCustomer; created: boolean }> {
   return prisma.$transaction(async (tx) => {
     await requirePaymentActor(tx, businessId, loggedById, 'payments.create');
@@ -59,6 +61,7 @@ export async function writeManualPayment(
     const identity = requestKey && createHash('sha256').update(JSON.stringify([
       loggedById, data.customerId, data.orderId ?? null, data.amount, data.method, data.direction,
       data.reference ?? null, data.notes ?? null, data.attested,
+      ...(invoiceId ? [invoiceId] : []),
     ])).digest('hex');
     if (requestKey) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['manual-payment', businessId, requestKey])}, 0))`;
@@ -70,11 +73,19 @@ export async function writeManualPayment(
       }
     }
     await lockPaymentRelationship(tx, { ...data, businessId });
+    if (invoiceId) {
+      const invoice = await findInvoiceForPayment(tx, { ...data, businessId, invoiceId });
+      if (!invoice || invoice.status === 'DRAFT' || data.direction !== 'OUT' || !data.attested ||
+          (await invoiceAmounts(tx, invoice)).verified.lt(data.amount)) {
+        throw new ConflictError('Adjustment must be supported by the remaining verified credit');
+      }
+    }
     const payment = await tx.payment.create({
       data: {
         businessId,
         customerId: data.customerId,
         orderId: data.orderId ?? null,
+        invoiceId: invoiceId ?? null,
         amount: new Prisma.Decimal(data.amount),
         method: data.method,
         direction: data.direction,
@@ -127,6 +138,7 @@ export async function createGatewayPayment(
   data: {
     customerId: string;
     orderId: string | null;
+    invoiceId?: string | null;
     amount: number;
     method: PaymentMethod;
     reference: string;
@@ -140,6 +152,7 @@ export async function createGatewayPayment(
       businessId,
       customerId: data.customerId,
       orderId: data.orderId,
+      invoiceId: data.invoiceId ?? null,
       amount: new Prisma.Decimal(data.amount),
       method: data.method,
       direction: 'IN',

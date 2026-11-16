@@ -6,6 +6,7 @@ export interface PaymentRequestRow {
   businessId: string;
   customerId: string;
   orderId: string | null;
+  invoiceId: string | null;
   amount: Prisma.Decimal;
   currency: string;
   reference: string;
@@ -25,6 +26,7 @@ const ROW_SELECT = {
   businessId: true,
   customerId: true,
   orderId: true,
+  invoiceId: true,
   amount: true,
   currency: true,
   reference: true,
@@ -43,6 +45,7 @@ export async function createPaymentRequest(data: {
   businessId: string;
   customerId: string;
   orderId: string | null;
+  invoiceId?: string | null;
   amount: number;
   reference: string;
   authorizationUrl: string;
@@ -57,6 +60,7 @@ export async function createPaymentRequest(data: {
       businessId: data.businessId,
       customerId: data.customerId,
       orderId: data.orderId,
+      invoiceId: data.invoiceId ?? null,
       amount: new Prisma.Decimal(data.amount),
       reference: data.reference,
       authorizationUrl: data.authorizationUrl,

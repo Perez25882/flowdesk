@@ -34,6 +34,8 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 3 commerce contract](batch-3/contract.md) | Quote, stock, invoice, fulfillment and care boundaries |
 | [Batch 3 implementation register](batch-3/progress.md) | Approved source, feature disposition and checkpoints |
 | [Batch 3 acceptance report](batch-3/report.md) | Commerce workflow evidence and release decision |
+| [Batch 3 completion register](batch-3/completion.md) | Closure workstreams and restartable checkpoints |
+| [Batch 3 completion contract](batch-3/closure-contract.md) | Invoicing, reminders, returns, checkout and operations |
 
 ## Engineering conventions
 

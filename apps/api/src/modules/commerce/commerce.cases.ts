@@ -25,6 +25,10 @@ export async function updateCommerceCase(
   if (input.staffId) await requirePaymentActor(tx, actor.businessId, input.staffId, 'messages.send');
   if (input.state === 'ASSIGNED' && !input.staffId) throw new ValidationError('Choose an assigned staff member');
   if (input.state === 'RESOLVED') {
+    if (await tx.commerceReturn.findFirst({ where: { caseId: id, businessId: actor.businessId, rejectedAt: null,
+      OR: [{ resolvedAt: null }, { resolutionPayment: { voidedAt: { not: null } } }] }, select: { id: true } })) {
+      throw new ConflictError('Return disposition requires current evidence');
+    }
     if (input.resolution === 'CANCELLATION_CONFIRMED' && current.kind === 'CANCELLATION' && current.order?.status === 'CANCELLED') {
       // The verified order transition is the resolution evidence.
     } else if (input.resolution === 'CUSTOMER_CONFIRMED_RESOLUTION' && input.evidenceMessageId) {
@@ -62,6 +66,9 @@ export async function receiveCommerceReturn(tx: Prisma.TransactionClient, actor:
       AND "customerId" = ${item.customerId} AND "deletedAt" IS NULL FOR UPDATE
   `;
   if (!owned) throw new NotFoundError('Return order not found');
+  if (await tx.commerceReturn.findFirst({ where: { orderId: owned.id, businessId, rejectedAt: null }, select: { id: true } })) {
+    throw new ConflictError('Use item-level disposition for this return');
+  }
   const order = await tx.order.findFirst({ where: { id: owned.id, businessId, status: 'FULFILLED', stockDeducted: true },
     include: { items: true, commerceQuote: { include: { lines: true } } } });
   if (!order?.commerceQuote?.lines.length || order.commerceQuote.lines.some((line) => line.productMode !== 'TRACKED')) {

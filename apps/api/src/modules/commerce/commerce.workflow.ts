@@ -1,7 +1,7 @@
 import type { CommerceCaseKind, Prisma, Workflow } from '@prisma/client';
 import { persistOutboundSend } from '../../queues/outbound.queue.js';
 import { isAppError } from '../../utils/errors.js';
-import { followupConsent, quoteCommand, quoteInput } from './commerce.contract.js';
+import { followupConsent, quoteCommand, quoteInput, reminderConsent } from './commerce.contract.js';
 import { acceptCommerceQuote, createCommerceQuote, decideCommerceQuote, loadCommerceSource } from './commerce.quotes.js';
 import type { BusinessEvent } from '../workflows/workflow.contract.js';
 import { minute } from '../workflows/workflow.contract.js';
@@ -63,12 +63,18 @@ export async function observeCommerceCommands(
 ): Promise<BusinessEvent | null | undefined> {
   const command = quoteCommand(source.body);
   const consent = followupConsent(source.body);
+  const reminder = reminderConsent(source.body);
   const kind = commerceCaseKind(source.body, source.intent === 'COMPLAINT');
-  if (!command && !kind && consent === undefined) return undefined;
+  if (!command && !kind && consent === undefined && reminder === undefined) return undefined;
   if (!await tx.commercePolicy.findUnique({ where: { businessId: row.businessId, enabled: true }, select: { businessId: true } })) return undefined;
   const scope = { businessId: row.businessId, customerId: row.customerId };
   await tx.$executeRawUnsafe('SAVEPOINT observe_commerce_command');
   try {
+    if (reminder !== undefined) {
+      await loadCommerceSource(tx, scope, source.id);
+      return { type: 'COMMERCE_RESOLVED', key: 'reminder-consent:' + source.id, state: 'COMPLETED', operator: 'CARE',
+        reason: 'PAYMENT_REMINDER_PREFERENCE_RECORDED', facts: { sourceId: source.id } };
+    }
     if (consent !== undefined) {
       await loadCommerceSource(tx, scope, source.id);
       await tx.customer.updateMany({ where: { id: row.customerId, businessId: row.businessId,

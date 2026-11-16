@@ -26,7 +26,22 @@ export const quoteInput = z.object({
   .refine((value) => (value.deliveryMode === 'DELIVERY') === Boolean(value.address), 'Enter an address for delivery');
 
 export const quoteDecisionInput = z.object({ decision: z.enum(['OFFER', 'DECLINE']) }).strict();
-export const invoiceCheckoutInput = z.object({ send: z.boolean().default(false) }).strict();
+const moneyMinor = z.number().int().min(1).max(100_000_000);
+export const invoiceDraftInput = z.object({
+  customerId: id, dueAt: z.string().datetime(), terms: z.string().trim().max(240).optional(),
+  lines: z.array(z.object({ description: z.string().trim().min(1).max(120), quantity: z.number().int().min(1).max(1000),
+    unitMinor: moneyMinor }).strict()).min(1).max(12),
+}).strict();
+export const invoiceCheckoutInput = z.object({ send: z.boolean().default(false), amountMinor: moneyMinor.optional(),
+  checkoutVersion: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
+export const invoiceDecisionInput = z.object({ action: z.enum(['ISSUE', 'CANCEL', 'SEND']) }).strict();
+export const invoiceAdjustmentInput = z.object({ amountMinor: moneyMinor, reference: z.string().trim().min(1).max(100),
+  reason: z.string().trim().min(3).max(350), requestKey: z.string().uuid() }).strict();
+export const reminderPolicyInput = z.object({ enabled: z.boolean(), intervalDays: z.number().int().min(1).max(30),
+  maxReminders: z.number().int().min(1).max(3),
+  templateName: z.string().regex(/^[a-z0-9_]{1,64}$/).nullable(),
+  templateLanguage: z.string().regex(/^[a-z]{2}(?:_[A-Z]{2})?$/).nullable(),
+}).strict().refine((value) => Boolean(value.templateName) === Boolean(value.templateLanguage), 'Specify a template name and language together');
 export const preparationInput = z.object({ state: z.enum(['PREPARING', 'READY']), assignedStaffId: id.nullable() }).strict();
 export const caseInput = z.object({
   state: z.enum(['ASSIGNED', 'WAITING', 'ESCALATED', 'RESOLVED']),
@@ -36,11 +51,25 @@ export const caseInput = z.object({
   evidenceMessageId: id.optional(),
 }).strict();
 
+export const partialReturnInput = z.object({ requestKey: z.string().uuid(), revision: z.number().int().min(0),
+  evidence: z.string().trim().min(4).max(350), obligation: z.enum(['NONE', 'REFUND_REVIEW', 'REPLACEMENT', 'EXCHANGE']),
+  lines: z.array(z.object({ orderItemId: id, quantity: z.number().int().min(1).max(1000),
+    condition: z.enum(['RESTOCKABLE', 'DAMAGED', 'REVIEW']) }).strict()).min(1).max(10),
+}).strict().refine((value) => new Set(value.lines.map((line) => line.orderItemId)).size === value.lines.length, 'Choose each order item once');
+
+export const returnResolutionInput = z.union([z.object({ paymentId: id }).strict(), z.object({ evidenceMessageId: id }).strict()]);
+
 export type QuoteInput = z.infer<typeof quoteInput>;
+export type InvoiceDraftInput = z.infer<typeof invoiceDraftInput>;
 
 export function followupConsent(body: string | null): boolean | undefined {
   const command = body?.trim().toUpperCase();
   return command === 'START ORDER FOLLOWUPS' ? true : command === 'STOP ORDER FOLLOWUPS' ? false : undefined;
+}
+
+export function reminderConsent(body: string | null): boolean | undefined {
+  const command = body?.trim().toUpperCase();
+  return command === 'START PAYMENT REMINDERS' ? true : command === 'STOP PAYMENT REMINDERS' ? false : undefined;
 }
 
 export type QuoteCommand =
