@@ -164,8 +164,10 @@ export async function observeServiceWorkflow(tx: Tx, row: Workflow, now: Date, p
         command === 'CANCEL' ? 'CANCELLATION' : 'COMPLAINT', visit.appointmentId, now);
       const amounts = visit?.invoice && await invoiceAmounts(tx, visit.invoice);
       const reply = !visit ? 'That appointment is unavailable. Please check your reference.'
-        : command === 'PAYMENT' ? (amounts ? visit.appointment.reference + ' verified balance due: GHS ' + amounts.due.toFixed(2) + '.' :
-          'There is no invoice for ' + visit.appointment.reference + '.')
+        : command === 'PAYMENT' ? ((closedVisits as readonly string[]).includes(visit.state)
+          ? 'The appointment is closed. Contact the team to review any payment for ' + visit.appointment.reference + '.'
+          : amounts ? visit.appointment.reference + ' verified balance due: GHS ' + amounts.due.toFixed(2) + '.' :
+            'There is no invoice for ' + visit.appointment.reference + '.')
           : visit.appointment.reference + ' is ' + visit.state.toLowerCase().replaceAll('_', ' ') + '. Scheduled for ' +
             serviceTime(visit.appointment.startsAt, snapshotOf(visit).timeZone) + '.';
       return observeReply(tx, row, await replyToService(tx, row, source, 'service-reply-' + source.id, reply, now), source);

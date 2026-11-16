@@ -21,12 +21,15 @@ fixtureOnly('Batch 3 completion with PostgreSQL, BullMQ and signed providers', (
   let templateStatus = 'APPROVED';
   const provider = new Map<string, { amount: number; subaccount: string; metadata: Record<string, string> }>();
   const settled = new Map<string, number>();
+  const paidAtByTransaction = new Map<number, string>();
   const providerMessages: Record<string, unknown>[] = [];
 
   function verification(reference: string, id: number) {
     const charge = provider.get(reference)!;
+    const paidAt = paidAtByTransaction.get(id) ?? new Date().toISOString();
+    paidAtByTransaction.set(id, paidAt);
     return { id, reference, status: 'success', amount: charge.amount, currency: 'GHS', domain: 'test',
-      paid_at: new Date().toISOString(), channel: 'card', subaccount: { subaccount_code: charge.subaccount }, metadata: charge.metadata };
+      paid_at: paidAt, channel: 'card', subaccount: { subaccount_code: charge.subaccount }, metadata: charge.metadata };
   }
 
   beforeAll(async () => {
