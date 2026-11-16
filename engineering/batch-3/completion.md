@@ -1,18 +1,20 @@
 # Batch 3 completion register
 
+**Final local gate — PASS.** Implementation `c95d50a15308def0ad2d6e9f80faa85f41bbfbac` passed 435 complete integration and regression cases, 59 independent repeat cases, 994 default tests, compiled Chromium, all migration paths, backup and restore, and legacy binary rollback and roll-forward smoke. The [final report](closure-report.md) records the supported scope and evidence. Founder review is pending.
+
 The founder authorized all remaining Batch 3 workstreams. The dedicated branch `codex/batch-3-completion` starts at `cd84165bb50f958971fa7864b549ee1c322888e6`, which matched the fetched GitHub branch. The reported implementation `4081a34163be1e4e286aa11d70131a1445bba870` matches that revision for application and Prisma files. Both descend from approved Batch 2 parent `0f792ae67341bed49d655115aab0f0c378b875e0`. The launch worktree remains separate.
 
 | Workstream | State | Evidence required |
 | --- | --- | --- |
-| A. Standalone invoices | Passing focused checkpoint | Real signed payments allocated to exact invoices. Two obligations for the same customer stayed independent. The prior Batch 3 fixture preserved order-linked settlement and return evidence. |
-| B. Reminders | Passing focused checkpoint | Approved template, partial balance, provider ambiguity, queue eviction and signed delivery passed on the second disposable fixture. Signed opt-out and final-source verification remain scheduled. |
-| C. Partial returns | Passing integration checkpoint | Quantity fence, staff custody, owner approval, inventory restoration, signed exchange and separate refund evidence. |
-| D. Payment release recovery | Passing integration checkpoint | Actual process termination and replay around verification, commit, preparation, evidence and queue boundaries. Includes interrupted balance settlement after a real deposit. |
+| A. Standalone invoices | Passed | Real signed payments allocated to exact invoices. Two obligations for the same customer stayed independent. The prior Batch 3 fixture preserved order-linked settlement and return evidence. |
+| B. Reminders | Passed | Signed consent and opt-out, approved template, partial balance, provider ambiguity, queue eviction and signed delivery passed on independent fixtures. The owner inspected the order and standalone views in Chromium. |
+| C. Partial returns | Passed | Quantity fence, staff custody, owner approval, inventory restoration, signed exchange and separate refund evidence. |
+| D. Payment release recovery | Passed | Actual process termination and replay around verification, commit, preparation, evidence and queue boundaries. Includes interrupted balance settlement after a verified synthetic deposit. |
 | E. Checkout refresh | Passed compiled Chromium | Payment-link recovery uses invoice-scoped PostgreSQL state and a ledger-version precondition. The browser recovered the same request after reload and refused stale and ambiguous retries. |
-| F. Media admission | Passing integration checkpoint | Deliberate single-connection pool exhaustion produced retryable responses with redacted diagnostics. Exact replay admitted one receipt and a foreign collision was quarantined. |
+| F. Media admission | Passed | Deliberate single-connection pool exhaustion produced retryable responses with redacted `P2028` diagnostics. Exact replay admitted one receipt and a foreign collision was quarantined. |
 | G. Owner browser | Passed compiled Chromium | Mobile owner operated variant, order, pickup, case, partial return, invoice, reminder and checkout controls. |
-| H. Integration | Final suite and repeat pending | Initial complete regression passed 434 cases. The corrected candidate reruns the complete G1, Batch 2 and Batch 3 gate. |
-| I. Migration and recovery | Passing migration and restore checkpoint | 38 migrations on empty, approved Batch 2 upgrade, and prior Batch 3 seeded upgrade. Historical and final commerce database backup and restore passed. Final binary rollback and roll-forward remain scheduled. |
+| H. Integration | Passed | Final G1, Batch 2 and Batch 3 integration passed 435 cases. The independent fresh-fixture repeat passed 59 critical cases. Both had zero skips and failures. |
+| I. Migration and recovery | Passed local rehearsal | 38 migrations on empty, approved Batch 2 upgrade, and prior Batch 3 seeded upgrade. Historical and final commerce database backup and restore passed. Batch 2 and prior Batch 3 smoke passed on the completion schema. Completion binary roll-forward smoke passed. |
 
 The prior [Batch 3 report](report.md) retains historical evidence. New checks use locally generated identities and disposable loopback services.
 

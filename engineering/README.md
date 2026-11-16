@@ -36,6 +36,7 @@ This directory contains the versioned engineering record. It is separate from th
 | [Batch 3 acceptance report](batch-3/report.md) | Commerce workflow evidence and release decision |
 | [Batch 3 completion register](batch-3/completion.md) | Closure workstreams and restartable checkpoints |
 | [Batch 3 completion contract](batch-3/closure-contract.md) | Invoicing, reminders, returns, checkout and operations |
+| [Batch 3 final completion report](batch-3/closure-report.md) | Final acceptance decision, test evidence and limits |
 
 ## Engineering conventions
 
